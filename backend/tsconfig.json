@@ -1,8 +1,9 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "module": "commonjs",
-    "moduleResolution": "node",
+    "module": "Node16",
+    "moduleResolution": "Node16",
+    "isolatedModules": true,
     "lib": ["ES2022"],
     "outDir": "./dist",
     "strict": true,
@@ -20,15 +21,7 @@
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
     "declaration": true,
-    "baseUrl": "./",
-    "types": ["node", "jest"],
-    "paths": {
-      "@config/*": ["src/config/*"],
-      "@middleware/*": ["src/middleware/*"],
-      "@modules/*": ["src/modules/*"],
-      "@utils/*": ["src/utils/*"],
-      "@database/*": ["src/database/*"]
-    }
+    "types": ["node", "jest"]
   },
   "include": ["src/**/*", "tests/**/*"],
   "exclude": ["node_modules", "dist"]
