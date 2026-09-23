@@ -2,15 +2,15 @@
 
 > **Document Path:** `backend/docs/CHAT_HANDOFF.md`  
 > **Status:** Active Backend Handoff Document  
-> **Last Updated:** 2026-09-20  
+> **Last Updated:** 2026-09-23  
 > **Target Audience:** AI Coding Sessions & Backend Engineers  
 
 ---
 
 ## 1. Current Project Status
 
-* **Overall Backend Implementation Status:** **Phase 0 Complete. Phase 1 Step 1 (users/profile/location schema) complete in code.** Migrations and Sequelize models exist for the core identity/profile layer. They have **not** been applied to the development database yet (PostgreSQL is running, but authentication with default `postgres`/`postgres` credentials failed).
-* **Current Development Phase:** **Phase 1 — Step 2 (remaining database foundation)**.
+* **Overall Backend Implementation Status:** **Phase 0 complete. Phase 1 database foundation complete.** Step 1 and Step 2 migrations are applied to `love_bites_dev`. No domain APIs, services, seeders, or payment providers are implemented.
+* **Current Development Phase:** **Phase 1 database foundation complete. Next work is Phase 2 (authentication), not more schema.**
 * **What is Working:**
   * Base project setup (`package.json`, `tsconfig.json`, `.env.example`, `.sequelizerc`, `jest.config.ts`).
   * Express application (`src/app.ts`) with security headers (Helmet), CORS, JSON parser, cookie parser, HPP, and request ID tracking.
@@ -22,11 +22,11 @@
   * Health check endpoints (`GET /health` and `GET /api/v1/health`).
   * Automated unit and integration test suite passing with 100% success (12/12 tests).
   * Clean TypeScript compilation (`npm run build`).
-  * Phase 1 Step 1 models and reversible migrations for extensions, `genders`, `users`, `auth_refresh_tokens`, `profiles` (`geography(Point, 4326)` + GiST), `profile_photos`, and `dating_preferences`.
+  * Phase 1 Step 1 and Step 2 models, associations, and reversible migrations. Step 2 adds the remaining 24 foundation tables (catalogs, junctions, likes, matches, chat, safety, notifications, monetization ledger). `backend/.env` has working local PostgreSQL credentials. No seeders were created.
 * **What is Not Yet Implemented:**
-  * Applying Step 1 migrations to a reachable PostgreSQL/PostGIS database (blocked on local credentials; no `backend/.env` present).
-  * Phase 1 Step 2 schema: remaining reference catalogs, preference junctions, likes/matches/chat/safety, monetization, seed data.
+  * Catalog seed data (genders, interests, relationship intentions, plans, features, usage limits).
   * All domain feature modules (Auth, Users, Profiles, Photos, Genders, Interests, Relationship Intentions, Dating Preferences, Location, Discovery, Likes, Passes, Matches, Chat, Realtime Socket.IO, Safety, Notifications, Subscriptions, Entitlements, Payments, Admin).
+  * Payment providers, webhook handlers, and notification generation.
 
 ---
 
@@ -99,19 +99,19 @@ HTTP Request
 | **Users** | **Schema Implemented (Phase 1 Step 1)** | `src/database/models/user.model.ts` | Root identity table, UUID PK, identifier/role/status CHECKs, partial unique email/phone indexes, paranoid `deleted_at`. No user APIs yet. |
 | **Profiles** | **Schema Implemented (Phase 1 Step 1)** | `src/database/models/profile.model.ts` | 1:1 with users, DOB with `chk_profiles_age_18_plus`, `gender_id` FK, city, `geography(Point, 4326)` location. No profile APIs yet. |
 | **Photos** | **Schema Implemented (Phase 1 Step 1)** | `src/database/models/profile-photo.model.ts` | `user_id` → `users.id`, storage key, display order 1..5, primary-photo partial unique index. No S3/upload APIs yet. |
-| **Interests** | **Not Implemented** | `src/modules/interests/` | Dynamic admin catalog; user profile binds 3 to 10 active interests in `user_interests`. |
-| **Relationship Intentions** | **Not Implemented** | `src/modules/relationship-intentions/` | Dynamic admin catalog; user profile binds $\ge 1$ intention in `user_relationship_intentions`. |
-| **Dating Preferences** | **Schema Implemented (Phase 1 Step 1)** | `src/database/models/dating-preference.model.ts` | Core 1:1 table: age range (18–100), max distance (1–500 km). Target-gender and intention junction tables deferred to Step 2. |
-| **Location & PostGIS** | **Schema Implemented (Phase 1 Step 1)** | `profiles.location` migration + `Profile` model | Column created as PostgreSQL `geography(Point, 4326)` via raw SQL; GiST index `idx_profiles_location_gist`. Discovery queries not implemented. Migration not yet applied to the local DB. |
+| **Interests** | **Schema Implemented (Phase 1 Step 2)** | `interest.model.ts`, `user-interest.model.ts` | Catalog and `user_interests` junction exist. No interest APIs. Tables are unseeded. |
+| **Relationship Intentions** | **Schema Implemented (Phase 1 Step 2)** | `relationship-intention.model.ts`, junction models | Catalog plus profile and preference junction tables exist. No APIs. Tables are unseeded. |
+| **Dating Preferences** | **Schema Implemented (Phase 1)** | `dating-preference.model.ts` plus Step 2 junctions | Core 1:1 table plus `user_dating_preference_genders` and `user_dating_preference_intentions`. No preference APIs. |
+| **Location & PostGIS** | **Schema Implemented (Phase 1 Step 1)** | `profiles.location` migration + `Profile` model | `geography(Point, 4326)` and GiST index `idx_profiles_location_gist` verified on `love_bites_dev` after Step 2. Discovery queries not implemented. |
 | **Discovery Engine** | **Not Implemented** | `src/modules/discovery/` | Single-card candidate delivery, unlimited card browsing, PostGIS `ST_DWithin` spatial query, mutual preference filtering, Boost multipliers, exclusion of self/blocks/passes/matches. |
-| **Likes** | **Not Implemented** | `src/modules/likes/` | Like action, Free quota enforcement (combined 10 swipes/day), reciprocal like check triggering mutual match inside database transaction. |
-| **Passes** | **Not Implemented** | `src/modules/likes/` | Pass action, permanent exclusion in Phase 1, consumes 1 swipe from Free daily quota. |
-| **Matches** | **Not Implemented** | `src/modules/matches/` | Canonical pair sorting (`user_one_id < user_two_id`), unique partial index on active matches, unmatch transitions match to `UNMATCHED`, closes conversations, allows rematching. |
-| **Chat & Realtime Messaging** | **Not Implemented** | `src/modules/chat/`, `src/socket/` | Socket.IO + Redis adapter, 6-step message authorization, PostgreSQL persistence, Free tier limit (20 text msgs/day, media prohibited), Premium tier unlimited rich media. |
-| **Notifications** | **Not Implemented** | `src/modules/notifications/` | Events: `NEW_MATCH`, `NEW_MESSAGE`, `NEW_LIKE`. Realtime dispatch via Socket.IO, server-side redaction of liker identity on `NEW_LIKE` for Free tier. |
-| **Safety & Moderation** | **Not Implemented** | `src/modules/safety/` | Bidirectional blocking (instantly closes matches and chat), misconduct reporting with mandatory reason codes, admin report queue. |
-| **Subscriptions & Entitlements** | **Not Implemented** | `src/modules/subscriptions/`, `src/modules/entitlements/` | Centralized entitlement checks, plans (`FREE`, `PREMIUM_MONTHLY`, `PREMIUM_YEARLY`), usage tracking in `usage_records`, credit balances, 24-hr grace period on renewal failure. |
-| **Payments** | **Not Implemented** | `src/modules/payments/`, `src/integrations/payment/` | Provider interface (`IPaymentProvider`), Razorpay provider, server-side price lookup, HMAC-SHA256 signature verification, idempotent webhook ledger (`processed_webhooks`). |
+| **Likes** | **Schema Implemented (Phase 1 Step 2)** | `like.model.ts` | `likes.action` stores `LIKE`, `PASS`, and `SUPER_LIKE`. Partial unique `uq_likes_active_pair` where `is_undone = FALSE`. No like API or quota enforcement. |
+| **Passes** | **Schema only, via `likes`** | `like.model.ts` | No separate passes table. Pass behavior is a `likes` row. No pass API. |
+| **Matches** | **Schema Implemented (Phase 1 Step 2)** | `match.model.ts` | `chk_matches_canonical_order` enforces `user_one_id < user_two_id`. Partial unique active pair allows later re-match after `UNMATCHED` or `UNDONE`. No match API. |
+| **Chat & Realtime Messaging** | **Schema Implemented (Phase 1 Step 2)** | `conversation.model.ts`, `message.model.ts` | `conversations` and `messages` only. `messages` is paranoid. No Socket.IO, chat API, or read-receipt service. |
+| **Notifications** | **Schema Implemented (Phase 1 Step 2)** | `notification.model.ts` | In-app row store with JSONB `data` default `'{}'`. No generation, push, email, or socket dispatch. |
+| **Safety & Moderation** | **Schema Implemented (Phase 1 Step 2)** | `block.model.ts`, `report.model.ts` | `blocks` and `reports` with documented CHECKs and `SET NULL` reporter/resolver FKs. No moderation workflow. |
+| **Subscriptions & Entitlements** | **Schema Implemented (Phase 1 Step 2)** | plan, feature, subscription, usage, credit, boost models | Tables exist and are unseeded. Partial unique active subscription per user. No entitlement service. `limit_value = -1` remains allowed. |
+| **Payments** | **Schema Implemented (Phase 1 Step 2)** | `payment.model.ts`, `processed-webhook.model.ts` | Ledger tables only. `processed_webhooks.event_id` is `VARCHAR(255)` PK. No Razorpay, Stripe, PayPal, or webhook handler. |
 | **Admin** | **Not Implemented** | `src/modules/admin/` | Role guard (`role = 'ADMIN'`), user management (suspend, ban, unsuspend), moderation triage, taxonomy CRUD, dashboard KPIs, structured audit logs. |
 
 ---
@@ -119,17 +119,14 @@ HTTP Request
 ## 5. Database / Migrations Status
 
 ### Current Database State
-* **Existing Models (Phase 1 Step 1):** `Gender`, `User`, `AuthRefreshToken`, `Profile`, `ProfilePhoto`, `DatingPreference` in `src/database/models/`. Associations registered from `src/server.ts` via `src/database/associations.ts`.
-* **Existing Migrations (Phase 1 Step 1, not yet applied to local DB):**
-  1. `20260920120001-enable-extensions.js` — `postgis`, `"uuid-ossp"`, `pgcrypto`
-  2. `20260920120002-create-genders-table.js` — `genders`
-  3. `20260920120003-create-users-table.js` — `users`
-  4. `20260920120004-create-auth-refresh-tokens-table.js` — `auth_refresh_tokens`
-  5. `20260920120005-create-profiles-table.js` — `profiles` including `geography(Point, 4326)` and GiST
-  6. `20260920120006-create-profile-photos-table.js` — `profile_photos`
-  7. `20260920120007-create-dating-preferences-table.js` — `dating_preferences`
-* **Existing Seeders:** None (0 seeder files created). Gender catalog seed is deferred to Step 2.
-* **Local migrate result (2026-09-20):** `npx sequelize-cli db:migrate:status` and `db:migrate` both failed with `ERROR: password authentication failed for user "postgres"`. Service `postgresql-x64-18` is Running. No `backend/.env` file is present, so CLI used `sequelize.cli.js` defaults. **Do not treat the development schema as applied until migrate succeeds.**
+* **Database:** `love_bites_dev`. `backend/.env` is present and was not changed. Step 1 credential failure is closed.
+* **Step 1 models (unchanged):** `Gender`, `User`, `AuthRefreshToken`, `Profile`, `ProfilePhoto`, `DatingPreference`.
+* **Step 2 models:** `Interest`, `RelationshipIntention`, `UserInterest`, `UserRelationshipIntention`, `UserDatingPreferenceGender`, `UserDatingPreferenceIntention`, `Like`, `Match`, `Conversation`, `Message`, `Block`, `Report`, `Notification`, `Plan`, `Feature`, `PlanFeature`, `UsageLimit`, `Subscription`, `Payment`, `ProcessedWebhook`, `UsageRecord`, `UserCreditBalance`, `CreditTransaction`, `BoostSession`.
+* **Associations:** Step 1 aliases unchanged. Step 2 aliases added in `src/database/associations.ts` and exported from that file. `server.ts` was not modified.
+* **Migrations:** `20260920120001`–`20260920120031` are all `up` on `love_bites_dev` (status checked 2026-09-23). Step 1 files were not edited or rerun. Step 2 files `08`–`31` migrated successfully.
+* **Seeders:** None. Catalog tables may be empty.
+* **SQL verification (2026-09-23):** 30 public tables present (6 Step 1 + 24 Step 2). Extensions `postgis` 3.6.2, `uuid-ossp` 1.1, `pgcrypto` 1.4. `profiles.location` is `geography(Point,4326)`. `idx_profiles_location_gist` is a GiST index. Named CHECKs, unique constraints, partial indexes, and `ON DELETE` actions matched `02-database-design.md`. `chk_matches_canonical_order` is `user_one_id < user_two_id`. `processed_webhooks.event_id` is `varchar(255)` PK. `notifications.data` default is `'{}'::jsonb`. `boost_sessions.multiplier` is `numeric(4,2)`.
+* **Constraint name note:** `user_relationship_intentions` unique constraint is the documented name `uq_user_intentions_pair`.
 
 ### Planned Database Schema (from `02-database-design.md`)
 
@@ -281,7 +278,7 @@ Primary Key Strategy: UUIDv4 (gen_random_uuid())
 * **Existing Tests:** 12 tests across `tests/unit/app-error.test.ts`, `tests/unit/logger.test.ts`, `tests/integration/health.test.ts`.
 * **Test Framework:** **Jest + ts-jest** (Unit), **Supertest** (Integration). Playwright E2E is still planned.
 * **Covered Functionality:** AppError hierarchy, logger surface, health endpoints (`/health`, `/api/v1/health`) with mocked DB/Redis, 404 envelope.
-* **Phase 1 Step 1 verification (2026-09-20):** `npm run build` succeeded; `npm test` **12/12 passing**. Schema SQL verification against PostgreSQL was **not** completed (migrate auth failure).
+* **Phase 1 Step 2 verification (2026-09-23):** `npm run build` succeeded. `npm test` **12/12 passing**. Existing tests were not modified and no Step 2 Jest suite was added. Schema proof is the SQL verification above.
 * **Missing Tests:**
   * Unit tests: Crypto utility, Zod schemas, Entitlement evaluator, Quota calculations, DTO serializers.
   * Integration tests: Auth lifecycle, Onboarding pipeline, PostGIS spatial queries, Likes/Passes quota, Concurrency-safe matching, Undo rollback, Chat 6-step auth, Razorpay webhook idempotency, Admin role security.
@@ -294,7 +291,7 @@ Primary Key Strategy: UUIDv4 (gen_random_uuid())
 
 | Problem | Impact | Current Workaround | Recommended Next Action |
 | :--- | :--- | :--- | :--- |
-| **1. Local PostgreSQL credentials** | `sequelize-cli db:migrate` cannot authenticate as `postgres` with the default password. Step 1 schema is not applied locally. | Create `backend/.env` with working `DATABASE_URL` or `DB_*` values, then rerun `npm run db:migrate`. Database must include PostGIS. | Apply Step 1 migrations and run SQL verification before Step 2. |
+| **1. Local PostgreSQL credentials** | Closed. `backend/.env` authenticates and `love_bites_dev` has Step 1 and Step 2 applied. | None. | Do not change connection configuration. |
 | **2. Documentation Filename Discrepancies** | Two files in `backend/docs/` use prefixed names (`docs_01-product-requirements.md` and `backend_docs_01-backend-architecture.md`) while cross-references mention unprefixed names. | Both documents are located in `backend/docs/`. | Keep existing filenames; treat `backend/docs/` as the documentation container. |
 | **3. Sequelize GEOMETRY vs geography** | `02-database-design.md` §26 shows `DataTypes.GEOMETRY`, while SQL SoT is `geography(Point, 4326)`. | Step 1 migration uses raw SQL `geography(Point, 4326)`. Model uses `DataTypes.GEOGRAPHY('POINT', 4326)`. | Keep geography; do not switch the column to geometry. |
 | **4. Onboarding vs NOT NULL location/city** | Product onboarding saves location after basic profile, but `profiles.city` and `profiles.location` are `NOT NULL`. | Follow the database design as schema SoT. | Phase 3 must either insert profile only after location exists or revisit nullability with an explicit decision. |
@@ -305,8 +302,8 @@ Primary Key Strategy: UUIDv4 (gen_random_uuid())
 
 ## 12. Work Currently In Progress
 
-* **Status:** **Phase 1 Step 1 complete in code. Ready for Phase 1 Step 2 after local migrate succeeds.**
-* **Context:** Do not start Step 2 schema (likes, matches, chat, monetization, remaining catalogs/junctions) until Step 1 migrations have been applied and SQL-verified on a PostGIS-enabled database.
+* **Status:** **Phase 1 Step 2 complete and migrated.** Stop here. Do not start APIs or later phases in the same change.
+* **Context:** Step 1 remains applied and was not redesigned. Application behavior (auth, discovery, likes, matches, chat, notifications, moderation, subscriptions, payments) is still unimplemented.
 
 ---
 
@@ -375,18 +372,10 @@ The following architectural and business decisions are established and must **no
 
 ## 16. Recommended Next Task
 
-### Task: **Phase 1 — Step 2 (remaining database foundation)**
-Prerequisite: create `backend/.env` with working PostgreSQL/PostGIS credentials, run `npm run db:migrate`, and SQL-verify Step 1 objects (`geography` column, GiST index, CHECKs, FKs).
+### Task: **Phase 2 — Authentication & Accounts**
+Phase 1 schema is applied. Do not add more foundation tables unless a later spec requires them. Do not seed catalogs unless that task explicitly asks for seeders.
 
-Then implement only the remaining Phase 1 schema (do not implement dating APIs):
-1. Remaining reference tables: `interests`, `relationship_intentions`
-2. Monetization taxonomies: `plans`, `features`
-3. Preference junctions: `user_interests`, `user_relationship_intentions`, `user_dating_preference_genders`, `user_dating_preference_intentions`
-4. Interactions, chat, safety: `likes`, `matches`, `conversations`, `messages`, `blocks`, `reports`, `notifications`
-5. Monetization/usage/payments tables
-6. Seed reference catalogs (genders, intentions, plans, features, usage limits)
-
-Do not recreate Step 1 tables (`users`, `profiles`, `profile_photos`, `dating_preferences`, `genders`, `auth_refresh_tokens`, extensions).
+Next implementation is authentication (registration, verification, login, refresh rotation), not likes, chat, or payments.
 
 ---
 
@@ -396,4 +385,5 @@ Do not recreate Step 1 tables (`users`, `profiles`, `profile_photos`, `dating_pr
 | :--- | :--- | :--- | :--- |
 | **2026-09-18** | Initial Backend Audit & Handoff Creation | **Completed** | Full repository audit completed. Confirmed greenfield status. Created authoritative handoff document. |
 | **2026-09-18** | Phase 0 — Backend Project Setup & Infrastructure | **Completed** | Initialized TypeScript, Express, Zod env, Sequelize pool, Redis client, AppError hierarchy, Winston logger with redaction, middleware pipeline, health check endpoints, and Jest test suite (12/12 passing). |
-| **2026-09-20** | Phase 1 Step 1 — Users / Profile / Location schema | **Code complete; DB not applied** | Added reversible migrations and models for extensions, `genders`, `users`, `auth_refresh_tokens`, `profiles` (`geography(Point, 4326)` + GiST + 18+ CHECK), `profile_photos`, `dating_preferences`. `npm run build` clean; tests 12/12. Local `db:migrate` failed: `password authentication failed for user "postgres"`. Step 2 not started. |
+| **2026-09-20** | Phase 1 Step 1 — Users / Profile / Location schema | **Applied and verified** | Migrations `20260920120001`–`20260920120007` and models for extensions, `genders`, `users`, `auth_refresh_tokens`, `profiles` (`geography(Point, 4326)` + GiST), `profile_photos`, `dating_preferences`. Earlier handoff text that said migrate failed and `.env` was absent is obsolete. |
+| **2026-09-23** | Phase 1 Step 2 — Remaining database foundation | **Complete** | Migrations `20260920120008`–`20260920120031` applied to `love_bites_dev`. 24 tables, models, and associations added. No seeders, APIs, services, or payment providers. Build passed. Tests 12/12. SQL verification passed, including Step 1 PostGIS preservation. |
