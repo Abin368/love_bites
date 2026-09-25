@@ -102,7 +102,7 @@ Profile.init(
     modelName: 'Profile',
     timestamps: true,
     underscored: true,
-    createdAt: 'created_at',
-    updatedAt: 'updated_at'
+    createdAt: true,
+    updatedAt: true,
   }
 );

@@ -4,9 +4,14 @@ import { env } from '../config/env';
 const SENSITIVE_KEYS = new Set([
   'password',
   'password_hash',
+  'passwordhash',
   'token',
   'refreshtoken',
   'refresh_token',
+  'accesstoken',
+  'access_token',
+  'newpassword',
+  'new_password',
   'secret',
   'otp',
   'authorization',
@@ -18,7 +23,31 @@ const SENSITIVE_KEYS = new Set([
   'coordinates'
 ]);
 
-function redactSensitiveData(obj: any): any {
+const SENSITIVE_COMPACT_KEYS = new Set([
+  'password',
+  'passwordhash',
+  'token',
+  'refreshtoken',
+  'accesstoken',
+  'newpassword',
+  'secret',
+  'otp',
+  'authorization',
+  'cookie',
+  'setcookie',
+  'latitude',
+  'longitude',
+  'location',
+  'coordinates'
+]);
+
+function isSensitiveKey(key: string): boolean {
+  const lower = key.toLowerCase();
+  const compact = lower.replace(/[_-]/g, '');
+  return SENSITIVE_KEYS.has(lower) || SENSITIVE_COMPACT_KEYS.has(compact);
+}
+
+export function redactSensitiveData(obj: any): any {
   if (!obj || typeof obj !== 'object') {
     return obj;
   }
@@ -30,8 +59,7 @@ function redactSensitiveData(obj: any): any {
   const redacted: Record<string, any> = {};
 
   for (const [key, value] of Object.entries(obj)) {
-    const lowerKey = key.toLowerCase();
-    if (SENSITIVE_KEYS.has(lowerKey)) {
+    if (isSensitiveKey(key)) {
       redacted[key] = '[REDACTED]';
     } else if (typeof value === 'object' && value !== null) {
       redacted[key] = redactSensitiveData(value);

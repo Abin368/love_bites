@@ -114,9 +114,9 @@ User.init(
     timestamps: true,
     underscored: true,
     paranoid: true,
-    createdAt: 'created_at',
-    updatedAt: 'updated_at',
-    deletedAt: 'deleted_at',
+    createdAt: true,
+    updatedAt: true,
+    deletedAt: true,
     defaultScope: {
       attributes: {
         exclude: ['passwordHash']
