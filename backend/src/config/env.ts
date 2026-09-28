@@ -30,7 +30,27 @@ const envSchema = z.object({
   JWT_ACCESS_SECRET: z.string().min(16).default('development-jwt-access-secret-minimum-16-chars'),
   JWT_REFRESH_SECRET: z.string().min(16).default('development-jwt-refresh-secret-minimum-16-chars'),
   JWT_ACCESS_EXPIRATION: z.string().default('15m'),
+  // Opaque refresh tokens do not use JWT_REFRESH_SECRET. It stays configured for compatibility.
   JWT_REFRESH_EXPIRATION: z.string().default('7d')
+}).superRefine((data, ctx) => {
+  if (data.NODE_ENV !== 'production') {
+    return;
+  }
+
+  const secret = data.JWT_ACCESS_SECRET;
+  const placeholder =
+    secret.startsWith('development-jwt') ||
+    secret.includes('change-me') ||
+    secret.includes('your-super-secret');
+
+  if (secret.length < 32 || placeholder) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['JWT_ACCESS_SECRET'],
+      message:
+        'JWT_ACCESS_SECRET must be at least 32 characters and must not use a development placeholder in production'
+    });
+  }
 });
 
 export type Env = z.infer<typeof envSchema>;

@@ -14,6 +14,7 @@ const config: Config = {
     '^@database/(.*)$': '<rootDir>/src/database/$1'
   },
   setupFilesAfterEnv: ['<rootDir>/tests/setup.ts'],
+  testPathIgnorePatterns: ['/node_modules/', '<rootDir>/tests/postgres/'],
   collectCoverageFrom: [
     'src/**/*.ts',
     '!src/**/*.d.ts',

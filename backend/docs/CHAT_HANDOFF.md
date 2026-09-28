@@ -2,29 +2,34 @@
 
 > **Document Path:** `backend/docs/CHAT_HANDOFF.md`  
 > **Status:** Active Backend Handoff Document  
-> **Last Updated:** 2026-09-18  
+> **Last Updated:** 2026-09-24  
 > **Target Audience:** AI Coding Sessions & Backend Engineers  
 
 ---
 
 ## 1. Current Project Status
 
-* **Overall Backend Implementation Status:** **Phase 0 Complete**. Base scaffolding, TypeScript tooling, Express middleware pipeline, Zod environment validation, Sequelize connection pool, Redis client, Winston structured logging with redaction, AppError hierarchy, centralized error middleware, health checks, and automated Jest test harness are implemented and passing.
-* **Current Development Phase:** **Phase 1 — Database Foundation (Pending Execution)**.
+* **Overall Backend Implementation Status:** **Phase 0 complete. Phase 1 database foundation complete. Phase 2 authentication complete.** Step 1 and Step 2 migrations remain applied to `love_bites_dev`. No new migrations, seeders, or schema changes were made for authentication.
+* **Current Development Phase:** **Phase 2 authentication is implemented and verified. Next work is Phase 3 (profile and onboarding), not more auth schema.**
 * **What is Working:**
   * Base project setup (`package.json`, `tsconfig.json`, `.env.example`, `.sequelizerc`, `jest.config.ts`).
   * Express application (`src/app.ts`) with security headers (Helmet), CORS, JSON parser, cookie parser, HPP, and request ID tracking.
-  * Zod environment parser & validator (`src/config/env.ts`).
+  * Zod environment parser & validator (`src/config/env.ts`). Production boot requires a non-placeholder `JWT_ACCESS_SECRET` of at least 32 characters. Local development defaults are unchanged.
   * Sequelize connection pool (`src/config/database.ts`).
   * Redis connection client (`src/config/redis.ts`).
-  * AppError hierarchy and centralized error handler (`src/middleware/error.middleware.ts`).
-  * Structured logger with sensitive parameter redaction (`src/utils/logger.ts`).
+  * AppError hierarchy and centralized error handler (`src/middleware/error.middleware.ts`), including `422 UNDERAGE_NOT_PERMITTED`.
+  * Structured logger with sensitive parameter redaction (`src/utils/logger.ts`), including `passwordHash`, `accessToken`, and `newPassword`.
   * Health check endpoints (`GET /health` and `GET /api/v1/health`).
-  * Automated unit and integration test suite passing with 100% success (12/12 tests).
+  * Phase 2 authentication module at `/api/v1/auth` (register, verify email, verify phone, resend, login, refresh, logout, forgot password, reset password).
+  * Automated unit and integration test suite passing with 100% success (50/50 tests). The original 12 Phase 0 tests still pass.
   * Clean TypeScript compilation (`npm run build`).
+  * Phase 1 Step 1 and Step 2 models, associations, and reversible migrations. `backend/.env` was not changed.
 * **What is Not Yet Implemented:**
-  * Database migrations (01 through 09) and Sequelize models (Phase 1).
-  * All domain feature modules (Auth, Users, Profiles, Photos, Genders, Interests, Relationship Intentions, Dating Preferences, Location, Discovery, Likes, Passes, Matches, Chat, Realtime Socket.IO, Safety, Notifications, Subscriptions, Entitlements, Payments, Admin).
+  * Catalog seed data (genders, interests, relationship intentions, plans, features, usage limits).
+  * Profile and onboarding persistence. Registration validates `dateOfBirth` for age 18+ and does **not** store it or create a `profiles` row.
+  * Domain modules after auth (Profiles, Photos, Genders, Interests, Relationship Intentions, Dating Preferences, Location, Discovery, Likes, Passes, Matches, Chat, Realtime Socket.IO, Safety, Notifications, Subscriptions, Entitlements, Payments, Admin).
+  * Real email or SMS delivery. Phase 2 uses mock providers only.
+  * Payment providers, webhook handlers, and notification generation.
 
 ---
 
@@ -47,8 +52,10 @@ The following documents represent the authoritative source of truth for all back
 
 ### Codebase Reality
 As verified by inspecting the repository filesystem:
-* **No code exists in `src/`.**
-* **No route files, controller files, service files, or data access files exist.**
+* Phase 0 application scaffolding exists in `src/` (`app.ts`, `server.ts`, `config/`, `middleware/`, `routes/`, `utils/`).
+* Phase 1 Step 1 models exist in `src/database/models/` and associations in `src/database/associations.ts`.
+* Phase 1 Step 1 migrations exist in `src/database/migrations/`.
+* Domain feature modules other than auth are **not** implemented. Auth lives in `src/modules/auth/`. User lookups live in `src/modules/users/users.data-access.ts`.
 
 ### Established Architectural Standard (Mandatory for Implementation)
 When code is implemented, it **must** strictly conform to the 3-Layer Modular Architecture specified in `backend_docs_01-backend-architecture.md`:
@@ -90,24 +97,24 @@ HTTP Request
 
 | Feature Name | Status | Relevant Module / Files | Important Behavior & Business Rules |
 | :--- | :--- | :--- | :--- |
-| **Project Setup & Base Tooling** | **Not Implemented** | `package.json`, `tsconfig.json`, `src/app.ts`, `src/server.ts` | Node.js 20+ LTS, TypeScript 5+, Express app, Zod env validation, Winston/Pino logger. |
-| **Authentication** | **Not Implemented** | `src/modules/auth/` | Dual registration (Email/Phone), Argon2id hashing, 15-min JWT access token, 7-day rotating refresh cookie (`SameSite=Strict`, `HttpOnly`), single-use token rotation, theft detection. |
-| **Users** | **Not Implemented** | `src/modules/users/` | Root identity, age verification ($\ge 18$), soft-delete lifecycle, status transitions (`UNVERIFIED`, `ACTIVE`, `SUSPENDED`, `BANNED`, `DELETED`). |
-| **Profiles** | **Not Implemented** | `src/modules/profiles/` | 1:1 with users, display name, locked DOB, bio ($\le 500$ chars), occupation, education, city, onboarding completion evaluator (`is_profile_complete`). |
-| **Photos** | **Not Implemented** | `src/modules/photos/`, `src/integrations/storage/` | 1 to 5 photos, AWS S3 private storage, client direct upload via short-lived presigned `PutObject` URLs, 1 mandatory primary photo, display order 1..5. |
-| **Interests** | **Not Implemented** | `src/modules/interests/` | Dynamic admin catalog; user profile binds 3 to 10 active interests in `user_interests`. |
-| **Relationship Intentions** | **Not Implemented** | `src/modules/relationship-intentions/` | Dynamic admin catalog; user profile binds $\ge 1$ intention in `user_relationship_intentions`. |
-| **Dating Preferences** | **Not Implemented** | `src/modules/dating-preferences/` | Age range (18–100), max distance (1–500 km), target genders, preferred relationship intentions. |
-| **Location & PostGIS** | **Not Implemented** | `src/modules/location/` | PostGIS `geography(Point, 4326)` in `profiles.location`, GiST indexing, strict server-side coordinate privacy (coordinates never exposed; rounded km distance returned). |
+| **Project Setup & Base Tooling** | **Implemented** | `package.json`, `tsconfig.json`, `src/app.ts`, `src/server.ts` | Node.js 20+ LTS, TypeScript 5+, Express app, Zod env validation, Winston logger. |
+| **Authentication** | **Implemented (Phase 2)** | `src/modules/auth/`, `src/middleware/auth.middleware.ts`, `src/middleware/role.middleware.ts` | Email and/or phone registration, Argon2id, 15-minute HS256 access JWT, 7-day opaque refresh cookie, SHA-256 hash in `auth_refresh_tokens`, single-use rotation, reuse revokes all active sessions. `dateOfBirth` is validated and not stored. No profile row is created. |
+| **Users** | **Schema Implemented (Phase 1 Step 1)** | `src/database/models/user.model.ts` | Root identity table, UUID PK, identifier/role/status CHECKs, partial unique email/phone indexes, paranoid `deleted_at`. No user APIs yet. |
+| **Profiles** | **Schema Implemented (Phase 1 Step 1)** | `src/database/models/profile.model.ts` | 1:1 with users, DOB with `chk_profiles_age_18_plus`, `gender_id` FK, city, `geography(Point, 4326)` location. No profile APIs yet. |
+| **Photos** | **Schema Implemented (Phase 1 Step 1)** | `src/database/models/profile-photo.model.ts` | `user_id` → `users.id`, storage key, display order 1..5, primary-photo partial unique index. No S3/upload APIs yet. |
+| **Interests** | **Schema Implemented (Phase 1 Step 2)** | `interest.model.ts`, `user-interest.model.ts` | Catalog and `user_interests` junction exist. No interest APIs. Tables are unseeded. |
+| **Relationship Intentions** | **Schema Implemented (Phase 1 Step 2)** | `relationship-intention.model.ts`, junction models | Catalog plus profile and preference junction tables exist. No APIs. Tables are unseeded. |
+| **Dating Preferences** | **Schema Implemented (Phase 1)** | `dating-preference.model.ts` plus Step 2 junctions | Core 1:1 table plus `user_dating_preference_genders` and `user_dating_preference_intentions`. No preference APIs. |
+| **Location & PostGIS** | **Schema Implemented (Phase 1 Step 1)** | `profiles.location` migration + `Profile` model | `geography(Point, 4326)` and GiST index `idx_profiles_location_gist` verified on `love_bites_dev` after Step 2. Discovery queries not implemented. |
 | **Discovery Engine** | **Not Implemented** | `src/modules/discovery/` | Single-card candidate delivery, unlimited card browsing, PostGIS `ST_DWithin` spatial query, mutual preference filtering, Boost multipliers, exclusion of self/blocks/passes/matches. |
-| **Likes** | **Not Implemented** | `src/modules/likes/` | Like action, Free quota enforcement (combined 10 swipes/day), reciprocal like check triggering mutual match inside database transaction. |
-| **Passes** | **Not Implemented** | `src/modules/likes/` | Pass action, permanent exclusion in Phase 1, consumes 1 swipe from Free daily quota. |
-| **Matches** | **Not Implemented** | `src/modules/matches/` | Canonical pair sorting (`user_one_id < user_two_id`), unique partial index on active matches, unmatch transitions match to `UNMATCHED`, closes conversations, allows rematching. |
-| **Chat & Realtime Messaging** | **Not Implemented** | `src/modules/chat/`, `src/socket/` | Socket.IO + Redis adapter, 6-step message authorization, PostgreSQL persistence, Free tier limit (20 text msgs/day, media prohibited), Premium tier unlimited rich media. |
-| **Notifications** | **Not Implemented** | `src/modules/notifications/` | Events: `NEW_MATCH`, `NEW_MESSAGE`, `NEW_LIKE`. Realtime dispatch via Socket.IO, server-side redaction of liker identity on `NEW_LIKE` for Free tier. |
-| **Safety & Moderation** | **Not Implemented** | `src/modules/safety/` | Bidirectional blocking (instantly closes matches and chat), misconduct reporting with mandatory reason codes, admin report queue. |
-| **Subscriptions & Entitlements** | **Not Implemented** | `src/modules/subscriptions/`, `src/modules/entitlements/` | Centralized entitlement checks, plans (`FREE`, `PREMIUM_MONTHLY`, `PREMIUM_YEARLY`), usage tracking in `usage_records`, credit balances, 24-hr grace period on renewal failure. |
-| **Payments** | **Not Implemented** | `src/modules/payments/`, `src/integrations/payment/` | Provider interface (`IPaymentProvider`), Razorpay provider, server-side price lookup, HMAC-SHA256 signature verification, idempotent webhook ledger (`processed_webhooks`). |
+| **Likes** | **Schema Implemented (Phase 1 Step 2)** | `like.model.ts` | `likes.action` stores `LIKE`, `PASS`, and `SUPER_LIKE`. Partial unique `uq_likes_active_pair` where `is_undone = FALSE`. No like API or quota enforcement. |
+| **Passes** | **Schema only, via `likes`** | `like.model.ts` | No separate passes table. Pass behavior is a `likes` row. No pass API. |
+| **Matches** | **Schema Implemented (Phase 1 Step 2)** | `match.model.ts` | `chk_matches_canonical_order` enforces `user_one_id < user_two_id`. Partial unique active pair allows later re-match after `UNMATCHED` or `UNDONE`. No match API. |
+| **Chat & Realtime Messaging** | **Schema Implemented (Phase 1 Step 2)** | `conversation.model.ts`, `message.model.ts` | `conversations` and `messages` only. `messages` is paranoid. No Socket.IO, chat API, or read-receipt service. |
+| **Notifications** | **Schema Implemented (Phase 1 Step 2)** | `notification.model.ts` | In-app row store with JSONB `data` default `'{}'`. No generation, push, email, or socket dispatch. |
+| **Safety & Moderation** | **Schema Implemented (Phase 1 Step 2)** | `block.model.ts`, `report.model.ts` | `blocks` and `reports` with documented CHECKs and `SET NULL` reporter/resolver FKs. No moderation workflow. |
+| **Subscriptions & Entitlements** | **Schema Implemented (Phase 1 Step 2)** | plan, feature, subscription, usage, credit, boost models | Tables exist and are unseeded. Partial unique active subscription per user. No entitlement service. `limit_value = -1` remains allowed. |
+| **Payments** | **Schema Implemented (Phase 1 Step 2)** | `payment.model.ts`, `processed-webhook.model.ts` | Ledger tables only. `processed_webhooks.event_id` is `VARCHAR(255)` PK. No Razorpay, Stripe, PayPal, or webhook handler. |
 | **Admin** | **Not Implemented** | `src/modules/admin/` | Role guard (`role = 'ADMIN'`), user management (suspend, ban, unsuspend), moderation triage, taxonomy CRUD, dashboard KPIs, structured audit logs. |
 
 ---
@@ -115,9 +122,14 @@ HTTP Request
 ## 5. Database / Migrations Status
 
 ### Current Database State
-* **Existing Models:** None (0 models created).
-* **Existing Migrations:** None (0 migration files created).
-* **Existing Seeders:** None (0 seeder files created).
+* **Database:** `love_bites_dev`. `backend/.env` is present and was not changed. Step 1 credential failure is closed.
+* **Step 1 models (unchanged):** `Gender`, `User`, `AuthRefreshToken`, `Profile`, `ProfilePhoto`, `DatingPreference`.
+* **Step 2 models:** `Interest`, `RelationshipIntention`, `UserInterest`, `UserRelationshipIntention`, `UserDatingPreferenceGender`, `UserDatingPreferenceIntention`, `Like`, `Match`, `Conversation`, `Message`, `Block`, `Report`, `Notification`, `Plan`, `Feature`, `PlanFeature`, `UsageLimit`, `Subscription`, `Payment`, `ProcessedWebhook`, `UsageRecord`, `UserCreditBalance`, `CreditTransaction`, `BoostSession`.
+* **Associations:** Step 1 aliases unchanged. Step 2 aliases added in `src/database/associations.ts` and exported from that file. `server.ts` was not modified.
+* **Migrations:** `20260920120001`–`20260920120031` are all `up` on `love_bites_dev` (status checked 2026-09-23). Step 1 files were not edited or rerun. Step 2 files `08`–`31` migrated successfully.
+* **Seeders:** None. Catalog tables may be empty.
+* **SQL verification (2026-09-23):** 30 public tables present (6 Step 1 + 24 Step 2). Extensions `postgis` 3.6.2, `uuid-ossp` 1.1, `pgcrypto` 1.4. `profiles.location` is `geography(Point,4326)`. `idx_profiles_location_gist` is a GiST index. Named CHECKs, unique constraints, partial indexes, and `ON DELETE` actions matched `02-database-design.md`. `chk_matches_canonical_order` is `user_one_id < user_two_id`. `processed_webhooks.event_id` is `varchar(255)` PK. `notifications.data` default is `'{}'::jsonb`. `boost_sessions.multiplier` is `numeric(4,2)`.
+* **Constraint name note:** `user_relationship_intentions` unique constraint is the documented name `uq_user_intentions_pair`.
 
 ### Planned Database Schema (from `02-database-design.md`)
 
@@ -150,23 +162,23 @@ Primary Key Strategy: UUIDv4 (gen_random_uuid())
 ## 6. API Status
 
 ### Status Summary
-* **Implemented Endpoints:** `0 / 48` (0%)
-* **Partially Implemented Endpoints:** `0 / 48` (0%)
-* **Planned Endpoints:** `48` endpoints specified in `03-api-specification.md`.
+* **Implemented Endpoints:** `9 / 48` (authentication only)
+* **Partially Implemented Endpoints:** `0 / 48`
+* **Planned Endpoints:** the remaining 39 endpoints specified in `03-api-specification.md`.
 
 ### Planned API Catalog Overview (Base Path: `/api/v1`)
 
 | Domain | Method & Path | Auth Requirement | Expected Behavior |
 | :--- | :--- | :--- | :--- |
-| **Auth** | `POST /auth/register` | Public | Register with Email or Phone, DOB ($\ge 18$), legal acceptance. |
-| **Auth** | `POST /auth/verify-email` | Public | Verify 6-digit email token; sets `email_verified = true`. |
-| **Auth** | `POST /auth/verify-phone` | Public | Verify 6-digit SMS OTP; sets `phone_verified = true`. |
-| **Auth** | `POST /auth/resend-verification` | Public | Resend code with 60s cooldown limit. |
-| **Auth** | `POST /auth/login` | Public | Argon2id verification, returns JWT + sets HttpOnly refresh cookie. |
-| **Auth** | `POST /auth/refresh` | Cookie (`refreshToken`) | Single-use refresh token exchange with reuse detection. |
-| **Auth** | `POST /auth/logout` | Authenticated | Revoke refresh token in DB, clear cookie. |
-| **Auth** | `POST /auth/forgot-password` | Public | Trigger password reset email/SMS. |
-| **Auth** | `POST /auth/reset-password` | Public | Reset password with token, revoke active sessions. |
+| **Auth** | `POST /auth/register` | Public | **Implemented.** Email and/or phone, password, DOB age check, legal acceptance. Creates `users` only. |
+| **Auth** | `POST /auth/verify-email` | Public | **Implemented.** 6-digit code, Redis TTL 300s, max 3 attempts. |
+| **Auth** | `POST /auth/verify-phone` | Public | **Implemented.** 6-digit SMS OTP via the mock SMS sender. |
+| **Auth** | `POST /auth/resend-verification` | Public | **Implemented.** 1 request / 60 seconds / identifier. No enumeration masking. |
+| **Auth** | `POST /auth/login` | Public | **Implemented.** Argon2id, dummy verify for unknown users, JWT + HttpOnly refresh cookie. |
+| **Auth** | `POST /auth/refresh` | Cookie (`refreshToken`) | **Implemented.** Opaque token rotation and reuse detection. |
+| **Auth** | `POST /auth/logout` | Authenticated | **Implemented.** Revokes the presented refresh row when present and clears the cookie. Usable while unverified. |
+| **Auth** | `POST /auth/forgot-password` | Public | **Implemented.** Always returns a generic success message. |
+| **Auth** | `POST /auth/reset-password` | Public | **Implemented.** SHA-256 reset token, Argon2id update, revokes active refresh sessions. |
 | **Onboarding**| `GET /onboarding/status` | Authenticated | Return onboarding stage progression and `nextStep`. |
 | **Onboarding**| `PATCH /onboarding/profile` | Authenticated | Update basic name, gender, bio, occupation, education. |
 | **Onboarding**| `PUT /onboarding/interests` | Authenticated | Select 3 to 10 interests. |
@@ -213,21 +225,21 @@ Primary Key Strategy: UUIDv4 (gen_random_uuid())
 
 | Component | Status | Planned Specification | Notes |
 | :--- | :--- | :--- | :--- |
-| **Registration** | **Not Implemented** | Email OR Phone, DOB ($\ge 18$), legal terms confirmation. | Public endpoint `/auth/register`. |
-| **Verification** | **Not Implemented** | Email token / SMS OTP cached in Redis (TTL: 300s, max 3 attempts). | Enforced before discovery access. |
-| **Password Hashing** | **Not Implemented** | Argon2id (`timeCost: 3, memoryCost: 65536, parallelism: 4`). | No plaintext storage; excluded in default model scope. |
-| **JWT Access Tokens** | **Not Implemented** | 15-minute lifespan; payload: `sub`, `role`, `isVerified`, `isProfileComplete`. | Sent in `Authorization: Bearer <token>`. |
-| **Refresh Tokens** | **Not Implemented** | 7-day lifespan; stored as SHA-256 in `auth_refresh_tokens`. | Sent in `SameSite=Strict; HttpOnly; Secure` cookie. |
-| **Token Rotation & Replay Defense**| **Not Implemented** | Single-use rotation; reuse of revoked token cascades to revoke ALL user sessions. | Specified in `04-security.md`. |
-| **Auth Middleware** | **Not Implemented** | `auth.middleware.ts` validates JWT, verifies user active state, attaches `req.user`. | Blocks `UNVERIFIED`, `SUSPENDED`, `BANNED`. |
-| **Role Authorization** | **Not Implemented** | `role.middleware.ts` checks `req.user.role === 'ADMIN'`. | Premium is NOT a role. |
-| **Account Status Handling**| **Not Implemented** | `UNVERIFIED`, `ACTIVE`, `SUSPENDED`, `BANNED`, `DELETED`. | Banned/suspended revoke all tokens and disconnect sockets. |
+| **Registration** | **Implemented** | Email and/or phone, age >= 18 checked and not stored, legal acceptance required. | `POST /api/v1/auth/register`. Duplicates return `409 DUPLICATE_IDENTIFIER`. |
+| **Verification** | **Implemented** | 6-digit code, SHA-256 in Redis, TTL 300 seconds, 3 failures delete the key. | Status becomes `ACTIVE` when at least one registered identifier is verified. |
+| **Password Hashing** | **Implemented** | Argon2id (`timeCost: 3`, `memoryCost: 65536`, `parallelism: 4`). | Unknown-user login runs a dummy Argon2 verify. |
+| **JWT Access Tokens** | **Implemented** | 15-minute HS256 JWT. Claims: `sub`, `role`, `isVerified`, `isProfileComplete`, `iat`, `exp`. | Uses `JWT_ACCESS_SECRET`. No email, phone, or password claims. |
+| **Refresh Tokens** | **Implemented** | 7-day opaque token from `crypto.randomBytes(32)`. | Cookie is HttpOnly, SameSite=Strict, path `/api/v1/auth/refresh`. Secure is true only in production. SHA-256 is stored. `JWT_REFRESH_SECRET` is unused. |
+| **Token Rotation & Replay Defense** | **Implemented** | A valid refresh revokes the row, sets `replaced_by_hash`, and inserts the next row in one transaction. | Presenting a revoked token revokes every active refresh row for that user and returns `401 INVALID_TOKEN`. |
+| **Auth Middleware** | **Implemented** | `auth.middleware.ts` verifies the bearer JWT, reloads the user, and sets `req.user`. | Unverified users authenticate. `requireVerified` can return `EMAIL_NOT_VERIFIED` or `PHONE_NOT_VERIFIED`. Logout stays available. |
+| **Role Authorization** | **Implemented** | `requireRole(...roles)` in `role.middleware.ts`. | No admin routes were added. Premium is not a role. |
+| **Account Status Handling** | **Implemented for auth** | Suspended login is `403 ACCOUNT_SUSPENDED`. Banned login is `403 ACCOUNT_BANNED`. Missing or deleted login is `401 INVALID_CREDENTIALS`. | Admin suspension APIs and socket disconnects remain later work. |
 
 ---
 
 ## 8. Business Rules Already Implemented
 
-> **Current Status:** **Zero business rules are enforced in executable code** because the application codebase is in a pre-implementation state.
+> **Current Status:** Age 18+ is enforced at registration. Password hashing, verification, login status checks, and refresh rotation are enforced. Onboarding, discovery, quotas, and payments are not enforced yet.
 
 ### Mandatory Rules Defined in Specifications (To Be Implemented):
 1. **Age Threshold:** Users must be at least 18 years old at registration (`dateOfBirth <= CURRENT_DATE - INTERVAL '18 years'`).
@@ -249,30 +261,32 @@ Primary Key Strategy: UUIDv4 (gen_random_uuid())
 
 | Security Area | Implementation Status | Planned Implementation Standard |
 | :--- | :--- | :--- |
-| **Input Validation** | **Not Implemented** | Zod schemas with `.strip()` mode to prevent mass-assignment. |
-| **Authentication Security** | **Not Implemented** | Argon2id hashing + dual-token JWT + single-use refresh token rotation. |
-| **Authorization / IDOR** | **Not Implemented** | Strict resource ownership validation (`resource.user_id === req.user.id`) + UUIDv4 non-enumerable IDs. |
-| **Rate Limiting** | **Not Implemented** | Redis sliding-window limiters (Auth: 5 req/min; Swipes: 60 req/min; Chat: 30 req/min). |
-| **CORS** | **Not Implemented** | Whitelisted frontend origins with `credentials: true`. |
-| **HTTP Security Headers** | **Not Implemented** | Helmet middleware configured with strict CSP, HSTS, X-Frame-Options. |
-| **Payload Size Bounds** | **Not Implemented** | `express.json({ limit: '100kb' })`. |
+| **Input Validation** | **Implemented for auth** | Zod schemas strip unknown fields. Underage registration returns `422 UNDERAGE_NOT_PERMITTED`. |
+| **Authentication Security** | **Implemented (Phase 2)** | Argon2id, 15-minute access JWT, opaque refresh token, SHA-256 storage, rotation, and reuse detection. |
+| **Rate Limiting** | **Implemented for auth** | Redis sliding window: register, login, and forgot-password are 5 requests / 60 seconds / IP. OTP resend is 1 request / 60 seconds / identifier. |
+| **CORS** | **Implemented (Phase 0)** | Whitelisted frontend origins with `credentials: true`. |
+| **Authorization / IDOR** | **Not Implemented** | Strict resource ownership validation (`resource.user_id === req.user.id`) + UUIDv4 non-enumerable IDs. Role middleware exists; resource ownership begins in Phase 3. |
+| **HTTP Security Headers** | **Implemented (Phase 0)** | Helmet middleware in `createApp()`. CSP/HSTS hardening still planned for Phase 12. |
+| **Payload Size Bounds** | **Implemented (Phase 0)** | `express.json({ limit: '100kb' })`. |
 | **File Upload & S3 Security** | **Not Implemented** | Direct client-to-S3 presigned URLs, private bucket, MIME whitelisting, 10MB max size. |
 | **Payment & Webhook Security** | **Not Implemented** | HMAC-SHA256 signature verification + idempotency ledger table `processed_webhooks`. |
-| **Error Handling & Sanitization**| **Not Implemented** | Centralized `error.middleware.ts`; internal traces stripped in production. |
-| **Logging & Redaction** | **Not Implemented** | Winston/Pino JSON logger with automatic filtering of passwords, tokens, secrets, and coordinates. |
-| **Environment Configuration** | **Not Implemented** | Zod schema validation of all required environment variables on boot. |
+| **Error Handling & Sanitization**| **Implemented (Phase 0)** | Centralized `error.middleware.ts`; internal traces stripped in production. |
+| **Logging & Redaction** | **Implemented** | Winston JSON logger redacts passwords, password hashes, access tokens, refresh tokens, new passwords, OTPs, and coordinates. |
+| **Environment Configuration** | **Implemented (Phase 0)** | Zod schema validation of all required environment variables on boot. |
 
 ---
 
 ## 10. Testing Status
 
-* **Existing Tests:** None (0 test files).
-* **Test Framework:** Planned: **Jest + ts-jest** (Unit), **Supertest** (Integration), **Playwright** (E2E).
-* **Covered Functionality:** None.
+* **Existing Tests:** 50 tests. The original 12 Phase 0 tests are unchanged and still pass.
+* **Test Framework:** **Jest + ts-jest** (Unit), **Supertest** (Integration). Playwright E2E is still planned.
+* **Covered Functionality:** AppError hierarchy, logger redaction, health endpoints, auth validation, Argon2id, JWT claims and expiry, refresh rotation/reuse decisions, auth and role middleware, and the auth HTTP lifecycle.
+* **Phase 2 verification (2026-09-24):** `npm run build` succeeded. `npm test` **50/50 passing**. Auth integration tests use in-memory user, refresh-token, and Redis doubles. They do not connect to `love_bites_dev`. No migrations were created or run.
 * **Missing Tests:**
-  * Unit tests: Crypto utility, Zod schemas, Entitlement evaluator, Quota calculations, DTO serializers.
-  * Integration tests: Auth lifecycle, Onboarding pipeline, PostGIS spatial queries, Likes/Passes quota, Concurrency-safe matching, Undo rollback, Chat 6-step auth, Razorpay webhook idempotency, Admin role security.
-* **Current Test Commands:** Not yet configured in `package.json` (Planned: `npm test`, `npm run test:unit`, `npm run test:integration`).
+  * Auth data-access against a real isolated PostgreSQL database. The current Jest setup has no test database, so those queries are not executed by the suite.
+  * Onboarding pipeline, PostGIS spatial queries, Likes/Passes quota, concurrency-safe matching, undo rollback, chat authorisation, Razorpay webhook idempotency, and admin route security.
+* **Current Test Commands:** `npm test`, `npm run test:unit`, `npm run test:integration`.
+* **Migration Commands:** `npm run db:migrate`, `npm run db:migrate:status`, `npm run db:migrate:undo` (or `npx sequelize-cli ...`). `.sequelizerc` loads `src/config/sequelize.cli.js`.
 
 ---
 
@@ -280,17 +294,19 @@ Primary Key Strategy: UUIDv4 (gen_random_uuid())
 
 | Problem | Impact | Current Workaround | Recommended Next Action |
 | :--- | :--- | :--- | :--- |
-| **1. Greenfield Repository** | No executable code or build pipeline exists. | None. | Execute Phase 0 setup (`package.json`, `tsconfig.json`, `app.ts`, `server.ts`, dependencies, test harness). |
-| **2. Documentation Filename Discrepancies** | Two files in `backend/docs/` use prefixed names (`docs_01-product-requirements.md` and `backend_docs_01-backend-architecture.md`) while cross-references in docs mention `docs/01-product-requirements.md` and `backend/docs/01-backend-architecture.md`. | Both documents are located in `backend/docs/`. | Maintain existing files without modifying documentation; treat `backend/docs/` as the single documentation container. |
-| **3. No Git Repository Initialized** | Version control tracking is not active at the root. | Files reside in local workspace directory. | User/Agent may initialize git repository when starting source code development. |
-| **4. External Gateway Provider Selections (OAD-01 / OQ-01)** | Specific SMS vendor (Twilio vs MSG91 vs SNS) not finalized. | Architecture decouples SMS behind `ISmsProvider` and payments behind `IPaymentProvider`. | Implement mock/interface for SMS OTP during Phase 2 development. |
+| **1. Local PostgreSQL credentials** | Closed. `backend/.env` authenticates and `love_bites_dev` has Step 1 and Step 2 applied. | None. | Do not change connection configuration. |
+| **2. Documentation Filename Discrepancies** | Two files in `backend/docs/` use prefixed names (`docs_01-product-requirements.md` and `backend_docs_01-backend-architecture.md`) while cross-references mention unprefixed names. | Both documents are located in `backend/docs/`. | Keep existing filenames; treat `backend/docs/` as the documentation container. |
+| **3. Sequelize GEOMETRY vs geography** | `02-database-design.md` §26 shows `DataTypes.GEOMETRY`, while SQL SoT is `geography(Point, 4326)`. | Step 1 migration uses raw SQL `geography(Point, 4326)`. Model uses `DataTypes.GEOGRAPHY('POINT', 4326)`. | Keep geography; do not switch the column to geometry. |
+| **4. Onboarding vs NOT NULL location/city** | Product onboarding saves location after basic profile, but `profiles.city` and `profiles.location` are `NOT NULL`. | Follow the database design as schema SoT. | Phase 3 must either insert profile only after location exists or revisit nullability with an explicit decision. |
+| **5. Mock email and SMS delivery** | Phase 2 does not send real email or SMS. The mock outbox keeps messages only outside production. | Interfaces are `EmailSender` and `SmsSender`. | Choose a provider in a later phase. Do not add Twilio, MSG91, SNS, or SMTP during auth. |
+| **6. `pgcrypto` added in extensions migration** | Documented PK default is `gen_random_uuid()`, which requires `pgcrypto` on PostgreSQL 16/18. User-requested extensions were `postgis` and `uuid-ossp`. | Extensions migration enables all three with `IF NOT EXISTS`. | Leave as-is unless a later environment forbids `pgcrypto`. |
 
 ---
 
 ## 12. Work Currently In Progress
 
-* **Status:** **Nothing is currently in progress.**
-* **Context:** All design, schema, API, security, and planning documentation phases have concluded. The project is ready for Phase 0 implementation.
+* **Status:** **Phase 2 authentication is complete.** Do not start onboarding, profiles, discovery, or payments in the same change.
+* **Context:** Phase 1 schema was not modified. Authentication uses the existing `users` and `auth_refresh_tokens` tables.
 
 ---
 
@@ -300,8 +316,8 @@ The implementation should follow the phased sequence established in `05-developm
 
 1. **Phase 0 — Project Setup & Base Infrastructure:** Initialize Node.js, TypeScript, Express, Zod env validation, Sequelize connection pool, Redis client, centralized error middleware, Winston/Pino logger, and Jest test harness.
 2. **Phase 1 — Database Foundation & Base Migrations:** Setup migrations 01–09 (PostGIS extensions, reference catalogs, core schemas, indexes, constraints, seed data).
-3. **Phase 2 — Authentication & Accounts:** User data access, Argon2id crypto, registration, OTP verification, login, dual-token JWT, refresh token rotation cookie, auth/role middleware.
-4. **Phase 3 — Profile & Onboarding:** Linear onboarding steps, S3 presigned photo upload pipeline, interests, dating preferences, location PostGIS setup, profile completion evaluator.
+3. **Phase 2 — Authentication & Accounts:** **Complete.** Registration, verification, login, opaque refresh rotation, password reset, auth/role middleware, and auth rate limits.
+4. **Phase 3 — Profile & Onboarding:** **Next.** Linear onboarding steps, photo upload, interests, dating preferences, location, and profile completion. Persist `dateOfBirth` on the profile in this phase.
 5. **Phase 4 — Location & Discovery:** Single-card PostGIS `ST_DWithin` spatial query, mutual preference filtering, Boost multipliers, coordinate privacy.
 6. **Phase 5 — Likes, Passes & Matches:** Swiping service, Free daily quota (10 swipes), reciprocal like check, canonical pair match creation transaction, Premium Undo rollback, unmatching.
 7. **Phase 6 — Chat & Realtime Messaging:** Socket.IO server + Redis adapter, 6-step message authorization, PostgreSQL message persistence, cursor-paginated history, Free/Premium media limits.
@@ -324,7 +340,7 @@ The following architectural and business decisions are established and must **no
 * **Database & ORM:** PostgreSQL (v16+) with PostGIS (v3.4+) extension + Sequelize ORM.
 * **Architectural Style:** 3-layer architecture (`Route` $\rightarrow$ `Controller` $\rightarrow$ `Service` $\rightarrow$ `Data Access` $\rightarrow$ `Sequelize Model`).
 * **No Repository Pattern:** Generic repositories or DAOs are strictly forbidden. Use dedicated feature Data Access modules.
-* **Authentication:** Argon2id password hashing + Dual-Token JWT (15-minute access token + 7-day rotating refresh token in `HttpOnly`, `SameSite=Strict`, `Secure` cookie).
+* **Authentication:** Argon2id password hashing + 15-minute HS256 access JWT + 7-day opaque refresh token in an `HttpOnly`, `SameSite=Strict` cookie. The raw refresh token is never stored; only its SHA-256 hash is stored. `JWT_REFRESH_SECRET` remains in the environment and is unused.
 * **Storage:** AWS S3 private bucket with direct client uploads via short-lived presigned URLs.
 * **Location Privacy:** PostGIS spherical geometry (`geography(Point, 4326)`); exact coordinates are **never** returned in API responses; distances $< 1\text{ km}$ return `"Less than 1 km away"`.
 * **Payment Gateway:** Razorpay integrated behind `IPaymentProvider` interface; subscription activation driven **strictly by webhook events** verified via HMAC-SHA256 signatures; duplicate events deduplicated via `processed_webhooks`.
@@ -359,20 +375,10 @@ The following architectural and business decisions are established and must **no
 
 ## 16. Recommended Next Task
 
-### Task: **Phase 1 — Database Foundation & Base Migrations**
-Proceed with Phase 1 from `backend/docs/05-development-plan.md` and `backend/docs/02-database-design.md`:
-1. Implement Sequelize migrations 01 through 09:
-   * Migration 01: Enable PostgreSQL Extensions (`postgis`, `uuid-ossp`)
-   * Migration 02: Dynamic Reference Tables (`genders`, `interests`, `relationship_intentions`)
-   * Migration 03: Monetization Taxonomies (`plans`, `features`)
-   * Migration 04: Core User Accounts (`users`, `auth_refresh_tokens`)
-   * Migration 05: User Profile & Media (`profiles`, `profile_photos`)
-   * Migration 06: Preference Junctions (`dating_preferences`, `user_interests`, `user_relationship_intentions`, `user_dating_preference_genders`, `user_dating_preference_intentions`)
-   * Migration 07: Interactions, Chat & Safety (`likes`, `matches`, `conversations`, `messages`, `blocks`, `reports`, `notifications`)
-   * Migration 08: Monetization, Usage & Payments (`plan_features`, `usage_limits`, `subscriptions`, `payments`, `processed_webhooks`, `usage_records`, `user_credit_balances`, `credit_transactions`, `boost_sessions`)
-   * Migration 09: Reference Catalogs Seed Data (Genders, Intentions, Plans, Features, Usage Limits)
-2. Define TypeScript Sequelize models and associations in `src/database/models/` and `src/database/associations.ts`.
-3. Test migration forward/rollback execution and schema validation.
+### Task: **Phase 3 — Profile & Onboarding**
+Phase 2 authentication is in place. Do not add migrations unless a later spec explicitly requires them. Do not seed catalogs unless that task asks for seeders.
+
+Next implementation is onboarding and profile persistence, including storing date of birth on `profiles`. Do not start discovery, likes, chat, or payments.
 
 ---
 
@@ -382,3 +388,6 @@ Proceed with Phase 1 from `backend/docs/05-development-plan.md` and `backend/doc
 | :--- | :--- | :--- | :--- |
 | **2026-09-18** | Initial Backend Audit & Handoff Creation | **Completed** | Full repository audit completed. Confirmed greenfield status. Created authoritative handoff document. |
 | **2026-09-18** | Phase 0 — Backend Project Setup & Infrastructure | **Completed** | Initialized TypeScript, Express, Zod env, Sequelize pool, Redis client, AppError hierarchy, Winston logger with redaction, middleware pipeline, health check endpoints, and Jest test suite (12/12 passing). |
+| **2026-09-20** | Phase 1 Step 1 — Users / Profile / Location schema | **Applied and verified** | Migrations `20260920120001`–`20260920120007` and models for extensions, `genders`, `users`, `auth_refresh_tokens`, `profiles` (`geography(Point, 4326)` + GiST), `profile_photos`, `dating_preferences`. Earlier handoff text that said migrate failed and `.env` was absent is obsolete. |
+| **2026-09-23** | Phase 1 Step 2 — Remaining database foundation | **Complete** | Migrations `20260920120008`–`20260920120031` applied to `love_bites_dev`. 24 tables, models, and associations added. No seeders, APIs, services, or payment providers. Build passed. Tests 12/12. SQL verification passed, including Step 1 PostGIS preservation. |
+| **2026-09-24** | Phase 2 — Authentication | **Complete** | Nine `/api/v1/auth` routes. Opaque refresh tokens, SHA-256 storage, rotation, and reuse detection. Redis OTPs, reset tokens, and auth rate limits. Mock email/SMS only. No migrations or `.env` changes. Build passed. Tests 50/50. |

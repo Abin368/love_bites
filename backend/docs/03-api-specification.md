@@ -9,7 +9,13 @@
 
 ## 1. Overview
 
-This document defines the complete, implementation-ready **RESTful API Specification** and **Socket.IO Realtime Contract** for the **Love Bite** dating platform. It serves as the single source of truth for frontend mobile/web engineers, backend engineers, and QA automation suites.
+This document defines the **RESTful API Specification** and **Socket.IO Realtime Contract** for the **Love Bite** dating platform. It is the integration guide for frontend mobile/web engineers, and the contract for backend engineers and QA.
+
+### Implementation status
+
+Phase 2 authentication is implemented and verified. Sections **4** and **11** below describe that live behavior. Sections **12** onward (onboarding, profiles, discovery, likes, chat, subscriptions, payments, and the rest) are the planned contract. Those routes are **not** mounted. Do not call them.
+
+Health checks are also live: `GET /health` and `GET /api/v1/health`.
 
 ### Core Architectural Principles:
 * **Strict REST Semantics:** Standard HTTP verbs (`GET`, `POST`, `PATCH`, `PUT`, `DELETE`) with resource-oriented URIs.
@@ -60,27 +66,45 @@ All REST endpoints are rooted at:
 
 ## 4. Authentication
 
-### 4.1 Token Mechanics
-* **Access Token:** Short-lived JWT (15 minutes). Contains minimal payload:
-  ```json
-  {
-    "sub": "b2f6c91a-8821-4122-901b-5e4d29381029",
-    "role": "USER",
-    "isVerified": true,
-    "isProfileComplete": true,
-    "iat": 1789456000,
-    "exp": 1789456900
-  }
-  ```
-  Sent by client in the HTTP Authorization header: `Authorization: Bearer <access_token>`.
-* **Refresh Token:** Long-lived cryptographically random token (7 days). Stored in a secure `HTTP-Only`, `SameSite=Strict`, `Secure` cookie named `refreshToken` with path `/api/v1/auth/refresh`.
-* **Token Rotation:** Exchanging a refresh token generates a brand new access token and a new refresh token cookie, invalidating the previous token in the `auth_refresh_tokens` database table.
-* **Token Revocation:** Logging out or administrative account suspension instantly revokes active refresh tokens across PostgreSQL and Redis session caches.
+### 4.1 Token mechanics (implemented)
 
-### 4.2 Endpoint Authentication Classification
-* **Public Endpoints:** Accessible without authentication (e.g., `/auth/register`, `/auth/login`, `/auth/verify-*`, `/interests`, `/relationship-intentions`, `/subscriptions/plans`, `/webhooks/*`).
-* **Authenticated Endpoints:** Require a valid `Bearer` access token and active account status (`status = 'ACTIVE'`).
-* **Admin Endpoints:** Require an authenticated session with `role = 'ADMIN'`.
+The access token is a short-lived **HS256 JWT**. The default lifetime is **15 minutes** (`expiresIn: 900` seconds). Send it on protected calls:
+
+```http
+Authorization: Bearer <accessToken>
+```
+
+The login response is the place to read `accessToken`, `expiresIn`, and `user`. Keep the access token in memory for the session. The refresh token is **not** a JWT and is **not** in the JSON body.
+
+The refresh token is an opaque random value. The server stores only its SHA-256 hash. The browser receives it as an `HttpOnly` cookie:
+
+| Cookie attribute | Value |
+| :--- | :--- |
+| Name | `refreshToken` |
+| `HttpOnly` | `true` (JavaScript cannot read it) |
+| `SameSite` | `Strict` |
+| `Secure` | `true` in production only. Local HTTP development leaves it unset so the cookie can be stored. |
+| `Path` | `/api/v1/auth/refresh` |
+| `Max-Age` | 7 days |
+
+Because the path is `/api/v1/auth/refresh`, the browser attaches this cookie only to `POST /api/v1/auth/refresh`. Do not put the refresh token in `localStorage` or `sessionStorage`. Do not try to read it from `document.cookie`.
+
+CORS allows credentialed requests (`credentials: true`) from `CORS_ORIGIN` (default `http://localhost:3000`). The frontend HTTP client must send cookies:
+
+* `fetch`: `credentials: 'include'`
+* Axios: `withCredentials: true`
+
+`SameSite=Strict` means the API and the web app must be same-site. A cross-site page will not receive or send this cookie.
+
+Refreshing rotates the token: the previous refresh row is revoked and a new cookie is set. Presenting an already rotated refresh token revokes every active refresh row for that user and returns `401 INVALID_TOKEN`.
+
+### 4.2 Which calls need a token
+
+Live public routes (no `Authorization` header): register, verify-email, verify-phone, resend-verification, login, refresh, forgot-password, reset-password.
+
+`POST /api/v1/auth/logout` is the only live route that requires `Authorization: Bearer <accessToken>`. An unverified account (`status: UNVERIFIED`) may log in and log out. Suspended and banned accounts are rejected with `403`.
+
+There is no live admin API yet. `requireRole('ADMIN')` exists for later routes.
 
 ---
 
@@ -220,221 +244,381 @@ Used exclusively for Admin Management Tables where jumping to arbitrary page num
 
 ---
 
-## 11. Authentication APIs
+## 11. Authentication APIs (implemented)
 
-### 11.1 Register Account
-* **Method & Path:** `POST /api/v1/auth/register`
-* **Auth:** Public
-* **Purpose:** Creates a new user account with Email OR Phone credentials.
-* **Request Body:**
-  ```json
-  {
+Every live auth route is `POST` under `/api/v1/auth`. Send `Content-Type: application/json`. Success bodies use `{ success, data, message }`. Failures use the error envelope in section 8.
+
+Password rules for register and reset: 8–128 characters, at least one uppercase letter, one digit, and one special character.
+
+Phone numbers are E.164: `+`, a first digit from 1 to 9, then 1 to 14 more digits. Emails are trimmed and lowercased. An empty string for `email` or `phone` is treated as omitted.
+
+### 11.1 Register account
+
+* **Method and path:** `POST /api/v1/auth/register`
+* **Auth:** None.
+* **Rate limit:** 5 requests / 60 seconds / IP. Over the limit: `429 RATE_LIMITED`, message `Too many requests. Please try again later.`
+
+Send email, phone, or both. At least one identifier is required.
+
+```json
+{
+  "email": "alex.morgan@example.com",
+  "phone": "+919876543210",
+  "password": "SecurePassword123!",
+  "dateOfBirth": "2002-06-15",
+  "termsAccepted": true,
+  "privacyAccepted": true
+}
+```
+
+| Field | Required | Notes |
+| :--- | :--- | :--- |
+| `email` | One of email or phone | Valid email. Stored lowercased. |
+| `phone` | One of email or phone | E.164. |
+| `password` | Yes | Password rules above. |
+| `dateOfBirth` | Yes | `YYYY-MM-DD`. Must be a real calendar date. Age is calculated in UTC and must be at least 18. |
+| `termsAccepted` | Yes | Must be the boolean `true`. |
+| `privacyAccepted` | Yes | Must be the boolean `true`. |
+
+`dateOfBirth` is validated and then discarded. Phase 2 does **not** store it on the user, and it does **not** create a profile. Do not read the date of birth back from the user after registration. Phase 3 will persist it on the profile.
+
+`201 Created`:
+
+```json
+{
+  "success": true,
+  "data": {
+    "userId": "b2f6c91a-8821-4122-901b-5e4d29381029",
     "email": "alex.morgan@example.com",
     "phone": "+919876543210",
-    "password": "SecurePassword123!",
-    "dateOfBirth": "2002-06-15",
-    "termsAccepted": true,
-    "privacyAccepted": true
-  }
-  ```
-* **Validation (Zod):**
-  * At least one of `email` (valid email string) OR `phone` (E.164 string) required.
-  * `password`: String, min 8 chars, min 1 uppercase, min 1 number, min 1 special char.
-  * `dateOfBirth`: ISO 8601 date (`YYYY-MM-DD`). Validates age $\ge 18$ years.
-  * `termsAccepted`: Literal `true`.
-  * `privacyAccepted`: Literal `true`.
-* **Success Response (`201 Created`):**
-  ```json
-  {
-    "success": true,
-    "data": {
-      "userId": "b2f6c91a-8821-4122-901b-5e4d29381029",
-      "email": "alex.morgan@example.com",
-      "phone": "+919876543210",
-      "status": "UNVERIFIED",
-      "emailVerified": false,
-      "phoneVerified": false,
-      "nextStep": "VERIFY_EMAIL"
-    },
-    "message": "Registration successful. Please verify your account."
-  }
-  ```
-* **Errors:** `409 DUPLICATE_IDENTIFIER`, `422 UNDERAGE_NOT_PERMITTED`, `400 VALIDATION_ERROR`.
+    "status": "UNVERIFIED",
+    "emailVerified": false,
+    "phoneVerified": false,
+    "nextStep": "VERIFY_EMAIL"
+  },
+  "message": "Registration successful. Please verify your account."
+}
+```
 
----
+There is no access token and no refresh cookie. `nextStep` is `VERIFY_EMAIL` when an email was sent, otherwise `VERIFY_PHONE`. If both identifiers are sent, only the email code is sent and `nextStep` is `VERIFY_EMAIL`.
 
-### 11.2 Verify Email
-* **Method & Path:** `POST /api/v1/auth/verify-email`
-* **Auth:** Public
-* **Request Body:**
-  ```json
-  {
-    "email": "alex.morgan@example.com",
-    "token": "481920"
-  }
-  ```
-* **Success Response (`200 OK`):**
-  ```json
-  {
-    "success": true,
-    "data": {
-      "verified": true,
-      "status": "ACTIVE"
-    },
-    "message": "Email verified successfully."
-  }
-  ```
+A code is a 6-digit string, valid for 5 minutes, with 3 attempts. Registration also starts the 60-second resend window for that identifier, so an immediate resend returns `429`.
 
----
+Frontend: show the verification screen for `nextStep`. Do not treat the user as logged in.
 
-### 11.3 Verify Phone OTP
-* **Method & Path:** `POST /api/v1/auth/verify-phone`
-* **Auth:** Public
-* **Request Body:**
-  ```json
-  {
-    "phone": "+919876543210",
-    "otp": "839201"
-  }
-  ```
-* **Success Response (`200 OK`):**
-  ```json
-  {
-    "success": true,
-    "data": {
-      "verified": true,
-      "status": "ACTIVE"
-    },
-    "message": "Phone number verified successfully."
-  }
-  ```
+Errors:
 
----
+* `400 VALIDATION_ERROR` — bad shape, missing identifier, weak password, or legal flags not exactly `true`. `error.details[]` has `field`, `message`, and `code`.
+* `422 UNDERAGE_NOT_PERMITTED` — the only problem is age under 18. Message: `You must be at least 18 years old.` If other fields are also invalid, the response is `400`, not `422`.
+* `409 DUPLICATE_IDENTIFIER` — an active account already uses that email or phone. Message: `An account with this email or phone already exists.`
+* `429 RATE_LIMITED` — IP limit above.
 
-### 11.4 Resend Verification Code
-* **Method & Path:** `POST /api/v1/auth/resend-verification`
-* **Auth:** Public (Rate limited: 1 req/60s per identifier)
-* **Request Body:**
-  ```json
-  {
-    "identifier": "alex.morgan@example.com",
-    "type": "EMAIL"
-  }
-  ```
-* **Success Response (`200 OK`):**
-  ```json
-  {
-    "success": true,
-    "data": { "sent": true },
-    "message": "Verification code resent."
-  }
-  ```
+A soft-deleted account does not block reuse of its email or phone.
 
----
+### 11.2 Verify email
+
+* **Method and path:** `POST /api/v1/auth/verify-email`
+* **Auth:** None.
+
+```json
+{
+  "email": "alex.morgan@example.com",
+  "token": "481920"
+}
+```
+
+`token` is the 6-digit code from the verification message, not a JWT.
+
+`200 OK`:
+
+```json
+{
+  "success": true,
+  "data": {
+    "verified": true,
+    "status": "ACTIVE"
+  },
+  "message": "Email verified successfully."
+}
+```
+
+`isVerified` is true when the account's email is verified, or when its phone is verified. Verifying email on an account that also has a phone still sets `status` to `ACTIVE` even if the phone is not verified yet. Suspended, banned, and deleted accounts keep their existing status.
+
+Wrong, expired, exhausted, or unknown-email codes all return `401 INVALID_TOKEN` with message `Invalid or expired verification code.` The third wrong attempt deletes the code. Do not tell the user which of those cases happened.
+
+After success, send the user to login. This call does not issue a session.
+
+### 11.3 Verify phone
+
+* **Method and path:** `POST /api/v1/auth/verify-phone`
+* **Auth:** None.
+
+```json
+{
+  "phone": "+919876543210",
+  "otp": "839201"
+}
+```
+
+`otp` is the 6-digit SMS code. The field name is `otp`, not `token`.
+
+`200 OK`:
+
+```json
+{
+  "success": true,
+  "data": {
+    "verified": true,
+    "status": "ACTIVE"
+  },
+  "message": "Phone number verified successfully."
+}
+```
+
+Failure is the same `401 INVALID_TOKEN` / `Invalid or expired verification code.` as email verification, including an unknown phone. A phone-only account becomes `ACTIVE` after this succeeds. Then go to login. No session is issued.
+
+### 11.4 Resend verification
+
+* **Method and path:** `POST /api/v1/auth/resend-verification`
+* **Auth:** None.
+* **Rate limit:** 1 request / 60 seconds / identifier. This is the same window registration already consumed.
+
+```json
+{
+  "identifier": "alex.morgan@example.com",
+  "type": "EMAIL"
+}
+```
+
+`type` is `EMAIL` or `PHONE`. For `EMAIL`, `identifier` must be a valid email. For `PHONE`, it must be E.164. This route does **not** hide whether an account exists.
+
+`200 OK`:
+
+```json
+{
+  "success": true,
+  "data": { "sent": true },
+  "message": "Verification code resent."
+}
+```
+
+Errors:
+
+* `429 RATE_LIMITED` — `Please wait before requesting another verification code.` Disable the resend action for 60 seconds.
+* `404 USER_NOT_FOUND` — no matching account, or the account is deleted. Message: `User not found.`
+* `400 VALIDATION_ERROR` — bad identifier, or the channel is already verified (`Email is already verified.` / `Phone number is already verified.`).
 
 ### 11.5 Login
-* **Method & Path:** `POST /api/v1/auth/login`
-* **Auth:** Public
-* **Request Body:**
-  ```json
-  {
-    "identifier": "alex.morgan@example.com",
-    "password": "SecurePassword123!"
-  }
-  ```
-* **Success Response (`200 OK`):** Sets `Set-Cookie: refreshToken=...; HttpOnly; Secure; SameSite=Strict; Path=/api/v1/auth/refresh`.
-  ```json
-  {
-    "success": true,
-    "data": {
-      "accessToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-      "expiresIn": 900,
-      "user": {
-        "id": "b2f6c91a-8821-4122-901b-5e4d29381029",
-        "email": "alex.morgan@example.com",
-        "phone": "+919876543210",
-        "role": "USER",
-        "status": "ACTIVE",
-        "isVerified": true,
-        "isProfileComplete": false
-      }
-    },
-    "message": "Login successful."
-  }
-  ```
-* **Errors:** `401 INVALID_CREDENTIALS`, `403 ACCOUNT_SUSPENDED`, `403 ACCOUNT_BANNED`.
 
----
+* **Method and path:** `POST /api/v1/auth/login`
+* **Auth:** None.
+* **Rate limit:** 5 requests / 60 seconds / IP.
 
-### 11.6 Refresh Access Token
-* **Method & Path:** `POST /api/v1/auth/refresh`
-* **Auth:** Public (Reads `refreshToken` HTTP-only cookie)
-* **Success Response (`200 OK`):** Sets rotated `refreshToken` cookie.
-  ```json
-  {
-    "success": true,
-    "data": {
-      "accessToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-      "expiresIn": 900
-    },
-    "message": "Token refreshed."
-  }
-  ```
-* **Errors:** `401 INVALID_TOKEN`.
+```json
+{
+  "identifier": "alex.morgan@example.com",
+  "password": "SecurePassword123!"
+}
+```
 
----
+`identifier` is an email or an E.164 phone. Unverified accounts may log in.
+
+`200 OK` also sets the `refreshToken` cookie described in section 4. The JSON body does not include the refresh token.
+
+```json
+{
+  "success": true,
+  "data": {
+    "accessToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "expiresIn": 900,
+    "user": {
+      "id": "b2f6c91a-8821-4122-901b-5e4d29381029",
+      "email": "alex.morgan@example.com",
+      "phone": null,
+      "role": "USER",
+      "status": "ACTIVE",
+      "isVerified": true,
+      "isProfileComplete": false
+    }
+  },
+  "message": "Login successful."
+}
+```
+
+Store `accessToken` in memory and send it as `Authorization: Bearer <accessToken>`. `expiresIn` is seconds. `isProfileComplete` is `false` until a later phase writes a completed profile. There is no date of birth on `user`.
+
+The access-token claims are `sub` (user id), `role`, `isVerified`, `isProfileComplete`, `iat`, and `exp`. They are a snapshot. The login `user` object is the one to render.
+
+Errors:
+
+* `401 INVALID_CREDENTIALS` — unknown account, deleted account, or wrong password. Message: `Invalid credentials provided.`
+* `403 ACCOUNT_SUSPENDED` — `Account is suspended.`
+* `403 ACCOUNT_BANNED` — `Account is banned.`
+* `429 RATE_LIMITED` — IP limit.
+* `400 VALIDATION_ERROR` — identifier or password shape.
+
+### 11.6 Refresh
+
+* **Method and path:** `POST /api/v1/auth/refresh`
+* **Auth:** The `refreshToken` cookie. No bearer token. No JSON body.
+* **Client:** `credentials: 'include'` or Axios `withCredentials: true`.
+
+```text
+Access token expires or a protected call returns 401 INVALID_TOKEN
+        ↓
+POST /api/v1/auth/refresh with cookies enabled
+        ↓
+Browser sends the HttpOnly refresh cookie
+        ↓
+Server checks the opaque token, rotates it, and sets a new cookie
+        ↓
+Response contains a new access token
+        ↓
+Replace the in-memory access token and retry the original request once
+```
+
+`200 OK`:
+
+```json
+{
+  "success": true,
+  "data": {
+    "accessToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "expiresIn": 900
+  },
+  "message": "Token refreshed."
+}
+```
+
+The new JWT carries the current `isVerified` and `isProfileComplete`. The user object is not returned again.
+
+If refresh returns `401 INVALID_TOKEN` (`Invalid token.`), or `403 ACCOUNT_SUSPENDED` / `403 ACCOUNT_BANNED`, clear the in-memory access token and user, and show login. Do not loop on refresh. A reused (already rotated) refresh token is also `401 INVALID_TOKEN`, and the server revokes that user's remaining active refresh rows.
 
 ### 11.7 Logout
-* **Method & Path:** `POST /api/v1/auth/logout`
-* **Auth:** Authenticated
-* **Purpose:** Revokes active refresh token in database and clears client cookie.
-* **Success Response (`200 OK`):**
-  ```json
-  {
-    "success": true,
-    "data": null,
-    "message": "Logged out successfully."
-  }
-  ```
 
----
+* **Method and path:** `POST /api/v1/auth/logout`
+* **Auth:** `Authorization: Bearer <accessToken>`.
+* **Body:** None.
+* **Client:** Send credentials as well.
 
-### 11.8 Forgot Password
-* **Method & Path:** `POST /api/v1/auth/forgot-password`
-* **Auth:** Public
-* **Request Body:**
-  ```json
-  {
-    "identifier": "alex.morgan@example.com"
-  }
-  ```
-* **Success Response (`200 OK`):** Returns generic success message to prevent user enumeration.
+`200 OK`:
 
----
+```json
+{
+  "success": true,
+  "data": null,
+  "message": "Logged out successfully."
+}
+```
 
-### 11.9 Reset Password
-* **Method & Path:** `POST /api/v1/auth/reset-password`
-* **Auth:** Public
-* **Request Body:**
-  ```json
-  {
-    "identifier": "alex.morgan@example.com",
-    "token": "928374",
-    "newPassword": "NewSecurePassword123!"
-  }
-  ```
-* **Success Response (`200 OK`):**
-  ```json
-  {
-    "success": true,
-    "data": null,
-    "message": "Password reset successfully. Please log in."
-  }
-  ```
+The response clears the `refreshToken` cookie (same name, path, `SameSite`, and `Secure` flag). Clear the in-memory access token and user.
+
+The cookie path is only `/api/v1/auth/refresh`, so the browser does not attach it to `/logout`. Logout still clears the cookie. It revokes the refresh row only when that cookie is actually present on this request and belongs to the authenticated user. An unverified user may log out. Missing or expired access tokens return `401 AUTH_REQUIRED` or `401 INVALID_TOKEN`.
+
+### 11.8 Forgot password
+
+* **Method and path:** `POST /api/v1/auth/forgot-password`
+* **Auth:** None.
+* **Rate limit:** 5 requests / 60 seconds / IP.
+
+```json
+{
+  "identifier": "alex.morgan@example.com"
+}
+```
+
+`identifier` is an email or E.164 phone.
+
+`200 OK` with `data: null` and this message, whether or not an account exists:
+
+```text
+If an account exists for this identifier, password reset instructions have been sent.
+```
+
+Do not branch the UI on whether the account exists. Always show that generic confirmation. A deleted account gets the same `200` and no message is sent.
+
+When an account exists, the reset token is a 64-character hex string, valid for 15 minutes. It is sent by the current mock email or SMS provider. It is not a 6-digit code.
+
+`429 RATE_LIMITED` uses the IP-limit message. `400 VALIDATION_ERROR` means the identifier is not a valid email or phone.
+
+### 11.9 Reset password
+
+* **Method and path:** `POST /api/v1/auth/reset-password`
+* **Auth:** None.
+
+```json
+{
+  "identifier": "alex.morgan@example.com",
+  "token": "64-character-hex-reset-token",
+  "newPassword": "NewSecurePassword123!"
+}
+```
+
+`identifier` must be the same email or phone used for forgot-password. `newPassword` uses the register password rules.
+
+`200 OK`:
+
+```json
+{
+  "success": true,
+  "data": null,
+  "message": "Password reset successfully. Please log in."
+}
+```
+
+The server revokes active refresh rows for that user. This call does not log the user in. Navigate to login.
+
+Invalid, expired, mismatched, or already-used tokens return `401 INVALID_TOKEN` with message `Invalid or expired reset token.` Ask the user to request a new reset. `400 VALIDATION_ERROR` covers a weak new password or a bad identifier.
+
+### 11.10 Account fields the UI can rely on
+
+From registration:
+
+| Field | Meaning |
+| :--- | :--- |
+| `status` | `UNVERIFIED` until a required identifier is verified. Then `ACTIVE`, unless the account is `SUSPENDED`, `BANNED`, or `DELETED`. |
+| `emailVerified` / `phoneVerified` | That channel only. |
+| `nextStep` | `VERIFY_EMAIL` or `VERIFY_PHONE`. |
+
+From login `user`, and from access-token claims:
+
+| Field | Meaning |
+| :--- | :--- |
+| `role` | `USER` for accounts created by register. `ADMIN` is not issued by these routes. |
+| `isVerified` | True when a stored email is verified, or a stored phone is verified. |
+| `isProfileComplete` | True only when a profile row says so. Registration does not create one, so this is `false` after Phase 2 login. |
+
+`DELETED` accounts behave as unknown on login (`401 INVALID_CREDENTIALS`). They are not a screen the client renders from a successful auth response.
+
+### 11.11 Errors the auth UI should handle
+
+| Status | Code | What to do |
+| :--- | :--- | :--- |
+| 400 | `VALIDATION_ERROR` | Show `error.details` on the matching fields. Message is `Validation failed` for schema failures. |
+| 401 | `AUTH_REQUIRED` | No bearer token, or it is not `Bearer <token>`. Send the user through login. |
+| 401 | `INVALID_TOKEN` | Expired or bad access token: try refresh once. Refresh, verify, and reset failures: go to the relevant form, do not loop. |
+| 401 | `INVALID_CREDENTIALS` | Show the invalid-credentials message. Do not say which field was wrong. |
+| 403 | `ACCOUNT_SUSPENDED` or `ACCOUNT_BANNED` | Block the session and show the message. Do not refresh. |
+| 403 | `EMAIL_NOT_VERIFIED` or `PHONE_NOT_VERIFIED` | Not returned by the Phase 2 auth routes. Reserved for later routes that require verification. |
+| 404 | `USER_NOT_FOUND` | Resend only. The identifier has no account. |
+| 409 | `DUPLICATE_IDENTIFIER` | Registration. Offer login. |
+| 422 | `UNDERAGE_NOT_PERMITTED` | Registration. Block submit. |
+| 429 | `RATE_LIMITED` | Show the message and wait. There is no `Retry-After` header. |
+| 500 | `INTERNAL_SERVER_ERROR` | Generic failure. Message: `An unexpected error occurred. Please try again later.` |
+
+### 11.12 What is live, and what Phase 3 will add
+
+Live now: registration, email and phone verification, resend, login, refresh, logout, forgot-password, and reset-password.
+
+Not implemented, even though the database tables exist: profile onboarding, profile editing, photo upload, discovery, likes, matches, chat, subscriptions, payments, and boosts. Do not call those paths.
+
+Phase 3 is expected to add profile and onboarding: persisting date of birth, gender, photos, location, interests, relationship intentions, dating preferences, and profile completion. Those endpoints are specified later in this document as the planned contract. They are not available yet.
 
 ---
 
 ## 12. Onboarding APIs
+
+**Not implemented.** The routes in this section and the sections after it are the planned contract only. Phase 2 does not mount them.
 
 The onboarding pipeline enforces sequential profile completion before granting access to discovery.
 
@@ -1480,8 +1664,8 @@ Rate limits are enforced using Redis sliding-window algorithms:
 
 | Endpoint Group | Rate Limit Window | Max Requests | Scope |
 | :--- | :--- | :--- | :--- |
-| **Auth Login / Register** | 1 minute | 5 requests | IP / Identifier |
-| **Verification OTP Resend**| 1 minute | 1 request | User / Identifier |
+| **Auth register, login, forgot-password** | 1 minute | 5 requests | IP. Live. `429 RATE_LIMITED`. |
+| **Verification resend** | 1 minute | 1 request | Identifier. Live. Registration consumes the same window. |
 | **Discovery Swipe Actions**| 1 minute | 60 requests | User ID |
 | **Chat Message Sending** | 1 minute | 30 requests | User ID |
 | **General Public APIs** | 1 minute | 100 requests | IP Address |

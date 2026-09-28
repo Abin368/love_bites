@@ -4,6 +4,7 @@ import { env } from './config/env';
 import { sequelize } from './config/database';
 import { redis } from './config/redis';
 import { logger } from './utils/logger';
+import './database/associations';
 
 let server: http.Server;
 
