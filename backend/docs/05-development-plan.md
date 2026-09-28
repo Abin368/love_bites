@@ -660,6 +660,8 @@ Verify and enforce all security baselines documented in `backend/docs/04-securit
 ### 17.1 Objectives
 Execute a rigorous multi-tier testing strategy covering unit, integration, and critical end-to-end user flows.
 
+Backend CI already runs the current build, Jest suite, and PostgreSQL/PostGIS integration tests on `develop`. The remaining suites in this phase, including end-to-end flows, are not implemented. CI does not include linting, formatting, coverage gates, or a security scanner.
+
 ### 17.2 Testing Breakdown
 
 ```text
@@ -688,6 +690,8 @@ Execute a rigorous multi-tier testing strategy covering unit, integration, and c
 
 ## 18. Phase 14 — Production Readiness
 
+Backend CI is implemented and verified. Continuous deployment is not. No deployment target has been selected, and Docker or other deployment infrastructure has not been added. The checklist below remains future work. Do not treat the GitHub Actions workflow as a completed deployment.
+
 ### 18.1 Operational Checklist
 
 #### 1. Application & Runtime
@@ -703,6 +707,7 @@ Execute a rigorous multi-tier testing strategy covering unit, integration, and c
 * [ ] Setup automated database backup and point-in-time recovery.
 
 #### 3. Redis Cache & PubSub
+Redis remains in the application for current authentication and rate-limit behaviour. CI does not start a Redis service. Redis hardening remains deferred.
 * [ ] Configure Redis connection clustering / replication and persistent failover.
 * [ ] Verify memory eviction policies and key TTLs.
 
@@ -818,15 +823,31 @@ Proceed to Dependent Module
 ```
 
 ### 21.2 Test Harness & Environment Setup
-* **Isolated Test Database:** Integration tests run against an isolated PostgreSQL/PostGIS database instance created via Docker.
-* **Database Cleanup:** Tests use database transaction rollbacks or automated table truncations between test suites.
+* **Current backend CI:** Implemented and verified in `.github/workflows/backend-ci.yml`. GitHub Actions runs it on pushes to `develop` and on pull requests targeting `develop`. `develop` is the integration branch. The job uses `ubuntu-latest`, Node.js 20, and `npm ci`, then `npm run build`, `npm test`, and `npm run test:integration:pg`.
+* **PostgreSQL integration path:**
+
+```text
+GitHub Actions provides temporary PostGIS service (postgis/postgis:16-3.4)
+        ↓
+existing test-database.js
+        ↓
+creates love_bites_test
+        ↓
+runs Sequelize migrations with --env test
+        ↓
+PostgreSQL integration tests
+```
+
+  The existing database guard remains in place. CI does not create `love_bites_dev` and does not run `npm run db:migrate`.
+* **Database Cleanup:** The existing PostgreSQL integration setup truncates public test tables between tests. It does not drop `love_bites_test`.
 * **Test Factories & Fixtures:** Provide helper factory functions to generate test users, completed profiles, dating preferences, and active subscriptions.
+* **Redis in CI:** CI does not require a real Redis service. Current automated tests use the existing in-memory Redis test double where appropriate. Application Redis for authentication and rate limits is unchanged. Redis hardening is deferred.
 
 ### 21.3 External Service Mocking Strategy
 * **Razorpay Payment Gateway:** Mock Razorpay SDK methods in unit tests; test webhook endpoints by generating valid HMAC-SHA256 test signatures.
 * **AWS S3 Client:** Mock AWS SDK S3 client to return simulated presigned URLs; verify generated object keys match `photos/{userId}/{uuid}.webp`.
 * **SMS / Email Gateways:** Mock external OTP dispatch providers; verify Redis OTP key generation and TTL expiration.
-* **Redis PubSub & Socket.IO:** Use `ioredis-mock` or a dedicated test Redis instance for testing real-time socket events.
+* **Redis PubSub & Socket.IO:** Future realtime tests may use `ioredis-mock` or a dedicated test Redis instance. That suite is not part of the current CI workflow, which does not start Redis.
 
 ---
 

@@ -2,15 +2,15 @@
 
 > **Document Path:** `backend/docs/CHAT_HANDOFF.md`  
 > **Status:** Active Backend Handoff Document  
-> **Last Updated:** 2026-09-24  
+> **Last Updated:** 2026-09-28  
 > **Target Audience:** AI Coding Sessions & Backend Engineers  
 
 ---
 
 ## 1. Current Project Status
 
-* **Overall Backend Implementation Status:** **Phase 0 complete. Phase 1 database foundation complete. Phase 2 authentication complete.** Step 1 and Step 2 migrations remain applied to `love_bites_dev`. No new migrations, seeders, or schema changes were made for authentication.
-* **Current Development Phase:** **Phase 2 authentication is implemented and verified. Next work is Phase 3 (profile and onboarding), not more auth schema.**
+* **Overall Backend Implementation Status:** **Phase 0 complete. Phase 1 database foundation complete. Phase 2 authentication complete. Backend CI is implemented and verified.** Step 1 and Step 2 migrations remain applied to `love_bites_dev`. No new migrations, seeders, or schema changes were made for authentication. CD/deployment is not implemented.
+* **Current Development Phase:** **Phase 2 authentication is implemented and verified. Backend CI on `develop` is verified. Next work is Phase 3 (profile and onboarding), not more auth schema and not deployment.**
 * **What is Working:**
   * Base project setup (`package.json`, `tsconfig.json`, `.env.example`, `.sequelizerc`, `jest.config.ts`).
   * Express application (`src/app.ts`) with security headers (Helmet), CORS, JSON parser, cookie parser, HPP, and request ID tracking.
@@ -24,12 +24,15 @@
   * Automated unit and integration test suite passing with 100% success (50/50 tests). The original 12 Phase 0 tests still pass.
   * Clean TypeScript compilation (`npm run build`).
   * Phase 1 Step 1 and Step 2 models, associations, and reversible migrations. `backend/.env` was not changed.
+  * Backend CI: `.github/workflows/backend-ci.yml`. It runs on pushes to `develop` and on pull requests targeting `develop`. `develop` is the integration branch. `main` is the eventual higher-level branch in the current workflow (`feature branch` → `develop` → `main`). CI does not run for `main`.
 * **What is Not Yet Implemented:**
   * Catalog seed data (genders, interests, relationship intentions, plans, features, usage limits).
   * Profile and onboarding persistence. Registration validates `dateOfBirth` for age 18+ and does **not** store it or create a `profiles` row.
   * Domain modules after auth (Profiles, Photos, Genders, Interests, Relationship Intentions, Dating Preferences, Location, Discovery, Likes, Passes, Matches, Chat, Realtime Socket.IO, Safety, Notifications, Subscriptions, Entitlements, Payments, Admin).
   * Real email or SMS delivery. Phase 2 uses mock providers only.
   * Payment providers, webhook handlers, and notification generation.
+  * CD/deployment. No deployment target has been selected. Docker and deployment infrastructure remain future work.
+  * Redis hardening. CI did not change the Redis client, authentication, or rate limiting.
 
 ---
 
@@ -282,11 +285,22 @@ Primary Key Strategy: UUIDv4 (gen_random_uuid())
 * **Test Framework:** **Jest + ts-jest** (Unit), **Supertest** (Integration). Playwright E2E is still planned.
 * **Covered Functionality:** AppError hierarchy, logger redaction, health endpoints, auth validation, Argon2id, JWT claims and expiry, refresh rotation/reuse decisions, auth and role middleware, and the auth HTTP lifecycle.
 * **Phase 2 verification (2026-09-24):** `npm run build` succeeded. `npm test` **50/50 passing**. Auth integration tests use in-memory user, refresh-token, and Redis doubles. They do not connect to `love_bites_dev`. No migrations were created or run.
+* **PostgreSQL integration tests:** `npm run test:integration:pg` uses the existing `scripts/test-database.js` safety infrastructure. That script creates `love_bites_test`, runs Sequelize migrations with `--env test`, and the database guard refuses `love_bites_dev`. CI does not call `npm run db:migrate`.
 * **Missing Tests:**
-  * Auth data-access against a real isolated PostgreSQL database. The current Jest setup has no test database, so those queries are not executed by the suite.
   * Onboarding pipeline, PostGIS spatial queries, Likes/Passes quota, concurrency-safe matching, undo rollback, chat authorisation, Razorpay webhook idempotency, and admin route security.
-* **Current Test Commands:** `npm test`, `npm run test:unit`, `npm run test:integration`.
-* **Migration Commands:** `npm run db:migrate`, `npm run db:migrate:status`, `npm run db:migrate:undo` (or `npx sequelize-cli ...`). `.sequelizerc` loads `src/config/sequelize.cli.js`.
+* **Current Test Commands:** `npm test`, `npm run test:unit`, `npm run test:integration`, `npm run test:integration:pg`.
+* **Migration Commands:** `npm run db:migrate`, `npm run db:migrate:status`, `npm run db:migrate:undo` (or `npx sequelize-cli ...`). `.sequelizerc` loads `src/config/sequelize.cli.js`. Local development migration commands are separate from CI. CI does not run `npm run db:migrate`.
+
+### Backend CI
+
+* **Status:** Implemented and verified. The workflow was pushed and the GitHub Actions check returned green.
+* **Workflow:** `.github/workflows/backend-ci.yml`
+* **Triggers:** pushes to `develop`; pull requests targeting `develop`. `develop` is the integration branch. `main` is the eventual higher-level branch and is not a CI trigger.
+* **Environment:** GitHub Actions, `ubuntu-latest`, Node.js 20, `npm ci`, and a temporary PostgreSQL/PostGIS service image `postgis/postgis:16-3.4`.
+* **Checks, in order:** `npm ci`, `npm run build`, `npm test`, `npm run test:integration:pg`. Commands run from `backend/`.
+* **PostgreSQL:** GitHub Actions provides the temporary PostGIS service. The existing test-database preparation then creates `love_bites_test` and migrates it with `--env test`. The suite does not use `love_bites_dev`.
+* **Redis:** Redis is not started as a CI service. Current automated tests use the existing in-memory Redis test double where appropriate. The Redis implementation was not changed. Redis hardening remains deferred.
+* **Not in this workflow:** CD/deployment, Docker files, a selected deployment target, linting, formatting checks, coverage gates, security scanners, and a Redis service.
 
 ---
 
@@ -305,8 +319,8 @@ Primary Key Strategy: UUIDv4 (gen_random_uuid())
 
 ## 12. Work Currently In Progress
 
-* **Status:** **Phase 2 authentication is complete.** Do not start onboarding, profiles, discovery, or payments in the same change.
-* **Context:** Phase 1 schema was not modified. Authentication uses the existing `users` and `auth_refresh_tokens` tables.
+* **Status:** **Phase 2 authentication is complete. Backend CI is complete and verified.** Do not start onboarding, profiles, discovery, payments, or deployment in the same change.
+* **Context:** Phase 1 schema was not modified. Authentication uses the existing `users` and `auth_refresh_tokens` tables. CI did not change application code, tests, Redis, or migrations.
 
 ---
 
@@ -328,7 +342,7 @@ The implementation should follow the phased sequence established in `05-developm
 12. **Phase 11 — Admin APIs:** Admin user management, suspension/ban enforcement, dynamic taxonomy configuration, system KPI dashboard, audit logs.
 13. **Phase 12 — Security Hardening & Penetration Verification:** Validate all checklists from `04-security.md`.
 14. **Phase 13 — Multi-Tier Automated Testing:** Complete unit, Supertest integration, and E2E test suites.
-15. **Phase 14 — Production Readiness:** Health check, graceful shutdown, logging integrations, S3 bucket hardening, deployment configurations.
+15. **Phase 14 — Production Readiness:** Health check, graceful shutdown, logging integrations, S3 bucket hardening, deployment configurations. **Not started as deployment.** Backend CI is already verified and is not a substitute for this phase. No deployment target has been selected. Docker and deployment infrastructure remain future work.
 
 ---
 
@@ -352,7 +366,8 @@ The following architectural and business decisions are established and must **no
 * **Server-Side Liker Identity Protection:** Free users calling `GET /likes/who-liked-me` receive only aggregate counts (`{ count: N, admirers: [] }`). Client-side CSS blurring is prohibited.
 * **Canonical Match Identification:** Matches store `user_one_id = LEAST(A, B)` and `user_two_id = GREATEST(A, B)` with partial unique index on `status = 'ACTIVE'`.
 * **Database Transactions:** Multi-entity state mutations (matching, unmatching, payments, undo) must execute inside managed Sequelize transactions (`sequelize.transaction`).
-* **Redis Boundaries:** Redis is used exclusively for ephemeral caches, sliding-window rate limiters, OTPs, and Socket.IO cluster adapters. It is **never** used as a primary persistent store.
+* **Redis Boundaries:** Redis is used exclusively for ephemeral caches, sliding-window rate limiters, OTPs, and Socket.IO cluster adapters. It is **never** used as a primary persistent store. CI does not start Redis. Redis hardening remains deferred.
+* **Git branches:** Feature branch, then pull request into `develop`, then `main`. `develop` is the current integration branch for backend CI. `main` is the eventual higher-level branch.
 
 ---
 
@@ -391,3 +406,4 @@ Next implementation is onboarding and profile persistence, including storing dat
 | **2026-09-20** | Phase 1 Step 1 — Users / Profile / Location schema | **Applied and verified** | Migrations `20260920120001`–`20260920120007` and models for extensions, `genders`, `users`, `auth_refresh_tokens`, `profiles` (`geography(Point, 4326)` + GiST), `profile_photos`, `dating_preferences`. Earlier handoff text that said migrate failed and `.env` was absent is obsolete. |
 | **2026-09-23** | Phase 1 Step 2 — Remaining database foundation | **Complete** | Migrations `20260920120008`–`20260920120031` applied to `love_bites_dev`. 24 tables, models, and associations added. No seeders, APIs, services, or payment providers. Build passed. Tests 12/12. SQL verification passed, including Step 1 PostGIS preservation. |
 | **2026-09-24** | Phase 2 — Authentication | **Complete** | Nine `/api/v1/auth` routes. Opaque refresh tokens, SHA-256 storage, rotation, and reuse detection. Redis OTPs, reset tokens, and auth rate limits. Mock email/SMS only. No migrations or `.env` changes. Build passed. Tests 50/50. |
+| **2026-09-28** | Backend CI | **Verified** | `.github/workflows/backend-ci.yml` runs on pushes to `develop` and pull requests targeting `develop`. GitHub Actions, `ubuntu-latest`, Node.js 20, `npm ci`, `npm run build`, `npm test`, `npm run test:integration:pg`, temporary `postgis/postgis:16-3.4` service, existing `love_bites_test` guard. No Redis service. Redis hardening deferred. CD/deployment not implemented. The GitHub Actions check returned green. |
