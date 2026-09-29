@@ -81,6 +81,7 @@ describe('PostgreSQL profile foundation', () => {
 
     await updateProfile(user.id, {
       firstName: 'Grace',
+      dateOfBirth: '1999-02-02',
       bio: 'Updated',
       occupation: null,
       education: 'M.Sc'
@@ -88,6 +89,7 @@ describe('PostgreSQL profile foundation', () => {
 
     const updated = await findProfileByUserId(user.id);
     expect(updated?.firstName).toBe('Grace');
+    expect(updated?.dateOfBirth).toBe('1999-02-02');
     expect(updated?.bio).toBe('Updated');
     expect(updated?.occupation).toBeNull();
     expect(updated?.education).toBe('M.Sc');

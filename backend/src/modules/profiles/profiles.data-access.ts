@@ -15,10 +15,18 @@ export interface CreateProfileInput {
 
 export interface UpdateProfilePatch {
   firstName?: string;
+  dateOfBirth?: string;
   genderId?: string;
   bio?: string | null;
   occupation?: string | null;
   education?: string | null;
+}
+
+export async function findGenderById(genderId: string, transaction?: Transaction): Promise<Gender | null> {
+  return Gender.findByPk(genderId, {
+    attributes: ['id', 'code', 'name', 'isActive'],
+    transaction
+  });
 }
 
 export async function findProfileByUserId(userId: string, transaction?: Transaction): Promise<Profile | null> {
@@ -61,6 +69,9 @@ export async function updateProfile(
 
   if (patch.firstName !== undefined) {
     values.firstName = patch.firstName;
+  }
+  if (patch.dateOfBirth !== undefined) {
+    values.dateOfBirth = patch.dateOfBirth;
   }
   if (patch.genderId !== undefined) {
     values.genderId = patch.genderId;

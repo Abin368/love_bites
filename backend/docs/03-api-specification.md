@@ -13,7 +13,7 @@ This document defines the **RESTful API Specification** and **Socket.IO Realtime
 
 ### Implementation status
 
-Phase 2 authentication is implemented and verified. Sections **4** and **11** below describe that live behavior. Sections **12** onward (onboarding, profiles, discovery, likes, chat, subscriptions, payments, and the rest) are the planned contract. Those routes are **not** mounted. Do not call them.
+Phase 2 authentication is implemented and verified. Sections **4** and **11** below describe that live behavior, including the basic profile API in section **11.14**. Sections **12** onward (full onboarding, the richer profile views, discovery, likes, chat, subscriptions, payments, and the rest) are the planned contract. Those routes are **not** mounted. Do not call them.
 
 Health checks are also live: `GET /health` and `GET /api/v1/health`.
 
@@ -188,6 +188,9 @@ All failed HTTP requests return a standardized, machine-parseable JSON error env
 | `FORBIDDEN` | 403 | Insufficient role permissions or resource access denied. |
 | `RESOURCE_NOT_FOUND` | 404 | Target entity does not exist or is soft-deleted. |
 | `USER_NOT_FOUND` | 404 | Target user profile not found. |
+| `PROFILE_NOT_FOUND` | 404 | The authenticated user has no profile row. |
+| `PROFILE_ALREADY_EXISTS` | 409 | The authenticated user already has a profile. |
+| `INVALID_GENDER` | 400 | `genderId` is missing, unknown, or not an active gender. |
 | `MATCH_NOT_FOUND` | 404 | Active match record does not exist. |
 | `CONVERSATION_CLOSED` | 404 | Conversation is closed due to unmatch or safety block. |
 | `DUPLICATE_IDENTIFIER` | 409 | Email or phone is already registered to an active account. |
@@ -608,11 +611,11 @@ From login `user`, and from access-token claims:
 
 ### 11.12 What is live, and what Phase 3 will add
 
-Live now: registration, email and phone verification, resend, login, refresh, logout, forgot-password, reset-password, and the public catalog reads in section 11.13.
+Live now: registration, email and phone verification, resend, login, refresh, logout, forgot-password, reset-password, the public catalog reads in section 11.13, and the authenticated basic profile API in section 11.14.
 
-Not implemented, even though the database tables exist: profile onboarding, profile editing, photo upload, dating preferences, location, discovery, likes, matches, chat, subscriptions, payments, and boosts. Do not call those paths.
+Not implemented, even though the database tables exist: the rest of onboarding, photo upload, interest selection, relationship-intention selection, dating preferences, location, the richer profile views in section 13, discovery, likes, matches, chat, subscriptions, payments, and boosts. Do not call those paths.
 
-Phase 3 Step 1 is the three public catalog reads. Gender and relationship-intention seed data exist. Production interests are not seeded, because the approved interest list is not defined. The rest of Phase 3 is not available yet. Later sections remain the planned contract unless a subsection says it is implemented.
+Phase 3 Step 1 is the three public catalog reads. Phase 3 Step 3 is `GET`, `POST`, and `PATCH /api/v1/profile`. Gender and relationship-intention seed data exist. Production interests are not seeded, because the approved interest list is not defined. Phase 3 is not complete. Later sections remain the planned contract unless a subsection says it is implemented.
 
 ### 11.13 Public catalog reads
 
@@ -651,11 +654,80 @@ Only active rows are returned, ordered by `display_order` ascending. An empty ca
 * **Seed data:** `LONG_TERM_RELATIONSHIP` / Long-term relationship, `SOMETHING_CASUAL` / Something casual, `FRIENDSHIP` / Friendship, `NOT_SURE_YET` / Not sure yet. All are active. Display order is 1 through 4. `description` is not returned.
 * **Success Response (`200 OK`):** `data` items are `{ "id", "code", "name" }`. Message: `Relationship intentions retrieved successfully`.
 
+### 11.14 Basic profile
+
+Implemented. These three routes are the authenticated user's own basic profile. They are not public. They do not accept another user's id. There is no rate limiter on these routes; the public catalog limiter does not apply.
+
+* **Auth:** `Authorization: Bearer <accessToken>` and role `USER`.
+* **Missing or malformed token:** `401 AUTH_REQUIRED`.
+* **Invalid or expired token:** `401 INVALID_TOKEN`.
+* **Suspended or banned account:** `403 ACCOUNT_SUSPENDED` or `403 ACCOUNT_BANNED`, from the existing authentication middleware.
+* **Any other role, including `ADMIN`:** `403 FORBIDDEN`.
+* **Verification:** `requireVerified` is not applied. An unverified `USER` may call these routes.
+
+Registration still validates `dateOfBirth` and does not store it. It does not create a profile. These routes are where the basic profile, including date of birth, is stored.
+
+The response `data` object is only:
+
+```json
+{
+  "id": "b2f6c91a-8821-4122-901b-5e4d29381029",
+  "userId": "a1e5b80f-7710-4011-890a-4d3c18270918",
+  "firstName": "John",
+  "dateOfBirth": "1998-05-10",
+  "gender": { "id": "9a12c4b5-8821-4122-901b-5e4d29381001", "code": "MAN", "name": "Man" },
+  "bio": "Coffee and long walks.",
+  "occupation": "Engineer",
+  "education": "B.Tech",
+  "city": null,
+  "isProfileComplete": false
+}
+```
+
+`city` is returned and is null until a later location step. `location` is never returned. Password hashes, refresh tokens, OTP data, and other user security fields are not returned.
+
+`isProfileComplete` is stored on `profiles.is_profile_complete` and is never taken from the request. Creating or updating a basic profile does not set it to `true`. It stays `false` while city, location, a primary photo, 3–10 interests, at least one relationship intention, or dating preferences are missing. This step does not write those values. A later completion step is what sets the flag. Editing a basic field does not clear a flag that was already `true`.
+
+#### Get own profile
+
+* **Method & Path:** `GET /api/v1/profile`
+* **Body:** none. This request does not create or update a row.
+* **Success Response (`200 OK`):** the profile object above. Message: `Profile retrieved successfully`.
+* **No profile:** `404 PROFILE_NOT_FOUND`.
+
+#### Create own profile
+
+* **Method & Path:** `POST /api/v1/profile`
+* **Success Response (`201 Created`):** the profile object above. Message: `Profile created successfully`.
+* **Duplicate:** `409 PROFILE_ALREADY_EXISTS`. The existing row is not overwritten.
+* **Request body:**
+
+| Field | Required | Rule |
+| :--- | :--- | :--- |
+| `firstName` | Yes | String. Trimmed. 1–100 characters (`profiles.first_name`). |
+| `dateOfBirth` | Yes | `YYYY-MM-DD`. Must be a real calendar date. Age is calculated in UTC and must be at least 18. |
+| `genderId` | Yes | UUID of an active gender. Unknown or inactive: `400 INVALID_GENDER`. |
+| `bio` | No | String or `null`. Trimmed. Max 500 characters. Blank becomes `null`. |
+| `occupation` | No | String or `null`. Trimmed. Max 100 characters. Blank becomes `null`. |
+| `education` | No | String or `null`. Trimmed. Max 100 characters. Blank becomes `null`. |
+
+Any other field is rejected with `400 VALIDATION_ERROR`, including `userId`, `id`, `isProfileComplete`, `city`, `location`, `interests`, `relationshipIntentions`, `datingPreferences`, and `photos`. Ownership always comes from the access token.
+
+`422 UNDERAGE_NOT_PERMITTED` is returned when the only failure is an underage date of birth. `chk_profiles_age_18_plus` remains the database safeguard.
+
+#### Update own profile
+
+* **Method & Path:** `PATCH /api/v1/profile`
+* **Success Response (`200 OK`):** the profile object above. Message: `Profile updated successfully`.
+* **No profile:** `404 PROFILE_NOT_FOUND`. This is not an upsert.
+* **Empty body:** `400 VALIDATION_ERROR`. No update is executed.
+* **Request body:** any subset of `firstName`, `dateOfBirth`, `genderId`, `bio`, `occupation`, and `education`, using the same rules as create. At least one of those fields is required. The same forbidden fields are rejected. A partial body changes only the fields that were sent. `null` clears `bio`, `occupation`, or `education`.
+
 ---
 
 ## 12. Onboarding APIs
 
-**Not implemented.** The onboarding routes in this section are the planned contract only. They are not mounted. Public catalog reads are live in section 11.13.
+**Not implemented.** The onboarding routes in this section are the planned contract only. They are not mounted. The live basic profile API is section 11.14. Public catalog reads are live in section 11.13.
 
 The onboarding pipeline enforces sequential profile completion before granting access to discovery.
 
@@ -787,6 +859,8 @@ The onboarding pipeline enforces sequential profile completion before granting a
 ---
 
 ## 13. Profile APIs
+
+**Not implemented.** The routes in this section are the planned fuller profile contract, including photos, interests, and public profiles. They are not mounted. The live basic profile API is `GET`, `POST`, and `PATCH /api/v1/profile` in section 11.14.
 
 ### 13.1 Get Current User Profile (Private View)
 * **Method & Path:** `GET /api/v1/profiles/me`

@@ -308,7 +308,7 @@ Implement secure, dual-identifier registration (Email OR Phone), cryptographic p
 
 ## 7. Phase 3 — Profile and Onboarding
 
-**Step 2 status (2026-09-29): profile foundation only. Phase 3 is not complete. Step 3 is next.**
+**Step 3 status (2026-09-29): basic profile HTTP is implemented. Phase 3 is not complete. Photos, interests, intentions, preferences, location, and onboarding completion are next.**
 
 Implemented in Step 1:
 
@@ -319,10 +319,17 @@ Implemented in Step 1:
 Implemented in Step 2:
 
 * `profiles.city` and `profiles.location` are nullable so a basic profile can be stored before location. The column type remains `geography(Point, 4326)`. The GiST index and `chk_profiles_age_18_plus` are unchanged.
-* `src/modules/profiles/profiles.data-access.ts` can find a profile by user id (with gender `id`, `code`, and `name`), create a partial profile, and update `firstName`, `genderId`, `bio`, `occupation`, and `education`.
+* `src/modules/profiles/profiles.data-access.ts` can find a profile by user id (with gender `id`, `code`, and `name`), create a partial profile, and update `firstName`, `dateOfBirth`, `genderId`, `bio`, `occupation`, and `education`.
 * Creation does not accept `isProfileComplete`. A partial profile stays `is_profile_complete = FALSE`. Completion still requires both city and location, and is not implemented in this step.
 
-Not implemented: profile and onboarding HTTP routes, photos, S3, interest selection, relationship-intention selection, dating preferences, location endpoints, onboarding completion, public profiles, discovery, likes, matches, and chat. Plans, features, and usage limits are still unseeded.
+Implemented in Step 3:
+
+* Authenticated `GET`, `POST`, and `PATCH /api/v1/profile` for the signed-in `USER` only. Ownership comes from `req.user.id`.
+* Create and update accept `firstName`, `dateOfBirth`, `genderId`, `bio`, `occupation`, and `education`. `genderId` must be an active catalog gender. Age uses the existing UTC 18+ check. `chk_profiles_age_18_plus` remains the database safeguard.
+* The client cannot set `userId`, `isProfileComplete`, `city`, `location`, interests, intentions, preferences, or photos. A missing profile is `404 PROFILE_NOT_FOUND`. A second create is `409 PROFILE_ALREADY_EXISTS`. An empty `PATCH` is `400 VALIDATION_ERROR`.
+* A basic profile stays `is_profile_complete = false` because city, location, photos, interests, intentions, and dating preferences are still required. This step does not set the flag to true and does not clear a flag that is already true.
+
+Not implemented: onboarding HTTP routes, photos, S3, interest selection, relationship-intention selection, dating preferences, location endpoints, onboarding completion, public profiles, discovery, likes, matches, and chat. Plans, features, and usage limits are still unseeded.
 
 ### 7.1 Objectives
 Implement the linear onboarding sequence, demographic metadata management, S3 presigned photo upload pipeline, dating preferences, and profile completion validation.

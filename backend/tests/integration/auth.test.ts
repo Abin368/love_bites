@@ -31,6 +31,14 @@ jest.mock('../../src/modules/interests/interests.data-access', () => ({
 jest.mock('../../src/modules/relationship-intentions/relationship-intentions.data-access', () => ({
   findActiveRelationshipIntentions: async () => []
 }));
+jest.mock('../../src/modules/profiles/profiles.data-access', () => ({
+  findGenderById: async () => null,
+  findProfileByUserId: async () => null,
+  createProfile: async () => {
+    throw new Error('profile data access is not used by authentication tests');
+  },
+  updateProfile: async () => undefined
+}));
 
 import { app } from '../../src/app';
 
