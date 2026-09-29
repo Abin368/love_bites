@@ -264,9 +264,9 @@ Stores user profile information, bio, demographic details, location coordinates,
 | `bio` | `TEXT` | `YES` | `NULL` | Personal introduction text (max 500 chars). |
 | `occupation` | `VARCHAR(100)` | `YES` | `NULL` | Occupation / Job title. |
 | `education` | `VARCHAR(100)` | `YES` | `NULL` | Highest education level or institution. |
-| `city` | `VARCHAR(100)` | `NO` | — | Registered display city name. |
-| `location` | `geography(Point, 4326)` | `NO` | — | PostGIS spatial point `(longitude, latitude)` in WGS84 coordinates. |
-| `is_profile_complete`| `BOOLEAN` | `NO` | `FALSE` | Server-evaluated flag indicating all onboarding steps are satisfied. |
+| `city` | `VARCHAR(100)` | `YES` | `NULL` | Display city name. Nullable during onboarding. Profile completion still requires a city. |
+| `location` | `geography(Point, 4326)` | `YES` | `NULL` | PostGIS spatial point `(longitude, latitude)` in WGS84 coordinates. Nullable during onboarding. Profile completion still requires a location. |
+| `is_profile_complete`| `BOOLEAN` | `NO` | `FALSE` | Server-evaluated flag indicating all onboarding steps are satisfied. A partial profile with null `city` or `location` stays `FALSE`. |
 | `created_at` | `TIMESTAMPTZ` | `NO` | `CURRENT_TIMESTAMP` | Creation timestamp. |
 | `updated_at` | `TIMESTAMPTZ` | `NO` | `CURRENT_TIMESTAMP` | Modification timestamp. |
 

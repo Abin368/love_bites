@@ -308,7 +308,7 @@ Implement secure, dual-identifier registration (Email OR Phone), cryptographic p
 
 ## 7. Phase 3 — Profile and Onboarding
 
-**Step 1 status (2026-09-29): catalogs and seed data only. Phase 3 is not complete. Step 2 is next.**
+**Step 2 status (2026-09-29): profile foundation only. Phase 3 is not complete. Step 3 is next.**
 
 Implemented in Step 1:
 
@@ -316,7 +316,13 @@ Implemented in Step 1:
 * Sequelize seeders for the approved genders (`MAN`, `WOMAN`, `NON_BINARY`, `PREFER_NOT_TO_SAY`) and relationship intentions (`LONG_TERM_RELATIONSHIP`, `SOMETHING_CASUAL`, `FRIENDSHIP`, `NOT_SURE_YET`).
 * No production interest seed. The approved interest list is not defined. `GET /api/v1/interests` returns an empty array until rows exist.
 
-Not implemented: profile creation and update, photos, S3, dating preferences, location, onboarding completion, public profiles, discovery, likes, matches, and chat. Plans, features, and usage limits are still unseeded. No new migration was added.
+Implemented in Step 2:
+
+* `profiles.city` and `profiles.location` are nullable so a basic profile can be stored before location. The column type remains `geography(Point, 4326)`. The GiST index and `chk_profiles_age_18_plus` are unchanged.
+* `src/modules/profiles/profiles.data-access.ts` can find a profile by user id (with gender `id`, `code`, and `name`), create a partial profile, and update `firstName`, `genderId`, `bio`, `occupation`, and `education`.
+* Creation does not accept `isProfileComplete`. A partial profile stays `is_profile_complete = FALSE`. Completion still requires both city and location, and is not implemented in this step.
+
+Not implemented: profile and onboarding HTTP routes, photos, S3, interest selection, relationship-intention selection, dating preferences, location endpoints, onboarding completion, public profiles, discovery, likes, matches, and chat. Plans, features, and usage limits are still unseeded.
 
 ### 7.1 Objectives
 Implement the linear onboarding sequence, demographic metadata management, S3 presigned photo upload pipeline, dating preferences, and profile completion validation.
