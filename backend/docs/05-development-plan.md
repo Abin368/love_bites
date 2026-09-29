@@ -308,6 +308,37 @@ Implement secure, dual-identifier registration (Email OR Phone), cryptographic p
 
 ## 7. Phase 3 — Profile and Onboarding
 
+**Step 3 status (2026-09-29): basic profile HTTP is implemented. Interest and relationship-intention selection is also implemented on the onboarding routes below. Phase 3 is not complete. Photos, dating preferences, location, and onboarding completion are next. The documents still disagree on Phase 3 step numbers; this selection work is not a renumbered step.**
+
+Implemented in Step 1:
+
+* Public `GET /api/v1/genders`, `GET /api/v1/interests`, and `GET /api/v1/relationship-intentions`. No authentication. Shared public rate limit of 100 requests / 60 seconds / IP (`ratelimit:public:<ip>`). Active rows only, ordered by `display_order`.
+* Sequelize seeders for the approved genders (`MAN`, `WOMAN`, `NON_BINARY`, `PREFER_NOT_TO_SAY`) and relationship intentions (`LONG_TERM_RELATIONSHIP`, `SOMETHING_CASUAL`, `FRIENDSHIP`, `NOT_SURE_YET`).
+* No production interest seed. The approved interest list is not defined. `GET /api/v1/interests` returns an empty array until rows exist.
+
+Implemented in Step 2:
+
+* `profiles.city` and `profiles.location` are nullable so a basic profile can be stored before location. The column type remains `geography(Point, 4326)`. The GiST index and `chk_profiles_age_18_plus` are unchanged.
+* `src/modules/profiles/profiles.data-access.ts` can find a profile by user id (with gender `id`, `code`, and `name`), create a partial profile, and update `firstName`, `dateOfBirth`, `genderId`, `bio`, `occupation`, and `education`.
+* Creation does not accept `isProfileComplete`. A partial profile stays `is_profile_complete = FALSE`. Completion still requires both city and location, and is not implemented in this step.
+
+Implemented in Step 3:
+
+* Authenticated `GET`, `POST`, and `PATCH /api/v1/profile` for the signed-in `USER` only. Ownership comes from `req.user.id`.
+* Create and update accept `firstName`, `dateOfBirth`, `genderId`, `bio`, `occupation`, and `education`. `genderId` must be an active catalog gender. Age uses the existing UTC 18+ check. `chk_profiles_age_18_plus` remains the database safeguard.
+* The client cannot set `userId`, `isProfileComplete`, `city`, `location`, interests, intentions, preferences, or photos. A missing profile is `404 PROFILE_NOT_FOUND`. A second create is `409 PROFILE_ALREADY_EXISTS`. An empty `PATCH` is `400 VALIDATION_ERROR`.
+* A basic profile stays `is_profile_complete = false` because city, location, photos, interests, intentions, and dating preferences are still required. This step does not set the flag to true and does not clear a flag that is already true.
+
+Implemented for interest and relationship-intention selection:
+
+* `PUT /api/v1/onboarding/interests` replaces `user_interests` for the authenticated `USER`. `interestIds` is 3 to 10 unique active interest UUIDs.
+* `PUT /api/v1/onboarding/relationship-intentions` replaces `user_relationship_intentions` for the authenticated `USER`. `relationshipIntentionIds` is at least 1 unique active intention UUID. There is no maximum.
+* Ownership is `req.user.id`. `userId` is rejected. Unknown, inactive, and duplicate ids are rejected. Delete and insert run in one Sequelize transaction.
+* `PUT /api/v1/me/interests` and `PUT /api/v1/me/relationship-intentions` are not implemented.
+* These routes do not change `profiles.is_profile_complete`.
+
+Not implemented: the other onboarding HTTP routes, photos, S3, dating preferences, location endpoints, onboarding completion, public profiles, discovery, likes, matches, and chat. Plans, features, and usage limits are still unseeded. Production interests are not seeded.
+
 ### 7.1 Objectives
 Implement the linear onboarding sequence, demographic metadata management, S3 presigned photo upload pipeline, dating preferences, and profile completion validation.
 
@@ -332,8 +363,9 @@ Implement the linear onboarding sequence, demographic metadata management, S3 pr
    * `PATCH /api/v1/profile-photos/:photoId`: Updates `displayOrder` or `isPrimary`.
    * `DELETE /api/v1/profile-photos/:photoId`: Soft-deletes photo record; enforces minimum 1 photo rule for complete profiles.
 4. **Interests & Intentions Setup:**
-   * `PUT /api/v1/onboarding/interests` / `PUT /api/v1/me/interests`: Validates array of active interest UUIDs (**min 3, max 10**); updates `user_interests`.
-   * `PUT /api/v1/onboarding/relationship-intentions` / `PUT /api/v1/me/relationship-intentions`: Validates array of active intention UUIDs (**min 1**); updates `user_relationship_intentions`.
+   * **Implemented:** `PUT /api/v1/onboarding/interests` validates an array of active interest UUIDs (**min 3, max 10**, no duplicates) and replaces `user_interests` in one transaction.
+   * **Implemented:** `PUT /api/v1/onboarding/relationship-intentions` validates an array of active intention UUIDs (**min 1**, no duplicates, no maximum) and replaces `user_relationship_intentions` in one transaction.
+   * **Not implemented:** `PUT /api/v1/me/interests` and `PUT /api/v1/me/relationship-intentions`. These routes do not set `profiles.is_profile_complete`.
 5. **Dating Preferences Setup (`PUT /api/v1/onboarding/dating-preferences`):**
    * Validates `minAge >= 18`, `maxAge <= 100`, `maxAge >= minAge`, `maxDistanceKm` (1–500 km), `interestedInGenderIds`, and `preferredIntentionIds`.
    * Updates `dating_preferences`, `user_dating_preference_genders`, and `user_dating_preference_intentions`.
@@ -660,6 +692,8 @@ Verify and enforce all security baselines documented in `backend/docs/04-securit
 ### 17.1 Objectives
 Execute a rigorous multi-tier testing strategy covering unit, integration, and critical end-to-end user flows.
 
+Backend CI already runs the current build, Jest suite, and PostgreSQL/PostGIS integration tests on `develop`. The remaining suites in this phase, including end-to-end flows, are not implemented. CI does not include linting, formatting, coverage gates, or a security scanner.
+
 ### 17.2 Testing Breakdown
 
 ```text
@@ -688,6 +722,8 @@ Execute a rigorous multi-tier testing strategy covering unit, integration, and c
 
 ## 18. Phase 14 — Production Readiness
 
+Backend CI is implemented and verified. Continuous deployment is not. No deployment target has been selected, and Docker or other deployment infrastructure has not been added. The checklist below remains future work. Do not treat the GitHub Actions workflow as a completed deployment.
+
 ### 18.1 Operational Checklist
 
 #### 1. Application & Runtime
@@ -703,6 +739,7 @@ Execute a rigorous multi-tier testing strategy covering unit, integration, and c
 * [ ] Setup automated database backup and point-in-time recovery.
 
 #### 3. Redis Cache & PubSub
+Redis remains in the application for current authentication and rate-limit behaviour. CI does not start a Redis service. Redis hardening remains deferred.
 * [ ] Configure Redis connection clustering / replication and persistent failover.
 * [ ] Verify memory eviction policies and key TTLs.
 
@@ -818,15 +855,31 @@ Proceed to Dependent Module
 ```
 
 ### 21.2 Test Harness & Environment Setup
-* **Isolated Test Database:** Integration tests run against an isolated PostgreSQL/PostGIS database instance created via Docker.
-* **Database Cleanup:** Tests use database transaction rollbacks or automated table truncations between test suites.
+* **Current backend CI:** Implemented and verified in `.github/workflows/backend-ci.yml`. GitHub Actions runs it on pushes to `develop` and on pull requests targeting `develop`. `develop` is the integration branch. The job uses `ubuntu-latest`, Node.js 20, and `npm ci`, then `npm run build`, `npm test`, and `npm run test:integration:pg`.
+* **PostgreSQL integration path:**
+
+```text
+GitHub Actions provides temporary PostGIS service (postgis/postgis:16-3.4)
+        ↓
+existing test-database.js
+        ↓
+creates love_bites_test
+        ↓
+runs Sequelize migrations with --env test
+        ↓
+PostgreSQL integration tests
+```
+
+  The existing database guard remains in place. CI does not create `love_bites_dev` and does not run `npm run db:migrate`.
+* **Database Cleanup:** The existing PostgreSQL integration setup truncates public test tables between tests. It does not drop `love_bites_test`.
 * **Test Factories & Fixtures:** Provide helper factory functions to generate test users, completed profiles, dating preferences, and active subscriptions.
+* **Redis in CI:** CI does not require a real Redis service. Current automated tests use the existing in-memory Redis test double where appropriate. Application Redis for authentication and rate limits is unchanged. Redis hardening is deferred.
 
 ### 21.3 External Service Mocking Strategy
 * **Razorpay Payment Gateway:** Mock Razorpay SDK methods in unit tests; test webhook endpoints by generating valid HMAC-SHA256 test signatures.
 * **AWS S3 Client:** Mock AWS SDK S3 client to return simulated presigned URLs; verify generated object keys match `photos/{userId}/{uuid}.webp`.
 * **SMS / Email Gateways:** Mock external OTP dispatch providers; verify Redis OTP key generation and TTL expiration.
-* **Redis PubSub & Socket.IO:** Use `ioredis-mock` or a dedicated test Redis instance for testing real-time socket events.
+* **Redis PubSub & Socket.IO:** Future realtime tests may use `ioredis-mock` or a dedicated test Redis instance. That suite is not part of the current CI workflow, which does not start Redis.
 
 ---
 

@@ -8,7 +8,7 @@ This is the frontend integration guide for Love Bite. It tells a frontend develo
 
 ## 1. Purpose
 
-Use this document to wire registration, verification, login, refresh, logout, and password reset. Do not treat later product areas (profiles, discovery, chat, payments) as available APIs.
+Use this document to wire registration, verification, login, refresh, logout, password reset, the public catalogs, the authenticated basic profile, and onboarding interest and relationship-intention selection. Do not treat later product areas (photos, discovery, chat, payments) as available APIs.
 
 ---
 
@@ -34,8 +34,8 @@ Phase 2 authentication:
 
 Do not call these. Tables may exist in PostgreSQL, but there are no mounted routes or frontend APIs for them:
 
-- Profile onboarding
-- Profile editing
+- The rest of profile onboarding (photos, preferences, location, completion)
+- `PUT /api/v1/me/interests` and `PUT /api/v1/me/relationship-intentions`
 - Profile photos
 - Dating preferences
 - Discovery
@@ -187,7 +187,7 @@ No auth header. Rate limit: 5 requests / 60 seconds / IP.
 
 > Date of birth is accepted and validated during registration for the 18+ requirement, but it is NOT persisted during Phase 2.
 
-Registration creates a `users` row only. It does not create a profile. Do not read date of birth back from the user. Profile creation and storing date of birth are Phase 3.
+Registration creates a `users` row only. It does not create a profile. Do not read date of birth back from the user. Store it with `POST /api/v1/profile`.
 
 `201 Created` does not log the user in. There is no access token and no refresh cookie.
 
@@ -536,7 +536,7 @@ Registration returns channel flags. Login returns the account summary. The acces
 | `status` | Register `data`, login `user` | `UNVERIFIED` until a required identifier is verified, then `ACTIVE`. `SUSPENDED` and `BANNED` are rejected at login and refresh. `DELETED` accounts are not returned as a successful session. |
 | `emailVerified` / `phoneVerified` | Register `data` only | That channel. Not on the login `user` object. |
 | `isVerified` | Login `user` and JWT | True when a stored email is verified, or a stored phone is verified. |
-| `isProfileComplete` | Login `user` and JWT | True only when a profile row is marked complete. Phase 2 login leaves this `false`. It does not mean a profile API exists. |
+| `isProfileComplete` | Login `user` and JWT | True only when a profile row is marked complete. Registration and a basic profile leave this `false`. |
 | `role` | Login `user` and JWT | `USER` for accounts created by register. |
 | `nextStep` | Register `data` only | `VERIFY_EMAIL` or `VERIFY_PHONE`. |
 
@@ -672,7 +672,7 @@ If the retried request fails again, stop. Do not refresh a second time for that 
 - Do not log verification codes.
 - Do not log or display password-reset tokens beyond the reset form that receives them.
 - Do not trust frontend validation as a security boundary. The backend is authoritative.
-- Do not assume `isProfileComplete` means a profile endpoint exists.
+- `isProfileComplete` is true only when the stored profile flag is true. A basic profile from `POST /api/v1/profile` leaves it `false`.
 - Do not invent API endpoints that are not implemented.
 
 ---
@@ -690,18 +690,42 @@ If the retried request fails again, stop. Do not refresh a second time for that 
 | POST | `/api/v1/auth/logout` | Implemented |
 | POST | `/api/v1/auth/forgot-password` | Implemented |
 | POST | `/api/v1/auth/reset-password` | Implemented |
+| GET | `/api/v1/genders` | Implemented. Public. No bearer token. |
+| GET | `/api/v1/interests` | Implemented. Public. May return an empty array. |
+| GET | `/api/v1/relationship-intentions` | Implemented. Public. No bearer token. |
+| GET | `/api/v1/profile` | Implemented. Bearer token. Role `USER`. |
+| POST | `/api/v1/profile` | Implemented. Bearer token. Role `USER`. Creates the caller's basic profile. |
+| PATCH | `/api/v1/profile` | Implemented. Bearer token. Role `USER`. Updates the caller's basic profile. |
+| PUT | `/api/v1/onboarding/interests` | Implemented. Bearer token. Role `USER`. Replaces 3 to 10 interests. |
+| PUT | `/api/v1/onboarding/relationship-intentions` | Implemented. Bearer token. Role `USER`. Replaces one or more intentions. |
 
 Paths are prefixed by `API_PREFIX`, which defaults to `/api/v1`.
+
+The three catalog reads share one limit of 100 requests per 60 seconds per IP. A catalog response is `{ "success": true, "data": [], "message": "..." }`. Gender and intention items are `{ "id", "code", "name" }`. Interest items also include `category`, which may be `null`. Only active rows are returned, ordered by `display_order`. Do not expect a production interest list. Gender and relationship-intention seed values are the approved codes in `backend/docs/03-api-specification.md` section 11.13.
+
+The basic profile routes are not part of that public limit. Send `Authorization: Bearer <accessToken>`. The signed-in user must have role `USER`. There is no `/api/v1/profile/:userId` route.
+
+`POST /api/v1/profile` body fields are `firstName` (required, 1–100), `dateOfBirth` (required, `YYYY-MM-DD`, age 18+), `genderId` (required UUID of an active gender), and optional `bio` (max 500), `occupation` (max 100), and `education` (max 100). Do not send `userId`, `isProfileComplete`, `city`, `location`, interests, intentions, preferences, or photos. Success is `201` with `data` containing `id`, `userId`, `firstName`, `dateOfBirth`, `gender` (`id`, `code`, `name`), `bio`, `occupation`, `education`, `city` (`null` at this step), and `isProfileComplete` (`false`). `location` is not returned.
+
+`GET /api/v1/profile` returns that same object. No profile is `404` with code `PROFILE_NOT_FOUND`. A second create is `409` with code `PROFILE_ALREADY_EXISTS`. `PATCH /api/v1/profile` sends any subset of the writable fields and returns the same object. An empty patch is `400 VALIDATION_ERROR`. No profile on patch is `404 PROFILE_NOT_FOUND`. An unknown or inactive gender is `400 INVALID_GENDER`. An underage date of birth is `422 UNDERAGE_NOT_PERMITTED`. The full request and error contract is `backend/docs/03-api-specification.md` section 11.14.
+
+`PUT /api/v1/onboarding/interests` and `PUT /api/v1/onboarding/relationship-intentions` use the same bearer token and `USER` role. They are not public, and they do not use the catalog rate limit. Verification is not required. Do not send `userId`. `POST` and `PATCH /api/v1/profile` still reject `interests` and `relationshipIntentions`.
+
+Interest body: `{ "interestIds": ["uuid", "uuid", "uuid"] }`. Minimum 3, maximum 10, unique UUIDs, and every id must be an active interest. Success is `200` with message `Interests updated successfully`. `data` is `{ "id", "code", "name", "category" }` ordered by catalog display order. `category` may be `null`.
+
+Intention body: `{ "relationshipIntentionIds": ["uuid"] }`. Minimum 1, no maximum, unique UUIDs, and every id must be an active intention. Success is `200` with message `Relationship intentions updated successfully`. `data` is `{ "id", "code", "name" }` ordered by catalog display order.
+
+Both calls replace the signed-in user's current rows. They do not append, and they do not change `isProfileComplete`. A bad UUID, a duplicate, or the wrong count is `400 VALIDATION_ERROR`. An unknown or inactive interest is `400 INVALID_INTEREST`. An unknown or inactive intention is `400 INVALID_RELATIONSHIP_INTENTION`. `PUT /api/v1/me/interests` and `PUT /api/v1/me/relationship-intentions` are not mounted. The full contract is `backend/docs/03-api-specification.md` section 11.15.
 
 ---
 
 ## 24. Phase 3 boundary
 
-Phase 2 is authentication only.
+Phase 2 authentication is implemented. Phase 3 Step 1 adds the three public catalog reads in section 23. Phase 3 Step 3 adds the basic profile routes in that same table. Interest and relationship-intention selection is also implemented there, on `PUT /api/v1/onboarding/interests` and `PUT /api/v1/onboarding/relationship-intentions`.
 
-Phase 3 is planned to cover profile and onboarding: persisting date of birth on the profile, gender, photos, location, interests, relationship intentions, dating preferences, and profile completion. The database design expects date of birth on `profiles.date_of_birth`. That column is not written by registration.
+The rest of Phase 3 is still planned: photos, location, dating preferences, and profile completion. `PUT /api/v1/me/interests` and `PUT /api/v1/me/relationship-intentions` are not mounted. Registration still does not write `profiles.date_of_birth`. `POST /api/v1/profile` does. `isProfileComplete` stays unchanged by interest and intention selection. A later completion step sets it.
 
-Do not call Phase 3 paths. They are not mounted. The later sections of `backend/docs/03-api-specification.md` describe that planned contract, not the current server.
+Do not call the later Phase 3 paths. They are not mounted. The later sections of `backend/docs/03-api-specification.md` describe that planned contract, except the catalog reads and section 11.15, which are implemented.
 
 ---
 

@@ -10,8 +10,8 @@ export interface ProfileAttributes {
   bio: string | null;
   occupation: string | null;
   education: string | null;
-  city: string;
-  location: unknown;
+  city: string | null;
+  location: unknown | null;
   isProfileComplete: boolean;
   createdAt: Date;
   updatedAt: Date;
@@ -19,7 +19,7 @@ export interface ProfileAttributes {
 
 export type ProfileCreationAttributes = Optional<
   ProfileAttributes,
-  'id' | 'bio' | 'occupation' | 'education' | 'isProfileComplete' | 'createdAt' | 'updatedAt'
+  'id' | 'bio' | 'occupation' | 'education' | 'city' | 'location' | 'isProfileComplete' | 'createdAt' | 'updatedAt'
 >;
 
 export class Profile extends Model<ProfileAttributes, ProfileCreationAttributes> implements ProfileAttributes {
@@ -31,8 +31,8 @@ export class Profile extends Model<ProfileAttributes, ProfileCreationAttributes>
   declare bio: string | null;
   declare occupation: string | null;
   declare education: string | null;
-  declare city: string;
-  declare location: unknown;
+  declare city: string | null;
+  declare location: unknown | null;
   declare isProfileComplete: boolean;
   declare createdAt: Date;
   declare updatedAt: Date;
@@ -76,11 +76,11 @@ Profile.init(
     },
     city: {
       type: DataTypes.STRING(100),
-      allowNull: false
+      allowNull: true
     },
     location: {
       type: DataTypes.GEOGRAPHY('POINT', 4326),
-      allowNull: false
+      allowNull: true
     },
     isProfileComplete: {
       type: DataTypes.BOOLEAN,

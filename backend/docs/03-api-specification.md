@@ -13,7 +13,7 @@ This document defines the **RESTful API Specification** and **Socket.IO Realtime
 
 ### Implementation status
 
-Phase 2 authentication is implemented and verified. Sections **4** and **11** below describe that live behavior. Sections **12** onward (onboarding, profiles, discovery, likes, chat, subscriptions, payments, and the rest) are the planned contract. Those routes are **not** mounted. Do not call them.
+Phase 2 authentication is implemented and verified. Sections **4** and **11** below describe that live behavior, including the basic profile API in section **11.14** and interest and relationship-intention selection in section **11.15**. Sections **12** onward (the rest of onboarding, the richer profile views, discovery, likes, chat, subscriptions, payments, and the rest) are the planned contract. Those routes are **not** mounted, except where a subsection says the live contract is section **11.15**. Do not call the unmounted routes. `PUT /api/v1/me/interests` and `PUT /api/v1/me/relationship-intentions` are not implemented.
 
 Health checks are also live: `GET /health` and `GET /api/v1/health`.
 
@@ -100,7 +100,7 @@ Refreshing rotates the token: the previous refresh row is revoked and a new cook
 
 ### 4.2 Which calls need a token
 
-Live public routes (no `Authorization` header): register, verify-email, verify-phone, resend-verification, login, refresh, forgot-password, reset-password.
+Live public routes (no `Authorization` header): register, verify-email, verify-phone, resend-verification, login, refresh, forgot-password, reset-password, `GET /genders`, `GET /interests`, and `GET /relationship-intentions`.
 
 `POST /api/v1/auth/logout` is the only live route that requires `Authorization: Bearer <accessToken>`. An unverified account (`status: UNVERIFIED`) may log in and log out. Suspended and banned accounts are rejected with `403`.
 
@@ -188,6 +188,9 @@ All failed HTTP requests return a standardized, machine-parseable JSON error env
 | `FORBIDDEN` | 403 | Insufficient role permissions or resource access denied. |
 | `RESOURCE_NOT_FOUND` | 404 | Target entity does not exist or is soft-deleted. |
 | `USER_NOT_FOUND` | 404 | Target user profile not found. |
+| `PROFILE_NOT_FOUND` | 404 | The authenticated user has no profile row. |
+| `PROFILE_ALREADY_EXISTS` | 409 | The authenticated user already has a profile. |
+| `INVALID_GENDER` | 400 | `genderId` is missing, unknown, or not an active gender. |
 | `MATCH_NOT_FOUND` | 404 | Active match record does not exist. |
 | `CONVERSATION_CLOSED` | 404 | Conversation is closed due to unmatch or safety block. |
 | `DUPLICATE_IDENTIFIER` | 409 | Email or phone is already registered to an active account. |
@@ -608,17 +611,174 @@ From login `user`, and from access-token claims:
 
 ### 11.12 What is live, and what Phase 3 will add
 
-Live now: registration, email and phone verification, resend, login, refresh, logout, forgot-password, and reset-password.
+Live now: registration, email and phone verification, resend, login, refresh, logout, forgot-password, reset-password, the public catalog reads in section 11.13, the authenticated basic profile API in section 11.14, and `PUT /api/v1/onboarding/interests` plus `PUT /api/v1/onboarding/relationship-intentions` in section 11.15.
 
-Not implemented, even though the database tables exist: profile onboarding, profile editing, photo upload, discovery, likes, matches, chat, subscriptions, payments, and boosts. Do not call those paths.
+Not implemented, even though the database tables exist: the rest of onboarding, photo upload, `PUT /api/v1/me/interests`, `PUT /api/v1/me/relationship-intentions`, dating preferences, location, the richer profile views in section 13, discovery, likes, matches, chat, subscriptions, payments, and boosts. Do not call those paths.
 
-Phase 3 is expected to add profile and onboarding: persisting date of birth, gender, photos, location, interests, relationship intentions, dating preferences, and profile completion. Those endpoints are specified later in this document as the planned contract. They are not available yet.
+Phase 3 Step 1 is the three public catalog reads. Phase 3 Step 3 is `GET`, `POST`, and `PATCH /api/v1/profile`. Interest and relationship-intention selection is the onboarding slice in section 11.15. It is not a renumbered phase step. Gender and relationship-intention seed data exist. Production interests are not seeded, because the approved interest list is not defined. Phase 3 is not complete. Later sections remain the planned contract unless a subsection says it is implemented.
+
+### 11.13 Public catalog reads
+
+Implemented. These three reads are public. They do not use `authenticate` or `requireVerified`. They share the public IP rate limit: 100 requests / 60 seconds / IP, Redis key `ratelimit:public:<ip>`. Over the limit: `429 RATE_LIMITED`.
+
+Only active rows are returned, ordered by `display_order` ascending. An empty catalog is success: `200` with `data: []`. Responses use the standard success envelope and do not include `isActive`, `displayOrder`, or timestamps.
+
+#### List active genders
+
+* **Method & Path:** `GET /api/v1/genders`
+* **Auth:** Public
+* **Seed data:** `MAN` / Man, `WOMAN` / Woman, `NON_BINARY` / Non-binary, `PREFER_NOT_TO_SAY` / Prefer not to say. All are active. Display order is 1 through 4.
+* **Success Response (`200 OK`):**
+
+```json
+{
+  "success": true,
+  "data": [
+    { "id": "6e6e0001-0000-4000-8000-000000000001", "code": "MAN", "name": "Man" }
+  ],
+  "message": "Genders retrieved successfully"
+}
+```
+
+#### List active interests
+
+* **Method & Path:** `GET /api/v1/interests`
+* **Auth:** Public
+* **Seed data:** none. The approved production interest list is not defined. The endpoint returns whatever active rows exist.
+* **Success Response (`200 OK`):** `data` items are `{ "id", "code", "name", "category" }`. `category` may be `null`. Message: `Interests retrieved successfully`. An empty table returns `data: []`.
+
+#### List active relationship intentions
+
+* **Method & Path:** `GET /api/v1/relationship-intentions`
+* **Auth:** Public
+* **Seed data:** `LONG_TERM_RELATIONSHIP` / Long-term relationship, `SOMETHING_CASUAL` / Something casual, `FRIENDSHIP` / Friendship, `NOT_SURE_YET` / Not sure yet. All are active. Display order is 1 through 4. `description` is not returned.
+* **Success Response (`200 OK`):** `data` items are `{ "id", "code", "name" }`. Message: `Relationship intentions retrieved successfully`.
+
+### 11.14 Basic profile
+
+Implemented. These three routes are the authenticated user's own basic profile. They are not public. They do not accept another user's id. There is no rate limiter on these routes; the public catalog limiter does not apply.
+
+* **Auth:** `Authorization: Bearer <accessToken>` and role `USER`.
+* **Missing or malformed token:** `401 AUTH_REQUIRED`.
+* **Invalid or expired token:** `401 INVALID_TOKEN`.
+* **Suspended or banned account:** `403 ACCOUNT_SUSPENDED` or `403 ACCOUNT_BANNED`, from the existing authentication middleware.
+* **Any other role, including `ADMIN`:** `403 FORBIDDEN`.
+* **Verification:** `requireVerified` is not applied. An unverified `USER` may call these routes.
+
+Registration still validates `dateOfBirth` and does not store it. It does not create a profile. These routes are where the basic profile, including date of birth, is stored.
+
+The response `data` object is only:
+
+```json
+{
+  "id": "b2f6c91a-8821-4122-901b-5e4d29381029",
+  "userId": "a1e5b80f-7710-4011-890a-4d3c18270918",
+  "firstName": "John",
+  "dateOfBirth": "1998-05-10",
+  "gender": { "id": "9a12c4b5-8821-4122-901b-5e4d29381001", "code": "MAN", "name": "Man" },
+  "bio": "Coffee and long walks.",
+  "occupation": "Engineer",
+  "education": "B.Tech",
+  "city": null,
+  "isProfileComplete": false
+}
+```
+
+`city` is returned and is null until a later location step. `location` is never returned. Password hashes, refresh tokens, OTP data, and other user security fields are not returned.
+
+`isProfileComplete` is stored on `profiles.is_profile_complete` and is never taken from the request. Creating or updating a basic profile does not set it to `true`. It stays `false` while city, location, a primary photo, 3–10 interests, at least one relationship intention, or dating preferences are missing. This step does not write those values. A later completion step is what sets the flag. Editing a basic field does not clear a flag that was already `true`.
+
+#### Get own profile
+
+* **Method & Path:** `GET /api/v1/profile`
+* **Body:** none. This request does not create or update a row.
+* **Success Response (`200 OK`):** the profile object above. Message: `Profile retrieved successfully`.
+* **No profile:** `404 PROFILE_NOT_FOUND`.
+
+#### Create own profile
+
+* **Method & Path:** `POST /api/v1/profile`
+* **Success Response (`201 Created`):** the profile object above. Message: `Profile created successfully`.
+* **Duplicate:** `409 PROFILE_ALREADY_EXISTS`. The existing row is not overwritten.
+* **Request body:**
+
+| Field | Required | Rule |
+| :--- | :--- | :--- |
+| `firstName` | Yes | String. Trimmed. 1–100 characters (`profiles.first_name`). |
+| `dateOfBirth` | Yes | `YYYY-MM-DD`. Must be a real calendar date. Age is calculated in UTC and must be at least 18. |
+| `genderId` | Yes | UUID of an active gender. Unknown or inactive: `400 INVALID_GENDER`. |
+| `bio` | No | String or `null`. Trimmed. Max 500 characters. Blank becomes `null`. |
+| `occupation` | No | String or `null`. Trimmed. Max 100 characters. Blank becomes `null`. |
+| `education` | No | String or `null`. Trimmed. Max 100 characters. Blank becomes `null`. |
+
+Any other field is rejected with `400 VALIDATION_ERROR`, including `userId`, `id`, `isProfileComplete`, `city`, `location`, `interests`, `relationshipIntentions`, `datingPreferences`, and `photos`. Ownership always comes from the access token.
+
+`422 UNDERAGE_NOT_PERMITTED` is returned when the only failure is an underage date of birth. `chk_profiles_age_18_plus` remains the database safeguard.
+
+#### Update own profile
+
+* **Method & Path:** `PATCH /api/v1/profile`
+* **Success Response (`200 OK`):** the profile object above. Message: `Profile updated successfully`.
+* **No profile:** `404 PROFILE_NOT_FOUND`. This is not an upsert.
+* **Empty body:** `400 VALIDATION_ERROR`. No update is executed.
+* **Request body:** any subset of `firstName`, `dateOfBirth`, `genderId`, `bio`, `occupation`, and `education`, using the same rules as create. At least one of those fields is required. The same forbidden fields are rejected. A partial body changes only the fields that were sent. `null` clears `bio`, `occupation`, or `education`.
+
+### 11.15 Onboarding interests and relationship intentions
+
+Implemented. These two routes replace the authenticated user's own catalog selections. They do not use `requireVerified`. They are not part of the public catalog rate limit. There is no rate limiter on these routes.
+
+* **Auth:** `Authorization: Bearer <accessToken>` and role `USER`.
+* **Ownership:** `req.user.id` only. The body must not include `userId`. Any unexpected field is `400 VALIDATION_ERROR`.
+* **Missing or malformed token:** `401 AUTH_REQUIRED`.
+* **Invalid or expired token:** `401 INVALID_TOKEN`.
+* **Suspended or banned account:** `403 ACCOUNT_SUSPENDED` or `403 ACCOUNT_BANNED`.
+* **Any other role, including `ADMIN`:** `403 FORBIDDEN`.
+* **Replace semantics:** the user's existing junction rows are deleted and the submitted ids are inserted in one Sequelize transaction. The stored set becomes exactly the request. A later call does not append. Another user's rows are not changed.
+* **Catalog check:** every id must already exist and have `is_active = true`. Unknown and inactive ids are rejected. They are not skipped.
+* **Profile completion:** these routes do not read or write `profiles.is_profile_complete`. They do not accept photos, location, or dating preferences.
+* **Not mounted:** `PUT /api/v1/me/interests` and `PUT /api/v1/me/relationship-intentions`.
+
+Successful `data` is the selected catalog records, ordered by `display_order` ascending, then `code` ascending. Database-only fields such as `isActive`, `displayOrder`, `description`, and timestamps are omitted.
+
+#### Replace interests
+
+* **Method & Path:** `PUT /api/v1/onboarding/interests`
+* **Request body:**
+
+```json
+{
+  "interestIds": [
+    "1a2b3c4d-0001-4000-8000-000000000001",
+    "1a2b3c4d-0002-4000-8000-000000000002",
+    "1a2b3c4d-0003-4000-8000-000000000003"
+  ]
+}
+```
+
+* **Validation:** `interestIds` is required and must be an array of 3 to 10 UUID strings. Duplicates are rejected, including different letter case. `400 VALIDATION_ERROR` covers a bad shape, a bad UUID, a duplicate, and a count outside 3–10. An unknown or inactive interest is `400 INVALID_INTEREST`. No rows are changed when validation fails. A database failure rolls the replacement back.
+* **Success Response (`200 OK`):** Message: `Interests updated successfully`. Each item is `{ "id", "code", "name", "category" }`. `category` may be `null`.
+
+#### Replace relationship intentions
+
+* **Method & Path:** `PUT /api/v1/onboarding/relationship-intentions`
+* **Request body:**
+
+```json
+{
+  "relationshipIntentionIds": [
+    "2a3b4c5d-0001-4000-8000-000000000001"
+  ]
+}
+```
+
+* **Validation:** `relationshipIntentionIds` is required and must be an array of at least 1 UUID string. There is no maximum. Duplicates are rejected, including different letter case. `400 VALIDATION_ERROR` covers a bad shape, a bad UUID, a duplicate, and an empty array. An unknown or inactive intention is `400 INVALID_RELATIONSHIP_INTENTION`. No rows are changed when validation fails. A database failure rolls the replacement back.
+* **Success Response (`200 OK`):** Message: `Relationship intentions updated successfully`. Each item is `{ "id", "code", "name" }`.
 
 ---
 
 ## 12. Onboarding APIs
 
-**Not implemented.** The routes in this section and the sections after it are the planned contract only. Phase 2 does not mount them.
+**Partly implemented.** `PUT /api/v1/onboarding/interests` and `PUT /api/v1/onboarding/relationship-intentions` are live. Their contract is section 11.15. The other routes in this section are the planned contract only and are not mounted. The live basic profile API is section 11.14. Public catalog reads are live in section 11.13.
 
 The onboarding pipeline enforces sequential profile completion before granting access to discovery.
 
@@ -659,8 +819,9 @@ The onboarding pipeline enforces sequential profile completion before granting a
 ---
 
 ### 12.3 Set Onboarding Interests
+* **Status:** Implemented. See section 11.15. `PUT /api/v1/me/interests` is not implemented.
 * **Method & Path:** `PUT /api/v1/onboarding/interests`
-* **Auth:** Authenticated
+* **Auth:** Authenticated `USER`. `requireVerified` is not applied.
 * **Request Body:**
   ```json
   {
@@ -671,14 +832,15 @@ The onboarding pipeline enforces sequential profile completion before granting a
     ]
   }
   ```
-* **Validation:** Array of active interest UUIDs, **min 3, max 10 items**.
-* **Success Response (`200 OK`):** Returns selected interest list.
+* **Validation:** Array of active interest UUIDs, **min 3, max 10 items**. Duplicates, unknown ids, and inactive ids are rejected. The call replaces `user_interests` for the authenticated user.
+* **Success Response (`200 OK`):** Returns the selected interest list. See section 11.15.
 
 ---
 
 ### 12.4 Set Onboarding Relationship Intentions
+* **Status:** Implemented. See section 11.15. `PUT /api/v1/me/relationship-intentions` is not implemented.
 * **Method & Path:** `PUT /api/v1/onboarding/relationship-intentions`
-* **Auth:** Authenticated
+* **Auth:** Authenticated `USER`. `requireVerified` is not applied.
 * **Request Body:**
   ```json
   {
@@ -687,8 +849,8 @@ The onboarding pipeline enforces sequential profile completion before granting a
     ]
   }
   ```
-* **Validation:** Array of active intention UUIDs, **min 1 item**.
-* **Success Response (`200 OK`):** Returns selected intention list.
+* **Validation:** Array of active intention UUIDs, **min 1 item**, no maximum. Duplicates, unknown ids, and inactive ids are rejected. The call replaces `user_relationship_intentions` for the authenticated user.
+* **Success Response (`200 OK`):** Returns the selected intention list. See section 11.15.
 
 ---
 
@@ -750,6 +912,8 @@ The onboarding pipeline enforces sequential profile completion before granting a
 ---
 
 ## 13. Profile APIs
+
+**Not implemented.** The routes in this section are the planned fuller profile contract, including photos, interests, and public profiles. They are not mounted. The live basic profile API is `GET`, `POST`, and `PATCH /api/v1/profile` in section 11.14.
 
 ### 13.1 Get Current User Profile (Private View)
 * **Method & Path:** `GET /api/v1/profiles/me`
@@ -916,9 +1080,10 @@ The onboarding pipeline enforces sequential profile completion before granting a
 ## 15. Interest APIs
 
 ### 15.1 List Active Interests
+* **Status:** Implemented. See section 11.13. Public, active rows only, `display_order` ascending. Empty `data: []` is success. Production interests are not seeded.
 * **Method & Path:** `GET /api/v1/interests`
-* **Auth:** Public / Authenticated
-* **Success Response (`200 OK`):**
+* **Auth:** Public
+* **Success Response (`200 OK`):** Message is `Interests retrieved successfully`. Item fields are `id`, `code`, `name`, and `category`. The sample below is illustrative only; those interest names are not seed data.
   ```json
   {
     "success": true,
@@ -932,27 +1097,30 @@ The onboarding pipeline enforces sequential profile completion before granting a
 ---
 
 ### 15.2 Update Current User Interests
+* **Status:** Not implemented. The mounted route is `PUT /api/v1/onboarding/interests`. See section 11.15.
 * **Method & Path:** `PUT /api/v1/me/interests`
 * **Auth:** Authenticated
 * **Request Body:** `{ "interestIds": ["uuid-1", "uuid-2", "uuid-3"] }` (min 3, max 10).
-* **Success Response (`200 OK`):** Returns updated user interest list.
+* **Success Response (`200 OK`):** Returns updated user interest list. This path is not mounted.
 
 ---
 
 ## 16. Relationship Intention APIs
 
 ### 16.1 List Active Relationship Intentions
+* **Status:** Implemented. See section 11.13. Public, active rows only, `display_order` ascending.
 * **Method & Path:** `GET /api/v1/relationship-intentions`
-* **Auth:** Public / Authenticated
-* **Success Response (`200 OK`):** Returns catalog of active intentions (`LONG_TERM_RELATIONSHIP`, `SOMETHING_CASUAL`, `FRIENDSHIP`, `NOT_SURE_YET`).
+* **Auth:** Public
+* **Success Response (`200 OK`):** Returns active intentions (`LONG_TERM_RELATIONSHIP`, `SOMETHING_CASUAL`, `FRIENDSHIP`, `NOT_SURE_YET`) as `{ "id", "code", "name" }`. Message: `Relationship intentions retrieved successfully`.
 
 ---
 
 ### 16.2 Update Current User Intentions
+* **Status:** Not implemented. The mounted route is `PUT /api/v1/onboarding/relationship-intentions`. See section 11.15.
 * **Method & Path:** `PUT /api/v1/me/relationship-intentions`
 * **Auth:** Authenticated
 * **Request Body:** `{ "relationshipIntentionIds": ["uuid-1", "uuid-2"] }` ($\ge 1$).
-* **Success Response (`200 OK`):** Returns updated intentions list.
+* **Success Response (`200 OK`):** Returns updated intentions list. This path is not mounted.
 
 ---
 
@@ -1668,7 +1836,7 @@ Rate limits are enforced using Redis sliding-window algorithms:
 | **Verification resend** | 1 minute | 1 request | Identifier. Live. Registration consumes the same window. |
 | **Discovery Swipe Actions**| 1 minute | 60 requests | User ID |
 | **Chat Message Sending** | 1 minute | 30 requests | User ID |
-| **General Public APIs** | 1 minute | 100 requests | IP Address |
+| **General Public APIs** | 1 minute | 100 requests | IP Address. Live for `GET /genders`, `GET /interests`, and `GET /relationship-intentions` as `ratelimit:public:<ip>`. |
 | **Admin APIs** | 1 minute | 120 requests | Admin User ID |
 
 ---
@@ -1689,6 +1857,7 @@ Rate limits are enforced using Redis sliding-window algorithms:
 | API Endpoint Group | Primary PostgreSQL Tables Interacted With |
 | :--- | :--- |
 | **Auth** (`/auth/*`) | `users`, `auth_refresh_tokens` |
+| **Public catalogs** (`GET /genders`, `GET /interests`, `GET /relationship-intentions`) | `genders`, `interests`, `relationship_intentions` |
 | **Onboarding** (`/onboarding/*`) | `users`, `profiles`, `profile_photos`, `user_interests`, `user_relationship_intentions`, `dating_preferences`, `user_dating_preference_genders`, `user_dating_preference_intentions` |
 | **Profiles** (`/profiles/*`) | `profiles`, `users`, `genders`, `profile_photos`, `interests`, `relationship_intentions` |
 | **Photos** (`/profile-photos/*`) | `profile_photos` |
