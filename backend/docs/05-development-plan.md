@@ -308,7 +308,7 @@ Implement secure, dual-identifier registration (Email OR Phone), cryptographic p
 
 ## 7. Phase 3 — Profile and Onboarding
 
-**Step 3 status (2026-09-29): basic profile HTTP is implemented. Phase 3 is not complete. Photos, interests, intentions, preferences, location, and onboarding completion are next.**
+**Step 3 status (2026-09-29): basic profile HTTP is implemented. Interest and relationship-intention selection is also implemented on the onboarding routes below. Phase 3 is not complete. Photos, dating preferences, location, and onboarding completion are next. The documents still disagree on Phase 3 step numbers; this selection work is not a renumbered step.**
 
 Implemented in Step 1:
 
@@ -329,7 +329,15 @@ Implemented in Step 3:
 * The client cannot set `userId`, `isProfileComplete`, `city`, `location`, interests, intentions, preferences, or photos. A missing profile is `404 PROFILE_NOT_FOUND`. A second create is `409 PROFILE_ALREADY_EXISTS`. An empty `PATCH` is `400 VALIDATION_ERROR`.
 * A basic profile stays `is_profile_complete = false` because city, location, photos, interests, intentions, and dating preferences are still required. This step does not set the flag to true and does not clear a flag that is already true.
 
-Not implemented: onboarding HTTP routes, photos, S3, interest selection, relationship-intention selection, dating preferences, location endpoints, onboarding completion, public profiles, discovery, likes, matches, and chat. Plans, features, and usage limits are still unseeded.
+Implemented for interest and relationship-intention selection:
+
+* `PUT /api/v1/onboarding/interests` replaces `user_interests` for the authenticated `USER`. `interestIds` is 3 to 10 unique active interest UUIDs.
+* `PUT /api/v1/onboarding/relationship-intentions` replaces `user_relationship_intentions` for the authenticated `USER`. `relationshipIntentionIds` is at least 1 unique active intention UUID. There is no maximum.
+* Ownership is `req.user.id`. `userId` is rejected. Unknown, inactive, and duplicate ids are rejected. Delete and insert run in one Sequelize transaction.
+* `PUT /api/v1/me/interests` and `PUT /api/v1/me/relationship-intentions` are not implemented.
+* These routes do not change `profiles.is_profile_complete`.
+
+Not implemented: the other onboarding HTTP routes, photos, S3, dating preferences, location endpoints, onboarding completion, public profiles, discovery, likes, matches, and chat. Plans, features, and usage limits are still unseeded. Production interests are not seeded.
 
 ### 7.1 Objectives
 Implement the linear onboarding sequence, demographic metadata management, S3 presigned photo upload pipeline, dating preferences, and profile completion validation.
@@ -355,8 +363,9 @@ Implement the linear onboarding sequence, demographic metadata management, S3 pr
    * `PATCH /api/v1/profile-photos/:photoId`: Updates `displayOrder` or `isPrimary`.
    * `DELETE /api/v1/profile-photos/:photoId`: Soft-deletes photo record; enforces minimum 1 photo rule for complete profiles.
 4. **Interests & Intentions Setup:**
-   * `PUT /api/v1/onboarding/interests` / `PUT /api/v1/me/interests`: Validates array of active interest UUIDs (**min 3, max 10**); updates `user_interests`.
-   * `PUT /api/v1/onboarding/relationship-intentions` / `PUT /api/v1/me/relationship-intentions`: Validates array of active intention UUIDs (**min 1**); updates `user_relationship_intentions`.
+   * **Implemented:** `PUT /api/v1/onboarding/interests` validates an array of active interest UUIDs (**min 3, max 10**, no duplicates) and replaces `user_interests` in one transaction.
+   * **Implemented:** `PUT /api/v1/onboarding/relationship-intentions` validates an array of active intention UUIDs (**min 1**, no duplicates, no maximum) and replaces `user_relationship_intentions` in one transaction.
+   * **Not implemented:** `PUT /api/v1/me/interests` and `PUT /api/v1/me/relationship-intentions`. These routes do not set `profiles.is_profile_complete`.
 5. **Dating Preferences Setup (`PUT /api/v1/onboarding/dating-preferences`):**
    * Validates `minAge >= 18`, `maxAge <= 100`, `maxAge >= minAge`, `maxDistanceKm` (1–500 km), `interestedInGenderIds`, and `preferredIntentionIds`.
    * Updates `dating_preferences`, `user_dating_preference_genders`, and `user_dating_preference_intentions`.

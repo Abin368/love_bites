@@ -59,11 +59,15 @@ describe('profile validation', () => {
     expect(underage(createProfileSchema.safeParse({ ...validCreate, dateOfBirth: '2015-01-01' }))).toBe(true);
   });
 
-  it('rejects ownership and completion fields', () => {
+  it('rejects ownership, completion, interest, and intention fields', () => {
     expect(createProfileSchema.safeParse({ ...validCreate, userId: genderId }).success).toBe(false);
     expect(createProfileSchema.safeParse({ ...validCreate, isProfileComplete: true }).success).toBe(false);
     expect(createProfileSchema.safeParse({ ...validCreate, city: 'Kochi' }).success).toBe(false);
     expect(createProfileSchema.safeParse({ ...validCreate, location: { latitude: 1, longitude: 2 } }).success).toBe(false);
+    expect(createProfileSchema.safeParse({ ...validCreate, interests: [genderId] }).success).toBe(false);
+    expect(createProfileSchema.safeParse({ ...validCreate, relationshipIntentions: [genderId] }).success).toBe(false);
+    expect(updateProfileSchema.safeParse({ interests: [genderId] }).success).toBe(false);
+    expect(updateProfileSchema.safeParse({ relationshipIntentions: [genderId], bio: 'Hi' }).success).toBe(false);
   });
 
   it('requires at least one field on update and still rejects an underage date', () => {

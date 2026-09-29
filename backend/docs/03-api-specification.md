@@ -13,7 +13,7 @@ This document defines the **RESTful API Specification** and **Socket.IO Realtime
 
 ### Implementation status
 
-Phase 2 authentication is implemented and verified. Sections **4** and **11** below describe that live behavior, including the basic profile API in section **11.14**. Sections **12** onward (full onboarding, the richer profile views, discovery, likes, chat, subscriptions, payments, and the rest) are the planned contract. Those routes are **not** mounted. Do not call them.
+Phase 2 authentication is implemented and verified. Sections **4** and **11** below describe that live behavior, including the basic profile API in section **11.14** and interest and relationship-intention selection in section **11.15**. Sections **12** onward (the rest of onboarding, the richer profile views, discovery, likes, chat, subscriptions, payments, and the rest) are the planned contract. Those routes are **not** mounted, except where a subsection says the live contract is section **11.15**. Do not call the unmounted routes. `PUT /api/v1/me/interests` and `PUT /api/v1/me/relationship-intentions` are not implemented.
 
 Health checks are also live: `GET /health` and `GET /api/v1/health`.
 
@@ -611,11 +611,11 @@ From login `user`, and from access-token claims:
 
 ### 11.12 What is live, and what Phase 3 will add
 
-Live now: registration, email and phone verification, resend, login, refresh, logout, forgot-password, reset-password, the public catalog reads in section 11.13, and the authenticated basic profile API in section 11.14.
+Live now: registration, email and phone verification, resend, login, refresh, logout, forgot-password, reset-password, the public catalog reads in section 11.13, the authenticated basic profile API in section 11.14, and `PUT /api/v1/onboarding/interests` plus `PUT /api/v1/onboarding/relationship-intentions` in section 11.15.
 
-Not implemented, even though the database tables exist: the rest of onboarding, photo upload, interest selection, relationship-intention selection, dating preferences, location, the richer profile views in section 13, discovery, likes, matches, chat, subscriptions, payments, and boosts. Do not call those paths.
+Not implemented, even though the database tables exist: the rest of onboarding, photo upload, `PUT /api/v1/me/interests`, `PUT /api/v1/me/relationship-intentions`, dating preferences, location, the richer profile views in section 13, discovery, likes, matches, chat, subscriptions, payments, and boosts. Do not call those paths.
 
-Phase 3 Step 1 is the three public catalog reads. Phase 3 Step 3 is `GET`, `POST`, and `PATCH /api/v1/profile`. Gender and relationship-intention seed data exist. Production interests are not seeded, because the approved interest list is not defined. Phase 3 is not complete. Later sections remain the planned contract unless a subsection says it is implemented.
+Phase 3 Step 1 is the three public catalog reads. Phase 3 Step 3 is `GET`, `POST`, and `PATCH /api/v1/profile`. Interest and relationship-intention selection is the onboarding slice in section 11.15. It is not a renumbered phase step. Gender and relationship-intention seed data exist. Production interests are not seeded, because the approved interest list is not defined. Phase 3 is not complete. Later sections remain the planned contract unless a subsection says it is implemented.
 
 ### 11.13 Public catalog reads
 
@@ -723,11 +723,62 @@ Any other field is rejected with `400 VALIDATION_ERROR`, including `userId`, `id
 * **Empty body:** `400 VALIDATION_ERROR`. No update is executed.
 * **Request body:** any subset of `firstName`, `dateOfBirth`, `genderId`, `bio`, `occupation`, and `education`, using the same rules as create. At least one of those fields is required. The same forbidden fields are rejected. A partial body changes only the fields that were sent. `null` clears `bio`, `occupation`, or `education`.
 
+### 11.15 Onboarding interests and relationship intentions
+
+Implemented. These two routes replace the authenticated user's own catalog selections. They do not use `requireVerified`. They are not part of the public catalog rate limit. There is no rate limiter on these routes.
+
+* **Auth:** `Authorization: Bearer <accessToken>` and role `USER`.
+* **Ownership:** `req.user.id` only. The body must not include `userId`. Any unexpected field is `400 VALIDATION_ERROR`.
+* **Missing or malformed token:** `401 AUTH_REQUIRED`.
+* **Invalid or expired token:** `401 INVALID_TOKEN`.
+* **Suspended or banned account:** `403 ACCOUNT_SUSPENDED` or `403 ACCOUNT_BANNED`.
+* **Any other role, including `ADMIN`:** `403 FORBIDDEN`.
+* **Replace semantics:** the user's existing junction rows are deleted and the submitted ids are inserted in one Sequelize transaction. The stored set becomes exactly the request. A later call does not append. Another user's rows are not changed.
+* **Catalog check:** every id must already exist and have `is_active = true`. Unknown and inactive ids are rejected. They are not skipped.
+* **Profile completion:** these routes do not read or write `profiles.is_profile_complete`. They do not accept photos, location, or dating preferences.
+* **Not mounted:** `PUT /api/v1/me/interests` and `PUT /api/v1/me/relationship-intentions`.
+
+Successful `data` is the selected catalog records, ordered by `display_order` ascending, then `code` ascending. Database-only fields such as `isActive`, `displayOrder`, `description`, and timestamps are omitted.
+
+#### Replace interests
+
+* **Method & Path:** `PUT /api/v1/onboarding/interests`
+* **Request body:**
+
+```json
+{
+  "interestIds": [
+    "1a2b3c4d-0001-4000-8000-000000000001",
+    "1a2b3c4d-0002-4000-8000-000000000002",
+    "1a2b3c4d-0003-4000-8000-000000000003"
+  ]
+}
+```
+
+* **Validation:** `interestIds` is required and must be an array of 3 to 10 UUID strings. Duplicates are rejected, including different letter case. `400 VALIDATION_ERROR` covers a bad shape, a bad UUID, a duplicate, and a count outside 3–10. An unknown or inactive interest is `400 INVALID_INTEREST`. No rows are changed when validation fails. A database failure rolls the replacement back.
+* **Success Response (`200 OK`):** Message: `Interests updated successfully`. Each item is `{ "id", "code", "name", "category" }`. `category` may be `null`.
+
+#### Replace relationship intentions
+
+* **Method & Path:** `PUT /api/v1/onboarding/relationship-intentions`
+* **Request body:**
+
+```json
+{
+  "relationshipIntentionIds": [
+    "2a3b4c5d-0001-4000-8000-000000000001"
+  ]
+}
+```
+
+* **Validation:** `relationshipIntentionIds` is required and must be an array of at least 1 UUID string. There is no maximum. Duplicates are rejected, including different letter case. `400 VALIDATION_ERROR` covers a bad shape, a bad UUID, a duplicate, and an empty array. An unknown or inactive intention is `400 INVALID_RELATIONSHIP_INTENTION`. No rows are changed when validation fails. A database failure rolls the replacement back.
+* **Success Response (`200 OK`):** Message: `Relationship intentions updated successfully`. Each item is `{ "id", "code", "name" }`.
+
 ---
 
 ## 12. Onboarding APIs
 
-**Not implemented.** The onboarding routes in this section are the planned contract only. They are not mounted. The live basic profile API is section 11.14. Public catalog reads are live in section 11.13.
+**Partly implemented.** `PUT /api/v1/onboarding/interests` and `PUT /api/v1/onboarding/relationship-intentions` are live. Their contract is section 11.15. The other routes in this section are the planned contract only and are not mounted. The live basic profile API is section 11.14. Public catalog reads are live in section 11.13.
 
 The onboarding pipeline enforces sequential profile completion before granting access to discovery.
 
@@ -768,8 +819,9 @@ The onboarding pipeline enforces sequential profile completion before granting a
 ---
 
 ### 12.3 Set Onboarding Interests
+* **Status:** Implemented. See section 11.15. `PUT /api/v1/me/interests` is not implemented.
 * **Method & Path:** `PUT /api/v1/onboarding/interests`
-* **Auth:** Authenticated
+* **Auth:** Authenticated `USER`. `requireVerified` is not applied.
 * **Request Body:**
   ```json
   {
@@ -780,14 +832,15 @@ The onboarding pipeline enforces sequential profile completion before granting a
     ]
   }
   ```
-* **Validation:** Array of active interest UUIDs, **min 3, max 10 items**.
-* **Success Response (`200 OK`):** Returns selected interest list.
+* **Validation:** Array of active interest UUIDs, **min 3, max 10 items**. Duplicates, unknown ids, and inactive ids are rejected. The call replaces `user_interests` for the authenticated user.
+* **Success Response (`200 OK`):** Returns the selected interest list. See section 11.15.
 
 ---
 
 ### 12.4 Set Onboarding Relationship Intentions
+* **Status:** Implemented. See section 11.15. `PUT /api/v1/me/relationship-intentions` is not implemented.
 * **Method & Path:** `PUT /api/v1/onboarding/relationship-intentions`
-* **Auth:** Authenticated
+* **Auth:** Authenticated `USER`. `requireVerified` is not applied.
 * **Request Body:**
   ```json
   {
@@ -796,8 +849,8 @@ The onboarding pipeline enforces sequential profile completion before granting a
     ]
   }
   ```
-* **Validation:** Array of active intention UUIDs, **min 1 item**.
-* **Success Response (`200 OK`):** Returns selected intention list.
+* **Validation:** Array of active intention UUIDs, **min 1 item**, no maximum. Duplicates, unknown ids, and inactive ids are rejected. The call replaces `user_relationship_intentions` for the authenticated user.
+* **Success Response (`200 OK`):** Returns the selected intention list. See section 11.15.
 
 ---
 
@@ -1044,10 +1097,11 @@ The onboarding pipeline enforces sequential profile completion before granting a
 ---
 
 ### 15.2 Update Current User Interests
+* **Status:** Not implemented. The mounted route is `PUT /api/v1/onboarding/interests`. See section 11.15.
 * **Method & Path:** `PUT /api/v1/me/interests`
 * **Auth:** Authenticated
 * **Request Body:** `{ "interestIds": ["uuid-1", "uuid-2", "uuid-3"] }` (min 3, max 10).
-* **Success Response (`200 OK`):** Returns updated user interest list.
+* **Success Response (`200 OK`):** Returns updated user interest list. This path is not mounted.
 
 ---
 
@@ -1062,10 +1116,11 @@ The onboarding pipeline enforces sequential profile completion before granting a
 ---
 
 ### 16.2 Update Current User Intentions
+* **Status:** Not implemented. The mounted route is `PUT /api/v1/onboarding/relationship-intentions`. See section 11.15.
 * **Method & Path:** `PUT /api/v1/me/relationship-intentions`
 * **Auth:** Authenticated
 * **Request Body:** `{ "relationshipIntentionIds": ["uuid-1", "uuid-2"] }` ($\ge 1$).
-* **Success Response (`200 OK`):** Returns updated intentions list.
+* **Success Response (`200 OK`):** Returns updated intentions list. This path is not mounted.
 
 ---
 

@@ -202,6 +202,20 @@ describe('PostgreSQL profile API', () => {
     expect(ownedByBody.status).toBe(400);
     expect(ownedByBody.body.error.code).toBe('VALIDATION_ERROR');
 
+    const withInterests = await request(app)
+      .post('/api/v1/profile')
+      .set(auth)
+      .send(profileBody(gender.id, { interests: [gender.id] }));
+    expect(withInterests.status).toBe(400);
+    expect(withInterests.body.error.code).toBe('VALIDATION_ERROR');
+
+    const withIntentions = await request(app)
+      .post('/api/v1/profile')
+      .set(auth)
+      .send(profileBody(gender.id, { relationshipIntentions: [gender.id] }));
+    expect(withIntentions.status).toBe(400);
+    expect(withIntentions.body.error.code).toBe('VALIDATION_ERROR');
+
     const clientCompletion = await request(app)
       .post('/api/v1/profile')
       .set(auth)
@@ -248,6 +262,20 @@ describe('PostgreSQL profile API', () => {
       .set(auth)
       .send({ userId: other.id, firstName: 'Hacked' });
     expect(patchOwner.status).toBe(400);
+
+    const patchInterests = await request(app)
+      .patch('/api/v1/profile')
+      .set(auth)
+      .send({ interests: [gender.id] });
+    expect(patchInterests.status).toBe(400);
+    expect(patchInterests.body.error.code).toBe('VALIDATION_ERROR');
+
+    const patchIntentions = await request(app)
+      .patch('/api/v1/profile')
+      .set(auth)
+      .send({ relationshipIntentions: [gender.id], bio: 'Should not save' });
+    expect(patchIntentions.status).toBe(400);
+    expect(patchIntentions.body.error.code).toBe('VALIDATION_ERROR');
 
     const patchCompletion = await request(app)
       .patch('/api/v1/profile')
