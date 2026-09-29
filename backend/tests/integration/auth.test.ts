@@ -22,6 +22,15 @@ jest.mock('../../src/config/database', () => ({
 jest.mock('../../src/config/redis', () => jest.requireActual('../helpers/memory-redis'));
 jest.mock('../../src/modules/users/users.data-access', () => jest.requireActual('../helpers/memory-auth-store'));
 jest.mock('../../src/modules/auth/auth.data-access', () => jest.requireActual('../helpers/memory-auth-store'));
+jest.mock('../../src/modules/genders/genders.data-access', () => ({
+  findActiveGenders: async () => []
+}));
+jest.mock('../../src/modules/interests/interests.data-access', () => ({
+  findActiveInterests: async () => []
+}));
+jest.mock('../../src/modules/relationship-intentions/relationship-intentions.data-access', () => ({
+  findActiveRelationshipIntentions: async () => []
+}));
 
 import { app } from '../../src/app';
 

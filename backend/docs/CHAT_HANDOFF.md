@@ -2,15 +2,15 @@
 
 > **Document Path:** `backend/docs/CHAT_HANDOFF.md`  
 > **Status:** Active Backend Handoff Document  
-> **Last Updated:** 2026-09-28  
+> **Last Updated:** 2026-09-29  
 > **Target Audience:** AI Coding Sessions & Backend Engineers  
 
 ---
 
 ## 1. Current Project Status
 
-* **Overall Backend Implementation Status:** **Phase 0 complete. Phase 1 database foundation complete. Phase 2 authentication complete. Backend CI is implemented and verified.** Step 1 and Step 2 migrations remain applied to `love_bites_dev`. No new migrations, seeders, or schema changes were made for authentication. CD/deployment is not implemented.
-* **Current Development Phase:** **Phase 2 authentication is implemented and verified. Backend CI on `develop` is verified. Next work is Phase 3 (profile and onboarding), not more auth schema and not deployment.**
+* **Overall Backend Implementation Status:** **Phase 0 complete. Phase 1 database foundation complete. Phase 2 authentication complete. Backend CI is implemented and verified. Phase 3 Step 1 (public catalogs and seed data) is implemented.** Phase 3 is not complete. Step 1 and Step 2 migrations remain applied to `love_bites_dev`. No new migration was added for catalogs. Seeders exist and were not applied to `love_bites_dev`. CD/deployment is not implemented.
+* **Current Development Phase:** **Phase 3 Step 1 is done. Next work is Phase 3 Step 2 (profile foundation), not discovery, likes, chat, or deployment.**
 * **What is Working:**
   * Base project setup (`package.json`, `tsconfig.json`, `.env.example`, `.sequelizerc`, `jest.config.ts`).
   * Express application (`src/app.ts`) with security headers (Helmet), CORS, JSON parser, cookie parser, HPP, and request ID tracking.
@@ -21,14 +21,16 @@
   * Structured logger with sensitive parameter redaction (`src/utils/logger.ts`), including `passwordHash`, `accessToken`, and `newPassword`.
   * Health check endpoints (`GET /health` and `GET /api/v1/health`).
   * Phase 2 authentication module at `/api/v1/auth` (register, verify email, verify phone, resend, login, refresh, logout, forgot password, reset password).
-  * Automated unit and integration test suite passing with 100% success (50/50 tests). The original 12 Phase 0 tests still pass.
+  * Phase 3 Step 1 public catalogs: `GET /api/v1/genders`, `GET /api/v1/interests`, `GET /api/v1/relationship-intentions`. No authentication. Shared limiter `ratelimit:public:<ip>` at 100 requests / 60 seconds. Active rows only, ordered by `display_order`.
+  * Sequelize seeders for genders and relationship intentions. Idempotent on `code`. Production interests are not seeded.
+  * Automated unit and integration test suite. The original 12 Phase 0 tests still pass. Catalog coverage is in the PostgreSQL suite.
   * Clean TypeScript compilation (`npm run build`).
   * Phase 1 Step 1 and Step 2 models, associations, and reversible migrations. `backend/.env` was not changed.
   * Backend CI: `.github/workflows/backend-ci.yml`. It runs on pushes to `develop` and on pull requests targeting `develop`. `develop` is the integration branch. `main` is the eventual higher-level branch in the current workflow (`feature branch` → `develop` → `main`). CI does not run for `main`.
 * **What is Not Yet Implemented:**
-  * Catalog seed data (genders, interests, relationship intentions, plans, features, usage limits).
-  * Profile and onboarding persistence. Registration validates `dateOfBirth` for age 18+ and does **not** store it or create a `profiles` row.
-  * Domain modules after auth (Profiles, Photos, Genders, Interests, Relationship Intentions, Dating Preferences, Location, Discovery, Likes, Passes, Matches, Chat, Realtime Socket.IO, Safety, Notifications, Subscriptions, Entitlements, Payments, Admin).
+  * Production interest seed data. The approved interest list is not defined. Plans, features, and usage limits are also unseeded.
+  * Phase 3 Step 2 and later: profile creation and update, photos, S3, dating preferences, location, onboarding completion, and public profiles. Registration validates `dateOfBirth` for age 18+ and does **not** store it or create a `profiles` row.
+  * Domain modules after the catalog reads (Profiles, Photos, Dating Preferences, Location, Discovery, Likes, Passes, Matches, Chat, Realtime Socket.IO, Safety, Notifications, Subscriptions, Entitlements, Payments, Admin). User interest selection and user intention selection are not implemented.
   * Real email or SMS delivery. Phase 2 uses mock providers only.
   * Payment providers, webhook handlers, and notification generation.
   * CD/deployment. No deployment target has been selected. Docker and deployment infrastructure remain future work.
@@ -58,7 +60,7 @@ As verified by inspecting the repository filesystem:
 * Phase 0 application scaffolding exists in `src/` (`app.ts`, `server.ts`, `config/`, `middleware/`, `routes/`, `utils/`).
 * Phase 1 Step 1 models exist in `src/database/models/` and associations in `src/database/associations.ts`.
 * Phase 1 Step 1 migrations exist in `src/database/migrations/`.
-* Domain feature modules other than auth are **not** implemented. Auth lives in `src/modules/auth/`. User lookups live in `src/modules/users/users.data-access.ts`.
+* Auth lives in `src/modules/auth/`. User lookups live in `src/modules/users/users.data-access.ts`. Public catalog reads live in `src/modules/genders/`, `src/modules/interests/`, and `src/modules/relationship-intentions/`. Other domain modules are **not** implemented.
 
 ### Established Architectural Standard (Mandatory for Implementation)
 When code is implemented, it **must** strictly conform to the 3-Layer Modular Architecture specified in `backend_docs_01-backend-architecture.md`:
@@ -105,8 +107,9 @@ HTTP Request
 | **Users** | **Schema Implemented (Phase 1 Step 1)** | `src/database/models/user.model.ts` | Root identity table, UUID PK, identifier/role/status CHECKs, partial unique email/phone indexes, paranoid `deleted_at`. No user APIs yet. |
 | **Profiles** | **Schema Implemented (Phase 1 Step 1)** | `src/database/models/profile.model.ts` | 1:1 with users, DOB with `chk_profiles_age_18_plus`, `gender_id` FK, city, `geography(Point, 4326)` location. No profile APIs yet. |
 | **Photos** | **Schema Implemented (Phase 1 Step 1)** | `src/database/models/profile-photo.model.ts` | `user_id` → `users.id`, storage key, display order 1..5, primary-photo partial unique index. No S3/upload APIs yet. |
-| **Interests** | **Schema Implemented (Phase 1 Step 2)** | `interest.model.ts`, `user-interest.model.ts` | Catalog and `user_interests` junction exist. No interest APIs. Tables are unseeded. |
-| **Relationship Intentions** | **Schema Implemented (Phase 1 Step 2)** | `relationship-intention.model.ts`, junction models | Catalog plus profile and preference junction tables exist. No APIs. Tables are unseeded. |
+| **Genders** | **Catalog API implemented (Phase 3 Step 1)** | `src/modules/genders/`, `gender.model.ts` | Public `GET /api/v1/genders` returns active rows (`id`, `code`, `name`) ordered by `display_order`. Seeder inserts `MAN`, `WOMAN`, `NON_BINARY`, `PREFER_NOT_TO_SAY`. |
+| **Interests** | **Catalog read implemented; not seeded** | `src/modules/interests/`, `interest.model.ts`, `user-interest.model.ts` | Public `GET /api/v1/interests` returns active rows (`id`, `code`, `name`, `category`). Empty `data: []` is success. No production interest seed. `user_interests` has no API. |
+| **Relationship Intentions** | **Catalog API implemented (Phase 3 Step 1)** | `src/modules/relationship-intentions/`, `relationship-intention.model.ts`, junction models | Public `GET /api/v1/relationship-intentions` returns active rows (`id`, `code`, `name`) ordered by `display_order`. Seeder inserts `LONG_TERM_RELATIONSHIP`, `SOMETHING_CASUAL`, `FRIENDSHIP`, `NOT_SURE_YET`. User selection is not implemented. |
 | **Dating Preferences** | **Schema Implemented (Phase 1)** | `dating-preference.model.ts` plus Step 2 junctions | Core 1:1 table plus `user_dating_preference_genders` and `user_dating_preference_intentions`. No preference APIs. |
 | **Location & PostGIS** | **Schema Implemented (Phase 1 Step 1)** | `profiles.location` migration + `Profile` model | `geography(Point, 4326)` and GiST index `idx_profiles_location_gist` verified on `love_bites_dev` after Step 2. Discovery queries not implemented. |
 | **Discovery Engine** | **Not Implemented** | `src/modules/discovery/` | Single-card candidate delivery, unlimited card browsing, PostGIS `ST_DWithin` spatial query, mutual preference filtering, Boost multipliers, exclusion of self/blocks/passes/matches. |
@@ -130,7 +133,7 @@ HTTP Request
 * **Step 2 models:** `Interest`, `RelationshipIntention`, `UserInterest`, `UserRelationshipIntention`, `UserDatingPreferenceGender`, `UserDatingPreferenceIntention`, `Like`, `Match`, `Conversation`, `Message`, `Block`, `Report`, `Notification`, `Plan`, `Feature`, `PlanFeature`, `UsageLimit`, `Subscription`, `Payment`, `ProcessedWebhook`, `UsageRecord`, `UserCreditBalance`, `CreditTransaction`, `BoostSession`.
 * **Associations:** Step 1 aliases unchanged. Step 2 aliases added in `src/database/associations.ts` and exported from that file. `server.ts` was not modified.
 * **Migrations:** `20260920120001`–`20260920120031` are all `up` on `love_bites_dev` (status checked 2026-09-23). Step 1 files were not edited or rerun. Step 2 files `08`–`31` migrated successfully.
-* **Seeders:** None. Catalog tables may be empty.
+* **Seeders:** `src/database/seeders/20260929120001-seed-genders.js` and `20260929120002-seed-relationship-intentions.js`. Idempotent `ON CONFLICT (code) DO UPDATE`. They were verified on `love_bites_test` only. `love_bites_dev` was not seeded. Interests are intentionally not seeded.
 * **SQL verification (2026-09-23):** 30 public tables present (6 Step 1 + 24 Step 2). Extensions `postgis` 3.6.2, `uuid-ossp` 1.1, `pgcrypto` 1.4. `profiles.location` is `geography(Point,4326)`. `idx_profiles_location_gist` is a GiST index. Named CHECKs, unique constraints, partial indexes, and `ON DELETE` actions matched `02-database-design.md`. `chk_matches_canonical_order` is `user_one_id < user_two_id`. `processed_webhooks.event_id` is `varchar(255)` PK. `notifications.data` default is `'{}'::jsonb`. `boost_sessions.multiplier` is `numeric(4,2)`.
 * **Constraint name note:** `user_relationship_intentions` unique constraint is the documented name `uq_user_intentions_pair`.
 
@@ -165,9 +168,9 @@ Primary Key Strategy: UUIDv4 (gen_random_uuid())
 ## 6. API Status
 
 ### Status Summary
-* **Implemented Endpoints:** `9 / 48` (authentication only)
-* **Partially Implemented Endpoints:** `0 / 48`
-* **Planned Endpoints:** the remaining 39 endpoints specified in `03-api-specification.md`.
+* **Implemented Endpoints:** 9 authentication routes, plus public `GET /api/v1/genders`, `GET /api/v1/interests`, and `GET /api/v1/relationship-intentions`.
+* **Partially Implemented Endpoints:** interest and relationship-intention catalogs are read-only. User selection routes are not mounted.
+* **Planned Endpoints:** profile, onboarding, photos, dating preferences, location, discovery, likes, matches, chat, and the remaining routes in `03-api-specification.md`. Phase 3 is not complete.
 
 ### Planned API Catalog Overview (Base Path: `/api/v1`)
 
@@ -196,7 +199,7 @@ Primary Key Strategy: UUIDv4 (gen_random_uuid())
 | **Photos** | `POST /profile-photos/confirm` | Authenticated | Save photo record in database. |
 | **Photos** | `PATCH /profile-photos/:photoId` | Authenticated | Update display order or primary status. |
 | **Photos** | `DELETE /profile-photos/:photoId` | Authenticated | Soft-delete photo (enforce min 1 photo rule). |
-| **Config** | `GET /genders`, `/interests`, `/relationship-intentions` | Public | Return active dynamic reference lists. |
+| **Config** | `GET /genders`, `/interests`, `/relationship-intentions` | Public | **Implemented.** Active rows only, `display_order` ascending, 100 requests / 60 seconds / IP. Interests may be an empty array. |
 | **Preferences**| `GET /dating-preferences`, `PUT /dating-preferences` | Authenticated | Fetch and update matching preferences. |
 | **Discovery** | `GET /discovery` | Authenticated | Get next candidate card (PostGIS spatial filter, Boost weighted). |
 | **Likes** | `POST /discovery/:userId/like` | Authenticated | Free quota check (10/day), record like, trigger mutual match. |
@@ -266,7 +269,7 @@ Primary Key Strategy: UUIDv4 (gen_random_uuid())
 | :--- | :--- | :--- |
 | **Input Validation** | **Implemented for auth** | Zod schemas strip unknown fields. Underage registration returns `422 UNDERAGE_NOT_PERMITTED`. |
 | **Authentication Security** | **Implemented (Phase 2)** | Argon2id, 15-minute access JWT, opaque refresh token, SHA-256 storage, rotation, and reuse detection. |
-| **Rate Limiting** | **Implemented for auth** | Redis sliding window: register, login, and forgot-password are 5 requests / 60 seconds / IP. OTP resend is 1 request / 60 seconds / identifier. |
+| **Rate Limiting** | **Implemented for auth and public catalogs** | Redis sliding window: register, login, and forgot-password are 5 requests / 60 seconds / IP. OTP resend is 1 request / 60 seconds / identifier. Catalog GETs share `ratelimit:public:<ip>` at 100 requests / 60 seconds. |
 | **CORS** | **Implemented (Phase 0)** | Whitelisted frontend origins with `credentials: true`. |
 | **Authorization / IDOR** | **Not Implemented** | Strict resource ownership validation (`resource.user_id === req.user.id`) + UUIDv4 non-enumerable IDs. Role middleware exists; resource ownership begins in Phase 3. |
 | **HTTP Security Headers** | **Implemented (Phase 0)** | Helmet middleware in `createApp()`. CSP/HSTS hardening still planned for Phase 12. |
@@ -281,15 +284,17 @@ Primary Key Strategy: UUIDv4 (gen_random_uuid())
 
 ## 10. Testing Status
 
-* **Existing Tests:** 50 tests. The original 12 Phase 0 tests are unchanged and still pass.
+* **Existing Tests:** `npm test` is 50/50. `npm run test:integration:pg` is 21/21, including the catalog HTTP tests. The original 12 Phase 0 tests are unchanged and still pass.
 * **Test Framework:** **Jest + ts-jest** (Unit), **Supertest** (Integration). Playwright E2E is still planned.
-* **Covered Functionality:** AppError hierarchy, logger redaction, health endpoints, auth validation, Argon2id, JWT claims and expiry, refresh rotation/reuse decisions, auth and role middleware, and the auth HTTP lifecycle.
+* **Covered Functionality:** AppError hierarchy, logger redaction, health endpoints, auth validation, Argon2id, JWT claims and expiry, refresh rotation/reuse decisions, auth and role middleware, the auth HTTP lifecycle, and the public gender, interest, and relationship-intention catalogs.
 * **Phase 2 verification (2026-09-24):** `npm run build` succeeded. `npm test` **50/50 passing**. Auth integration tests use in-memory user, refresh-token, and Redis doubles. They do not connect to `love_bites_dev`. No migrations were created or run.
+* **Phase 3 Step 1 verification (2026-09-29):** `npm run build` succeeded. `npm test` **50/50 passing**. `npm run test:integration:pg` **21/21 passing**. Catalog tests use `love_bites_test` and the in-memory Redis double. Seeders were applied twice on `love_bites_test` only, then undone. `love_bites_dev` was not seeded. No migration was created.
 * **PostgreSQL integration tests:** `npm run test:integration:pg` uses the existing `scripts/test-database.js` safety infrastructure. That script creates `love_bites_test`, runs Sequelize migrations with `--env test`, and the database guard refuses `love_bites_dev`. CI does not call `npm run db:migrate`.
 * **Missing Tests:**
   * Onboarding pipeline, PostGIS spatial queries, Likes/Passes quota, concurrency-safe matching, undo rollback, chat authorisation, Razorpay webhook idempotency, and admin route security.
 * **Current Test Commands:** `npm test`, `npm run test:unit`, `npm run test:integration`, `npm run test:integration:pg`.
 * **Migration Commands:** `npm run db:migrate`, `npm run db:migrate:status`, `npm run db:migrate:undo` (or `npx sequelize-cli ...`). `.sequelizerc` loads `src/config/sequelize.cli.js`. Local development migration commands are separate from CI. CI does not run `npm run db:migrate`.
+* **Seed Commands:** `npm run db:seed` and `npm run db:seed:undo` call Sequelize CLI. Use `--env test` with the test-database environment. Do not point them at `love_bites_dev` unless that environment is intentionally being seeded.
 
 ### Backend CI
 
@@ -390,10 +395,10 @@ The following architectural and business decisions are established and must **no
 
 ## 16. Recommended Next Task
 
-### Task: **Phase 3 — Profile & Onboarding**
-Phase 2 authentication is in place. Do not add migrations unless a later spec explicitly requires them. Do not seed catalogs unless that task asks for seeders.
+### Task: **Phase 3 — Step 2: Profile foundation**
+Step 1 catalogs and seed data are in place. Phase 3 is not complete. No Step 2 or later behaviour was implemented.
 
-Next implementation is onboarding and profile persistence, including storing date of birth on `profiles`. Do not start discovery, likes, chat, or payments.
+Next work is the profile foundation. Do not start discovery, likes, chat, or payments. Do not invent a production interest catalog.
 
 ---
 
@@ -407,3 +412,4 @@ Next implementation is onboarding and profile persistence, including storing dat
 | **2026-09-23** | Phase 1 Step 2 — Remaining database foundation | **Complete** | Migrations `20260920120008`–`20260920120031` applied to `love_bites_dev`. 24 tables, models, and associations added. No seeders, APIs, services, or payment providers. Build passed. Tests 12/12. SQL verification passed, including Step 1 PostGIS preservation. |
 | **2026-09-24** | Phase 2 — Authentication | **Complete** | Nine `/api/v1/auth` routes. Opaque refresh tokens, SHA-256 storage, rotation, and reuse detection. Redis OTPs, reset tokens, and auth rate limits. Mock email/SMS only. No migrations or `.env` changes. Build passed. Tests 50/50. |
 | **2026-09-28** | Backend CI | **Verified** | `.github/workflows/backend-ci.yml` runs on pushes to `develop` and pull requests targeting `develop`. GitHub Actions, `ubuntu-latest`, Node.js 20, `npm ci`, `npm run build`, `npm test`, `npm run test:integration:pg`, temporary `postgis/postgis:16-3.4` service, existing `love_bites_test` guard. No Redis service. Redis hardening deferred. CD/deployment not implemented. The GitHub Actions check returned green. |
+| **2026-09-29** | Phase 3 Step 1 — Catalogs and seed data | **Implemented** | Public gender, interest, and relationship-intention GETs. Gender and relationship-intention seeders only. Interests not seeded. No migration. `love_bites_dev` was not seeded. Phase 3 is not complete. Step 2 is next. |

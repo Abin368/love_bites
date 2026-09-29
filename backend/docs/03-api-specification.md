@@ -100,7 +100,7 @@ Refreshing rotates the token: the previous refresh row is revoked and a new cook
 
 ### 4.2 Which calls need a token
 
-Live public routes (no `Authorization` header): register, verify-email, verify-phone, resend-verification, login, refresh, forgot-password, reset-password.
+Live public routes (no `Authorization` header): register, verify-email, verify-phone, resend-verification, login, refresh, forgot-password, reset-password, `GET /genders`, `GET /interests`, and `GET /relationship-intentions`.
 
 `POST /api/v1/auth/logout` is the only live route that requires `Authorization: Bearer <accessToken>`. An unverified account (`status: UNVERIFIED`) may log in and log out. Suspended and banned accounts are rejected with `403`.
 
@@ -608,17 +608,54 @@ From login `user`, and from access-token claims:
 
 ### 11.12 What is live, and what Phase 3 will add
 
-Live now: registration, email and phone verification, resend, login, refresh, logout, forgot-password, and reset-password.
+Live now: registration, email and phone verification, resend, login, refresh, logout, forgot-password, reset-password, and the public catalog reads in section 11.13.
 
-Not implemented, even though the database tables exist: profile onboarding, profile editing, photo upload, discovery, likes, matches, chat, subscriptions, payments, and boosts. Do not call those paths.
+Not implemented, even though the database tables exist: profile onboarding, profile editing, photo upload, dating preferences, location, discovery, likes, matches, chat, subscriptions, payments, and boosts. Do not call those paths.
 
-Phase 3 is expected to add profile and onboarding: persisting date of birth, gender, photos, location, interests, relationship intentions, dating preferences, and profile completion. Those endpoints are specified later in this document as the planned contract. They are not available yet.
+Phase 3 Step 1 is the three public catalog reads. Gender and relationship-intention seed data exist. Production interests are not seeded, because the approved interest list is not defined. The rest of Phase 3 is not available yet. Later sections remain the planned contract unless a subsection says it is implemented.
+
+### 11.13 Public catalog reads
+
+Implemented. These three reads are public. They do not use `authenticate` or `requireVerified`. They share the public IP rate limit: 100 requests / 60 seconds / IP, Redis key `ratelimit:public:<ip>`. Over the limit: `429 RATE_LIMITED`.
+
+Only active rows are returned, ordered by `display_order` ascending. An empty catalog is success: `200` with `data: []`. Responses use the standard success envelope and do not include `isActive`, `displayOrder`, or timestamps.
+
+#### List active genders
+
+* **Method & Path:** `GET /api/v1/genders`
+* **Auth:** Public
+* **Seed data:** `MAN` / Man, `WOMAN` / Woman, `NON_BINARY` / Non-binary, `PREFER_NOT_TO_SAY` / Prefer not to say. All are active. Display order is 1 through 4.
+* **Success Response (`200 OK`):**
+
+```json
+{
+  "success": true,
+  "data": [
+    { "id": "6e6e0001-0000-4000-8000-000000000001", "code": "MAN", "name": "Man" }
+  ],
+  "message": "Genders retrieved successfully"
+}
+```
+
+#### List active interests
+
+* **Method & Path:** `GET /api/v1/interests`
+* **Auth:** Public
+* **Seed data:** none. The approved production interest list is not defined. The endpoint returns whatever active rows exist.
+* **Success Response (`200 OK`):** `data` items are `{ "id", "code", "name", "category" }`. `category` may be `null`. Message: `Interests retrieved successfully`. An empty table returns `data: []`.
+
+#### List active relationship intentions
+
+* **Method & Path:** `GET /api/v1/relationship-intentions`
+* **Auth:** Public
+* **Seed data:** `LONG_TERM_RELATIONSHIP` / Long-term relationship, `SOMETHING_CASUAL` / Something casual, `FRIENDSHIP` / Friendship, `NOT_SURE_YET` / Not sure yet. All are active. Display order is 1 through 4. `description` is not returned.
+* **Success Response (`200 OK`):** `data` items are `{ "id", "code", "name" }`. Message: `Relationship intentions retrieved successfully`.
 
 ---
 
 ## 12. Onboarding APIs
 
-**Not implemented.** The routes in this section and the sections after it are the planned contract only. Phase 2 does not mount them.
+**Not implemented.** The onboarding routes in this section are the planned contract only. They are not mounted. Public catalog reads are live in section 11.13.
 
 The onboarding pipeline enforces sequential profile completion before granting access to discovery.
 
@@ -916,9 +953,10 @@ The onboarding pipeline enforces sequential profile completion before granting a
 ## 15. Interest APIs
 
 ### 15.1 List Active Interests
+* **Status:** Implemented. See section 11.13. Public, active rows only, `display_order` ascending. Empty `data: []` is success. Production interests are not seeded.
 * **Method & Path:** `GET /api/v1/interests`
-* **Auth:** Public / Authenticated
-* **Success Response (`200 OK`):**
+* **Auth:** Public
+* **Success Response (`200 OK`):** Message is `Interests retrieved successfully`. Item fields are `id`, `code`, `name`, and `category`. The sample below is illustrative only; those interest names are not seed data.
   ```json
   {
     "success": true,
@@ -942,9 +980,10 @@ The onboarding pipeline enforces sequential profile completion before granting a
 ## 16. Relationship Intention APIs
 
 ### 16.1 List Active Relationship Intentions
+* **Status:** Implemented. See section 11.13. Public, active rows only, `display_order` ascending.
 * **Method & Path:** `GET /api/v1/relationship-intentions`
-* **Auth:** Public / Authenticated
-* **Success Response (`200 OK`):** Returns catalog of active intentions (`LONG_TERM_RELATIONSHIP`, `SOMETHING_CASUAL`, `FRIENDSHIP`, `NOT_SURE_YET`).
+* **Auth:** Public
+* **Success Response (`200 OK`):** Returns active intentions (`LONG_TERM_RELATIONSHIP`, `SOMETHING_CASUAL`, `FRIENDSHIP`, `NOT_SURE_YET`) as `{ "id", "code", "name" }`. Message: `Relationship intentions retrieved successfully`.
 
 ---
 
@@ -1668,7 +1707,7 @@ Rate limits are enforced using Redis sliding-window algorithms:
 | **Verification resend** | 1 minute | 1 request | Identifier. Live. Registration consumes the same window. |
 | **Discovery Swipe Actions**| 1 minute | 60 requests | User ID |
 | **Chat Message Sending** | 1 minute | 30 requests | User ID |
-| **General Public APIs** | 1 minute | 100 requests | IP Address |
+| **General Public APIs** | 1 minute | 100 requests | IP Address. Live for `GET /genders`, `GET /interests`, and `GET /relationship-intentions` as `ratelimit:public:<ip>`. |
 | **Admin APIs** | 1 minute | 120 requests | Admin User ID |
 
 ---
@@ -1689,6 +1728,7 @@ Rate limits are enforced using Redis sliding-window algorithms:
 | API Endpoint Group | Primary PostgreSQL Tables Interacted With |
 | :--- | :--- |
 | **Auth** (`/auth/*`) | `users`, `auth_refresh_tokens` |
+| **Public catalogs** (`GET /genders`, `GET /interests`, `GET /relationship-intentions`) | `genders`, `interests`, `relationship_intentions` |
 | **Onboarding** (`/onboarding/*`) | `users`, `profiles`, `profile_photos`, `user_interests`, `user_relationship_intentions`, `dating_preferences`, `user_dating_preference_genders`, `user_dating_preference_intentions` |
 | **Profiles** (`/profiles/*`) | `profiles`, `users`, `genders`, `profile_photos`, `interests`, `relationship_intentions` |
 | **Photos** (`/profile-photos/*`) | `profile_photos` |

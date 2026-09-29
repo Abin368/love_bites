@@ -690,18 +690,23 @@ If the retried request fails again, stop. Do not refresh a second time for that 
 | POST | `/api/v1/auth/logout` | Implemented |
 | POST | `/api/v1/auth/forgot-password` | Implemented |
 | POST | `/api/v1/auth/reset-password` | Implemented |
+| GET | `/api/v1/genders` | Implemented. Public. No bearer token. |
+| GET | `/api/v1/interests` | Implemented. Public. May return an empty array. |
+| GET | `/api/v1/relationship-intentions` | Implemented. Public. No bearer token. |
 
 Paths are prefixed by `API_PREFIX`, which defaults to `/api/v1`.
+
+The three catalog reads share one limit of 100 requests per 60 seconds per IP. A catalog response is `{ "success": true, "data": [], "message": "..." }`. Gender and intention items are `{ "id", "code", "name" }`. Interest items also include `category`, which may be `null`. Only active rows are returned, ordered by `display_order`. Do not expect a production interest list. Gender and relationship-intention seed values are the approved codes in `backend/docs/03-api-specification.md` section 11.13.
 
 ---
 
 ## 24. Phase 3 boundary
 
-Phase 2 is authentication only.
+Phase 2 authentication is implemented. Phase 3 Step 1 adds only the three public catalog reads in section 23.
 
-Phase 3 is planned to cover profile and onboarding: persisting date of birth on the profile, gender, photos, location, interests, relationship intentions, dating preferences, and profile completion. The database design expects date of birth on `profiles.date_of_birth`. That column is not written by registration.
+The rest of Phase 3 is still planned: persisting date of birth on the profile, photos, location, saving interests and relationship intentions, dating preferences, and profile completion. The database design expects date of birth on `profiles.date_of_birth`. That column is not written by registration.
 
-Do not call Phase 3 paths. They are not mounted. The later sections of `backend/docs/03-api-specification.md` describe that planned contract, not the current server.
+Do not call those later Phase 3 paths. They are not mounted. The later sections of `backend/docs/03-api-specification.md` describe that planned contract, except the catalog reads marked as implemented.
 
 ---
 

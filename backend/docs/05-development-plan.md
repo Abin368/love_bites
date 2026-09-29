@@ -308,6 +308,16 @@ Implement secure, dual-identifier registration (Email OR Phone), cryptographic p
 
 ## 7. Phase 3 — Profile and Onboarding
 
+**Step 1 status (2026-09-29): catalogs and seed data only. Phase 3 is not complete. Step 2 is next.**
+
+Implemented in Step 1:
+
+* Public `GET /api/v1/genders`, `GET /api/v1/interests`, and `GET /api/v1/relationship-intentions`. No authentication. Shared public rate limit of 100 requests / 60 seconds / IP (`ratelimit:public:<ip>`). Active rows only, ordered by `display_order`.
+* Sequelize seeders for the approved genders (`MAN`, `WOMAN`, `NON_BINARY`, `PREFER_NOT_TO_SAY`) and relationship intentions (`LONG_TERM_RELATIONSHIP`, `SOMETHING_CASUAL`, `FRIENDSHIP`, `NOT_SURE_YET`).
+* No production interest seed. The approved interest list is not defined. `GET /api/v1/interests` returns an empty array until rows exist.
+
+Not implemented: profile creation and update, photos, S3, dating preferences, location, onboarding completion, public profiles, discovery, likes, matches, and chat. Plans, features, and usage limits are still unseeded. No new migration was added.
+
 ### 7.1 Objectives
 Implement the linear onboarding sequence, demographic metadata management, S3 presigned photo upload pipeline, dating preferences, and profile completion validation.
 
