@@ -3,9 +3,9 @@ import { healthRoutes } from './health.routes';
 import { authRoutes } from '../modules/auth/auth.routes';
 import { genderRoutes } from '../modules/genders/genders.routes';
 import { interestRoutes } from '../modules/interests/interests.routes';
-import { onboardingRoutes } from '../modules/onboarding/onboarding.routes.js';
-import { profileRoutes } from '../modules/profiles/profiles.routes.js';
-import { profilePhotoRoutes } from '../modules/profile-photos/profile-photos.routes.js';
+import { onboardingRoutes } from '../modules/onboarding/onboarding.routes';
+import { profileRoutes } from '../modules/profiles/profiles.routes';
+import { profilePhotoRoutes } from '../modules/profile-photos/profile-photos.routes';
 import { relationshipIntentionRoutes } from '../modules/relationship-intentions/relationship-intentions.routes';
 
 const router = Router();
