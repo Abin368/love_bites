@@ -33,6 +33,11 @@ jest.mock('../../src/modules/onboarding/onboarding.data-access', () => ({
   findDatingPreferenceIntentions: jest.fn()
 }));
 
+jest.mock('../../src/modules/profiles/profiles.data-access', () => ({
+  findProfileByUserId: jest.fn(),
+  updateProfileLocation: jest.fn()
+}));
+
 import { sequelize } from '../../src/config/database';
 import * as gendersDataAccess from '../../src/modules/genders/genders.data-access';
 import * as interestsDataAccess from '../../src/modules/interests/interests.data-access';
@@ -40,8 +45,11 @@ import * as onboardingDataAccess from '../../src/modules/onboarding/onboarding.d
 import {
   replaceOwnDatingPreferences,
   replaceOwnInterests,
-  replaceOwnRelationshipIntentions
+  replaceOwnRelationshipIntentions,
+  updateOwnLocation
 } from '../../src/modules/onboarding/onboarding.service';
+import * as profilesDataAccess from '../../src/modules/profiles/profiles.data-access';
+import * as profilesService from '../../src/modules/profiles/profiles.service';
 import * as relationshipIntentionsDataAccess from '../../src/modules/relationship-intentions/relationship-intentions.data-access';
 import { ValidationError } from '../../src/utils/errors';
 
@@ -49,6 +57,7 @@ const interests = interestsDataAccess as jest.Mocked<typeof interestsDataAccess>
 const intentions = relationshipIntentionsDataAccess as jest.Mocked<typeof relationshipIntentionsDataAccess>;
 const genders = gendersDataAccess as jest.Mocked<typeof gendersDataAccess>;
 const preferences = onboardingDataAccess as jest.Mocked<typeof onboardingDataAccess>;
+const profiles = profilesDataAccess as jest.Mocked<typeof profilesDataAccess>;
 const transaction = sequelize.transaction as jest.Mock;
 const userId = 'user-1';
 const interestIds = [
@@ -273,5 +282,75 @@ describe('onboarding dating preference service', () => {
     expect(preferences.createDatingPreference).toHaveBeenCalledWith(userId, expect.any(Object), { id: 'tx' });
     expect(preferences.findDatingPreferenceGenders).not.toHaveBeenCalled();
     expect(preferences.updateDatingPreference).not.toHaveBeenCalledWith(otherUserId, expect.anything(), expect.anything());
+  });
+});
+
+describe('onboarding location service', () => {
+  let completion: jest.SpyInstance;
+
+  beforeEach(() => {
+    profiles.findProfileByUserId.mockReset();
+    profiles.updateProfileLocation.mockReset();
+    profiles.findProfileByUserId.mockResolvedValue({ id: 'profile-1', isProfileComplete: false } as never);
+    profiles.updateProfileLocation.mockResolvedValue(undefined);
+    completion = jest.spyOn(profilesService, 'evaluateIsProfileComplete');
+  });
+
+  afterEach(() => {
+    completion.mockRestore();
+  });
+
+  it('stores the city and coordinates for the supplied user and returns no coordinates', async () => {
+    const result = await updateOwnLocation(userId, {
+      city: 'Bengaluru',
+      latitude: 12.9716,
+      longitude: 77.5946
+    });
+
+    expect(profiles.findProfileByUserId).toHaveBeenCalledWith(userId);
+    expect(profiles.updateProfileLocation).toHaveBeenCalledWith(userId, {
+      city: 'Bengaluru',
+      latitude: 12.9716,
+      longitude: 77.5946
+    });
+    expect(result).toEqual({ city: 'Bengaluru', updated: true });
+    expect(result).not.toHaveProperty('latitude');
+    expect(result).not.toHaveProperty('longitude');
+    expect(result).not.toHaveProperty('location');
+    expect(result).not.toHaveProperty('isProfileComplete');
+    expect(completion).not.toHaveBeenCalled();
+    expect(JSON.stringify(profiles.updateProfileLocation.mock.calls)).not.toContain('isProfileComplete');
+  });
+
+  it('returns profile not found and does not write when the user has no profile', async () => {
+    profiles.findProfileByUserId.mockResolvedValue(null);
+
+    await expect(
+      updateOwnLocation(userId, { city: 'Bengaluru', latitude: 12.9716, longitude: 77.5946 })
+    ).rejects.toMatchObject({
+      statusCode: 404,
+      errorCode: 'PROFILE_NOT_FOUND'
+    });
+    expect(profiles.updateProfileLocation).not.toHaveBeenCalled();
+    expect(completion).not.toHaveBeenCalled();
+  });
+
+  it('replaces the previous city and coordinates on a later save', async () => {
+    await updateOwnLocation(userId, { city: 'Bengaluru', latitude: 12.9716, longitude: 77.5946 });
+    const replaced = await updateOwnLocation(userId, { city: 'Kochi', latitude: 9.9312, longitude: 76.2673 });
+
+    expect(profiles.updateProfileLocation).toHaveBeenNthCalledWith(1, userId, {
+      city: 'Bengaluru',
+      latitude: 12.9716,
+      longitude: 77.5946
+    });
+    expect(profiles.updateProfileLocation).toHaveBeenNthCalledWith(2, userId, {
+      city: 'Kochi',
+      latitude: 9.9312,
+      longitude: 76.2673
+    });
+    expect(replaced).toEqual({ city: 'Kochi', updated: true });
+    expect(completion).not.toHaveBeenCalled();
+    expect(JSON.stringify(profiles.updateProfileLocation.mock.calls)).not.toContain('isProfileComplete');
   });
 });

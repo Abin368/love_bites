@@ -6,7 +6,8 @@ import * as onboardingController from './onboarding.controller';
 import {
   replaceDatingPreferencesSchema,
   replaceInterestsSchema,
-  replaceRelationshipIntentionsSchema
+  replaceRelationshipIntentionsSchema,
+  saveLocationSchema
 } from './onboarding.validator';
 
 const router = Router();
@@ -33,6 +34,14 @@ router.put(
   requireRole('USER'),
   validate(replaceDatingPreferencesSchema),
   onboardingController.replaceDatingPreferences
+);
+
+router.put(
+  '/location',
+  authenticate,
+  requireRole('USER'),
+  validate(saveLocationSchema),
+  onboardingController.updateLocation
 );
 
 export const onboardingRoutes = router;

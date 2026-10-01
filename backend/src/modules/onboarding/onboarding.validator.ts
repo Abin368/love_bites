@@ -121,6 +121,35 @@ export const replaceDatingPreferencesSchema = z
     }
   });
 
+const CITY_MAX = 100;
+
+function coordinate(label: string, min: number, max: number) {
+  return z
+    .number({
+      invalid_type_error: `${label} must be a number.`,
+      required_error: `${label} is required.`
+    })
+    .finite(`${label} must be a finite number.`)
+    .min(min, `${label} must be at least ${min}.`)
+    .max(max, `${label} must be at most ${max}.`);
+}
+
+export const saveLocationSchema = z
+  .object({
+    city: z
+      .string({
+        invalid_type_error: 'City must be a string.',
+        required_error: 'City is required.'
+      })
+      .trim()
+      .min(1, 'City is required.')
+      .max(CITY_MAX, `City must be at most ${CITY_MAX} characters.`),
+    latitude: coordinate('Latitude', -90, 90),
+    longitude: coordinate('Longitude', -180, 180)
+  })
+  .strict();
+
 export type ReplaceInterestsBody = z.infer<typeof replaceInterestsSchema>;
 export type ReplaceRelationshipIntentionsBody = z.infer<typeof replaceRelationshipIntentionsSchema>;
 export type ReplaceDatingPreferencesBody = z.infer<typeof replaceDatingPreferencesSchema>;
+export type SaveLocationBody = z.infer<typeof saveLocationSchema>;

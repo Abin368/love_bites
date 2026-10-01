@@ -1,4 +1,5 @@
 import { Transaction } from 'sequelize';
+import { sequelize } from '../../config/database';
 import '../../database/associations';
 import { Gender } from '../../database/models/gender.model';
 import { Profile } from '../../database/models/profile.model';
@@ -20,6 +21,12 @@ export interface UpdateProfilePatch {
   bio?: string | null;
   occupation?: string | null;
   education?: string | null;
+}
+
+export interface ProfileLocationUpdate {
+  city: string;
+  latitude: number;
+  longitude: number;
 }
 
 export async function findGenderById(genderId: string, transaction?: Transaction): Promise<Gender | null> {
@@ -94,4 +101,27 @@ export async function updateProfile(
     where: { userId },
     transaction
   });
+}
+
+export async function updateProfileLocation(
+  userId: string,
+  input: ProfileLocationUpdate,
+  transaction?: Transaction
+): Promise<void> {
+  await sequelize.query(
+    `UPDATE profiles
+     SET city = :city,
+         location = ST_SetSRID(ST_MakePoint(:longitude, :latitude), 4326)::geography,
+         updated_at = CURRENT_TIMESTAMP
+     WHERE user_id = :userId`,
+    {
+      replacements: {
+        city: input.city,
+        longitude: input.longitude,
+        latitude: input.latitude,
+        userId
+      },
+      transaction
+    }
+  );
 }

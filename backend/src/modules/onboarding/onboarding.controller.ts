@@ -4,7 +4,8 @@ import * as onboardingService from './onboarding.service';
 import type {
   ReplaceDatingPreferencesBody,
   ReplaceInterestsBody,
-  ReplaceRelationshipIntentionsBody
+  ReplaceRelationshipIntentionsBody,
+  SaveLocationBody
 } from './onboarding.validator';
 
 function send(res: Response, data: unknown, message: string): void {
@@ -30,4 +31,10 @@ export const replaceDatingPreferences = asyncHandler(async (req, res) => {
   const body = req.body as ReplaceDatingPreferencesBody;
   const preferences = await onboardingService.replaceOwnDatingPreferences(req.user!.id, body);
   send(res, preferences, 'Dating preferences updated successfully');
+});
+
+export const updateLocation = asyncHandler(async (req, res) => {
+  const body = req.body as SaveLocationBody;
+  const location = await onboardingService.updateOwnLocation(req.user!.id, body);
+  send(res, location, 'Location updated successfully');
 });

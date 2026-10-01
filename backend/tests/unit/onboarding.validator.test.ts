@@ -2,7 +2,8 @@ import { randomUUID } from 'crypto';
 import {
   replaceDatingPreferencesSchema,
   replaceInterestsSchema,
-  replaceRelationshipIntentionsSchema
+  replaceRelationshipIntentionsSchema,
+  saveLocationSchema
 } from '../../src/modules/onboarding/onboarding.validator';
 
 const ids = [
@@ -135,5 +136,59 @@ describe('onboarding dating preference validation', () => {
     expect(replaceDatingPreferencesSchema.safeParse(datingPreferences({ relationshipIntentions: [intentionId] })).success).toBe(
       false
     );
+  });
+});
+
+function location(overrides: Record<string, unknown> = {}) {
+  return {
+    city: 'Bengaluru',
+    latitude: 12.9716,
+    longitude: 77.5946,
+    ...overrides
+  };
+}
+
+describe('onboarding location validation', () => {
+  it('accepts a trimmed city and boundary coordinates', () => {
+    expect(saveLocationSchema.parse(location({ city: '  Bengaluru  ' }))).toEqual(location());
+    expect(saveLocationSchema.parse(location({ city: 'A' })).city).toBe('A');
+    expect(saveLocationSchema.parse(location({ city: 'B'.repeat(100) })).city).toBe('B'.repeat(100));
+    expect(saveLocationSchema.safeParse(location({ latitude: -90, longitude: -180 })).success).toBe(true);
+    expect(saveLocationSchema.safeParse(location({ latitude: 90, longitude: 180 })).success).toBe(true);
+  });
+
+  it('rejects an empty, whitespace-only, or overlong city', () => {
+    expect(saveLocationSchema.safeParse(location({ city: '' })).success).toBe(false);
+    expect(saveLocationSchema.safeParse(location({ city: '   ' })).success).toBe(false);
+    expect(saveLocationSchema.safeParse(location({ city: 'C'.repeat(101) })).success).toBe(false);
+  });
+
+  it('rejects coordinates outside the valid range', () => {
+    expect(saveLocationSchema.safeParse(location({ latitude: -90.0001 })).success).toBe(false);
+    expect(saveLocationSchema.safeParse(location({ latitude: 90.0001 })).success).toBe(false);
+    expect(saveLocationSchema.safeParse(location({ longitude: -180.0001 })).success).toBe(false);
+    expect(saveLocationSchema.safeParse(location({ longitude: 180.0001 })).success).toBe(false);
+  });
+
+  it('rejects non-finite and non-numeric coordinates', () => {
+    expect(saveLocationSchema.safeParse(location({ latitude: '12.9716' })).success).toBe(false);
+    expect(saveLocationSchema.safeParse(location({ longitude: '77.5946' })).success).toBe(false);
+    expect(saveLocationSchema.safeParse(location({ latitude: Number.NaN })).success).toBe(false);
+    expect(saveLocationSchema.safeParse(location({ longitude: Number.NaN })).success).toBe(false);
+    expect(saveLocationSchema.safeParse(location({ latitude: Number.POSITIVE_INFINITY })).success).toBe(false);
+    expect(saveLocationSchema.safeParse(location({ longitude: Number.NEGATIVE_INFINITY })).success).toBe(false);
+  });
+
+  it('rejects missing values, nulls, and unexpected fields', () => {
+    expect(saveLocationSchema.safeParse({ latitude: 12.9716, longitude: 77.5946 }).success).toBe(false);
+    expect(saveLocationSchema.safeParse({ city: 'Bengaluru', longitude: 77.5946 }).success).toBe(false);
+    expect(saveLocationSchema.safeParse({ city: 'Bengaluru', latitude: 12.9716 }).success).toBe(false);
+    expect(saveLocationSchema.safeParse(location({ city: null })).success).toBe(false);
+    expect(saveLocationSchema.safeParse(location({ latitude: null })).success).toBe(false);
+    expect(saveLocationSchema.safeParse(location({ longitude: null })).success).toBe(false);
+    expect(saveLocationSchema.safeParse(location({ userId: randomUUID() })).success).toBe(false);
+    expect(saveLocationSchema.safeParse(location({ isProfileComplete: true })).success).toBe(false);
+    expect(saveLocationSchema.safeParse(location({ location: { latitude: 1, longitude: 2 } })).success).toBe(false);
+    expect(saveLocationSchema.safeParse(location({ coordinates: [77.5946, 12.9716] })).success).toBe(false);
   });
 });

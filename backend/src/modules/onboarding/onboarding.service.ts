@@ -1,13 +1,14 @@
 import { sequelize } from '../../config/database';
-import { ValidationError } from '../../utils/errors';
+import { NotFoundError, ValidationError } from '../../utils/errors';
 import * as gendersDataAccess from '../genders/genders.data-access';
 import type { GenderCatalogItem } from '../genders/genders.types';
 import * as interestsDataAccess from '../interests/interests.data-access';
 import type { InterestCatalogItem } from '../interests/interests.types';
+import * as profilesDataAccess from '../profiles/profiles.data-access';
 import * as relationshipIntentionsDataAccess from '../relationship-intentions/relationship-intentions.data-access';
 import type { RelationshipIntentionCatalogItem } from '../relationship-intentions/relationship-intentions.types';
 import * as onboardingDataAccess from './onboarding.data-access';
-import type { ReplaceDatingPreferencesBody } from './onboarding.validator';
+import type { ReplaceDatingPreferencesBody, SaveLocationBody } from './onboarding.validator';
 
 function unavailableIds(requestedIds: string[], activeIds: string[]): string[] {
   const active = new Set(activeIds.map((id) => id.toLowerCase()));
@@ -168,4 +169,27 @@ export async function replaceOwnDatingPreferences(
       preferredIntentions
     };
   });
+}
+
+export interface SavedLocation {
+  city: string;
+  updated: true;
+}
+
+export async function updateOwnLocation(userId: string, input: SaveLocationBody): Promise<SavedLocation> {
+  const profile = await profilesDataAccess.findProfileByUserId(userId);
+  if (!profile) {
+    throw new NotFoundError('Profile not found.', [], 'PROFILE_NOT_FOUND');
+  }
+
+  await profilesDataAccess.updateProfileLocation(userId, {
+    city: input.city,
+    latitude: input.latitude,
+    longitude: input.longitude
+  });
+
+  return {
+    city: input.city,
+    updated: true
+  };
 }
