@@ -34,9 +34,9 @@ Phase 2 authentication:
 
 Do not call these. Tables may exist in PostgreSQL, but there are no mounted routes or frontend APIs for them:
 
-- The rest of profile onboarding (preferences, location, completion)
+- The rest of profile onboarding (location, completion)
 - `PUT /api/v1/me/interests` and `PUT /api/v1/me/relationship-intentions`
-- Dating preferences
+- `GET /api/v1/dating-preferences` and `PUT /api/v1/dating-preferences`
 - Discovery
 - Likes
 - Matches
@@ -697,6 +697,7 @@ If the retried request fails again, stop. Do not refresh a second time for that 
 | PATCH | `/api/v1/profile` | Implemented. Bearer token. Role `USER`. Updates the caller's basic profile. |
 | PUT | `/api/v1/onboarding/interests` | Implemented. Bearer token. Role `USER`. Replaces 3 to 10 interests. |
 | PUT | `/api/v1/onboarding/relationship-intentions` | Implemented. Bearer token. Role `USER`. Replaces one or more intentions. |
+| PUT | `/api/v1/onboarding/dating-preferences` | Implemented. Bearer token. Role `USER`. Replaces age range, distance, and target genders and intentions. |
 | POST | `/api/v1/profile-photos/upload-url` | Implemented. Bearer token. Role `USER`. Returns a private presigned PUT URL. Does not store a photo row. |
 | POST | `/api/v1/profile-photos/confirm` | Implemented. Bearer token. Role `USER`. Stores the reserved photo. |
 | GET | `/api/v1/profile-photos` | Implemented. Bearer token. Role `USER`. Active photos only. |
@@ -721,6 +722,12 @@ Intention body: `{ "relationshipIntentionIds": ["uuid"] }`. Minimum 1, no maximu
 
 Both calls replace the signed-in user's current rows. They do not append, and they do not change `isProfileComplete`. A bad UUID, a duplicate, or the wrong count is `400 VALIDATION_ERROR`. An unknown or inactive interest is `400 INVALID_INTEREST`. An unknown or inactive intention is `400 INVALID_RELATIONSHIP_INTENTION`. `PUT /api/v1/me/interests` and `PUT /api/v1/me/relationship-intentions` are not mounted. The full contract is `backend/docs/03-api-specification.md` section 11.15.
 
+`PUT /api/v1/onboarding/dating-preferences` uses the same bearer token and `USER` role. Verification is not required. Do not send `userId`. This is not `PUT /api/v1/dating-preferences`, which is not mounted.
+
+Body: `minAge` (integer, at least 18), `maxAge` (integer, at most 100, and at least `minAge`), `maxDistanceKm` (integer, 1 to 500), `interestedInGenderIds` (UUID array), and `preferredIntentionIds` (UUID array). Neither array has a minimum or maximum count. An empty array is valid. Every gender id must be an active gender. Every intention id must be an active relationship intention. These are the genders and intentions the user wants to find. They are not the user's own gender, interests, or relationship intentions.
+
+Success is `200` with message `Dating preferences updated successfully`. `data` is `minAge`, `maxAge`, `maxDistanceKm`, `interestedInGenders` (`id`, `code`, `name`), and `preferredIntentions` (`id`, `code`, `name`). Catalog objects are ordered by display order. An empty list comes back as `[]`. A later call replaces the previous values. A bad number, a bad UUID, a duplicate, or an extra field is `400 VALIDATION_ERROR`. An unknown or inactive gender is `400 INVALID_GENDER`. An unknown or inactive intention is `400 INVALID_RELATIONSHIP_INTENTION`. This route does not change `isProfileComplete`. The full contract is `backend/docs/03-api-specification.md` section 12.5.
+
 Profile photos use the same bearer token and `USER` role. The path is `/api/v1/profile-photos`, not `/api/v1/profile/photos`. The client uploads the file to S3 with the returned PUT URL. This API never receives the image bytes.
 
 `POST /api/v1/profile-photos/upload-url` body: `mimeType` (`image/jpeg`, `image/png`, or `image/webp`), `fileSizeBytes` (integer, 1 to 10485760), and optional `originalFilename` (max 255). Success is `200`. `data` is `photoId`, `uploadUrl`, `storageKey`, and `expiresInSeconds` (`300`). The storage key is always `photos/{userId}/{photoId}.webp`. Send the PUT with the same `Content-Type` as `mimeType`. A sixth active photo is `409 PHOTO_LIMIT_REACHED`.
@@ -733,9 +740,9 @@ Profile photos use the same bearer token and `USER` role. The path is `/api/v1/p
 
 ## 24. Phase 3 boundary
 
-Phase 2 authentication is implemented. Phase 3 Step 1 adds the three public catalog reads in section 23. Phase 3 Step 3 adds the basic profile routes in that same table. Interest and relationship-intention selection is also implemented there, on `PUT /api/v1/onboarding/interests` and `PUT /api/v1/onboarding/relationship-intentions`.
+Phase 2 authentication is implemented. Phase 3 Step 1 adds the three public catalog reads in section 23. Phase 3 Step 3 adds the basic profile routes in that same table. Interest and relationship-intention selection is also implemented there, on `PUT /api/v1/onboarding/interests` and `PUT /api/v1/onboarding/relationship-intentions`. Dating preferences are implemented on `PUT /api/v1/onboarding/dating-preferences`.
 
-The rest of Phase 3 is still planned: location, dating preferences, and profile completion. Profile photos are implemented. `PUT /api/v1/me/interests` and `PUT /api/v1/me/relationship-intentions` are not mounted. Registration still does not write `profiles.date_of_birth`. `POST /api/v1/profile` does. `isProfileComplete` stays unchanged by interest selection, intention selection, and photo routes. A later completion step sets it.
+The rest of Phase 3 is still planned: location and profile completion. Profile photos and `PUT /api/v1/onboarding/dating-preferences` are implemented. `GET /api/v1/dating-preferences` and `PUT /api/v1/dating-preferences` are not mounted. `PUT /api/v1/me/interests` and `PUT /api/v1/me/relationship-intentions` are not mounted. Registration still does not write `profiles.date_of_birth`. `POST /api/v1/profile` does. `isProfileComplete` stays unchanged by interest selection, intention selection, photo routes, and dating-preference saves. A later completion step sets it.
 
 Do not call the later Phase 3 paths. They are not mounted. The later sections of `backend/docs/03-api-specification.md` describe that planned contract, except the catalog reads and section 11.15, which are implemented.
 

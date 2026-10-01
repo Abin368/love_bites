@@ -308,7 +308,7 @@ Implement secure, dual-identifier registration (Email OR Phone), cryptographic p
 
 ## 7. Phase 3 — Profile and Onboarding
 
-**Step 3 status (2026-09-30): basic profile HTTP, interest and relationship-intention selection, and profile photos are implemented. Phase 3 is not complete. Dating preferences, location, and onboarding completion are next. The documents still disagree on Phase 3 step numbers; the photo work is not a renumbered step.**
+**Step 3 status (2026-10-01): basic profile HTTP, interest and relationship-intention selection, profile photos, and onboarding dating preferences are implemented. Phase 3 is not complete. Location and onboarding completion are next. The documents still disagree on Phase 3 step numbers; the photo work is not a renumbered step.**
 
 Implemented in Step 1:
 
@@ -337,7 +337,15 @@ Implemented for interest and relationship-intention selection:
 * `PUT /api/v1/me/interests` and `PUT /api/v1/me/relationship-intentions` are not implemented.
 * These routes do not change `profiles.is_profile_complete`.
 
-Not implemented: the other onboarding HTTP routes, dating preferences, location endpoints, onboarding completion, public profiles, discovery, likes, matches, and chat. Profile photos and the private S3 presign pipeline are implemented. Plans, features, and usage limits are still unseeded. Production interests are not seeded.
+Implemented for dating preferences:
+
+* `PUT /api/v1/onboarding/dating-preferences` replaces the authenticated `USER`'s `dating_preferences`, `user_dating_preference_genders`, and `user_dating_preference_intentions` in one transaction.
+* `minAge` is an integer of at least 18. `maxAge` is an integer of at most 100 and at least `minAge`. `maxDistanceKm` is an integer from 1 to 500.
+* `interestedInGenderIds` and `preferredIntentionIds` are UUID arrays with no minimum or maximum count. Empty arrays are valid and clear the matching junction rows. Duplicates, unknown ids, and inactive ids are rejected.
+* The response returns the stored age range, distance, and catalog objects `{ "id", "code", "name" }`. This route does not write `user_relationship_intentions` or `profiles.is_profile_complete`.
+* `GET /api/v1/dating-preferences` and `PUT /api/v1/dating-preferences` are not implemented.
+
+Not implemented: the other onboarding HTTP routes, location endpoints, onboarding completion, public profiles, discovery, likes, matches, and chat. Profile photos and the private S3 presign pipeline are implemented. Plans, features, and usage limits are still unseeded. Production interests are not seeded.
 
 ### 7.1 Objectives
 Implement the linear onboarding sequence, demographic metadata management, S3 presigned photo upload pipeline, dating preferences, and profile completion validation.
@@ -368,9 +376,12 @@ Implement the linear onboarding sequence, demographic metadata management, S3 pr
    * **Implemented:** `PUT /api/v1/onboarding/interests` validates an array of active interest UUIDs (**min 3, max 10**, no duplicates) and replaces `user_interests` in one transaction.
    * **Implemented:** `PUT /api/v1/onboarding/relationship-intentions` validates an array of active intention UUIDs (**min 1**, no duplicates, no maximum) and replaces `user_relationship_intentions` in one transaction.
    * **Not implemented:** `PUT /api/v1/me/interests` and `PUT /api/v1/me/relationship-intentions`. These routes do not set `profiles.is_profile_complete`.
-5. **Dating Preferences Setup (`PUT /api/v1/onboarding/dating-preferences`):**
+5. **Dating Preferences Setup (`PUT /api/v1/onboarding/dating-preferences`):** **Implemented.**
    * Validates `minAge >= 18`, `maxAge <= 100`, `maxAge >= minAge`, `maxDistanceKm` (1–500 km), `interestedInGenderIds`, and `preferredIntentionIds`.
-   * Updates `dating_preferences`, `user_dating_preference_genders`, and `user_dating_preference_intentions`.
+   * Neither id list has a minimum or maximum count. An empty list clears that junction.
+   * Creates or updates `dating_preferences`, then replaces `user_dating_preference_genders` and `user_dating_preference_intentions` in one transaction.
+   * Does not write `user_relationship_intentions` and does not set `profiles.is_profile_complete`.
+   * `GET /api/v1/dating-preferences` and `PUT /api/v1/dating-preferences` are not this step.
 6. **Location Setup (`PUT /api/v1/onboarding/location` / `PUT /api/v1/location`):**
    * Captures `city`, `latitude`, `longitude`.
    * Stores as PostGIS point: `ST_SetSRID(ST_MakePoint(longitude, latitude), 4326)` in `profiles.location`.

@@ -23,7 +23,17 @@ jest.mock('../../src/config/redis', () => jest.requireActual('../helpers/memory-
 jest.mock('../../src/modules/users/users.data-access', () => jest.requireActual('../helpers/memory-auth-store'));
 jest.mock('../../src/modules/auth/auth.data-access', () => jest.requireActual('../helpers/memory-auth-store'));
 jest.mock('../../src/modules/genders/genders.data-access', () => ({
-  findActiveGenders: async () => []
+  findActiveGenders: async () => [],
+  findActiveGendersByIds: async () => []
+}));
+jest.mock('../../src/modules/onboarding/onboarding.data-access', () => ({
+  findDatingPreference: async () => null,
+  createDatingPreference: async () => undefined,
+  updateDatingPreference: async () => undefined,
+  replaceDatingPreferenceGenders: async () => undefined,
+  replaceDatingPreferenceIntentions: async () => undefined,
+  findDatingPreferenceGenders: async () => [],
+  findDatingPreferenceIntentions: async () => []
 }));
 jest.mock('../../src/modules/interests/interests.data-access', () => ({
   findActiveInterests: async () => []
