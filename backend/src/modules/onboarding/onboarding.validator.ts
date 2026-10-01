@@ -54,6 +54,15 @@ export const replaceInterestsSchema = z
   })
   .strict();
 
+function uuidListAllowEmpty(options: { label: string; itemLabel: string; duplicateMessage: string }) {
+  return z
+    .array(z.string().uuid(`Each ${options.itemLabel} must be a valid UUID.`), {
+      invalid_type_error: `${options.label} must be an array.`,
+      required_error: `${options.label} is required.`
+    })
+    .superRefine(rejectDuplicateIds(options.duplicateMessage));
+}
+
 export const replaceRelationshipIntentionsSchema = z
   .object({
     relationshipIntentionIds: uuidList({
@@ -66,5 +75,52 @@ export const replaceRelationshipIntentionsSchema = z
   })
   .strict();
 
+export const replaceDatingPreferencesSchema = z
+  .object({
+    minAge: z
+      .number({
+        invalid_type_error: 'Minimum age must be an integer.',
+        required_error: 'Minimum age is required.'
+      })
+      .int('Minimum age must be an integer.')
+      .min(18, 'Minimum age must be at least 18.'),
+    maxAge: z
+      .number({
+        invalid_type_error: 'Maximum age must be an integer.',
+        required_error: 'Maximum age is required.'
+      })
+      .int('Maximum age must be an integer.')
+      .max(100, 'Maximum age must be at most 100.'),
+    maxDistanceKm: z
+      .number({
+        invalid_type_error: 'Maximum distance must be an integer.',
+        required_error: 'Maximum distance is required.'
+      })
+      .int('Maximum distance must be an integer.')
+      .min(1, 'Maximum distance must be at least 1.')
+      .max(500, 'Maximum distance must be at most 500.'),
+    interestedInGenderIds: uuidListAllowEmpty({
+      label: 'Interested-in gender ids',
+      itemLabel: 'gender id',
+      duplicateMessage: 'Duplicate gender ids are not allowed.'
+    }),
+    preferredIntentionIds: uuidListAllowEmpty({
+      label: 'Preferred intention ids',
+      itemLabel: 'relationship intention id',
+      duplicateMessage: 'Duplicate relationship intention ids are not allowed.'
+    })
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.maxAge < value.minAge) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['maxAge'],
+        message: 'Maximum age must be greater than or equal to minimum age.'
+      });
+    }
+  });
+
 export type ReplaceInterestsBody = z.infer<typeof replaceInterestsSchema>;
 export type ReplaceRelationshipIntentionsBody = z.infer<typeof replaceRelationshipIntentionsSchema>;
+export type ReplaceDatingPreferencesBody = z.infer<typeof replaceDatingPreferencesSchema>;

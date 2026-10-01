@@ -3,7 +3,11 @@ import { authenticate } from '../../middleware/auth.middleware';
 import { requireRole } from '../../middleware/role.middleware';
 import { validate } from '../../middleware/validate.middleware';
 import * as onboardingController from './onboarding.controller';
-import { replaceInterestsSchema, replaceRelationshipIntentionsSchema } from './onboarding.validator';
+import {
+  replaceDatingPreferencesSchema,
+  replaceInterestsSchema,
+  replaceRelationshipIntentionsSchema
+} from './onboarding.validator';
 
 const router = Router();
 
@@ -21,6 +25,14 @@ router.put(
   requireRole('USER'),
   validate(replaceRelationshipIntentionsSchema),
   onboardingController.replaceRelationshipIntentions
+);
+
+router.put(
+  '/dating-preferences',
+  authenticate,
+  requireRole('USER'),
+  validate(replaceDatingPreferencesSchema),
+  onboardingController.replaceDatingPreferences
 );
 
 export const onboardingRoutes = router;

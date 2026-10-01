@@ -18,14 +18,37 @@ jest.mock('../../src/modules/relationship-intentions/relationship-intentions.dat
   findUserRelationshipIntentions: jest.fn()
 }));
 
+jest.mock('../../src/modules/genders/genders.data-access', () => ({
+  findActiveGenders: jest.fn(),
+  findActiveGendersByIds: jest.fn()
+}));
+
+jest.mock('../../src/modules/onboarding/onboarding.data-access', () => ({
+  findDatingPreference: jest.fn(),
+  createDatingPreference: jest.fn(),
+  updateDatingPreference: jest.fn(),
+  replaceDatingPreferenceGenders: jest.fn(),
+  replaceDatingPreferenceIntentions: jest.fn(),
+  findDatingPreferenceGenders: jest.fn(),
+  findDatingPreferenceIntentions: jest.fn()
+}));
+
 import { sequelize } from '../../src/config/database';
+import * as gendersDataAccess from '../../src/modules/genders/genders.data-access';
 import * as interestsDataAccess from '../../src/modules/interests/interests.data-access';
-import { replaceOwnInterests, replaceOwnRelationshipIntentions } from '../../src/modules/onboarding/onboarding.service';
+import * as onboardingDataAccess from '../../src/modules/onboarding/onboarding.data-access';
+import {
+  replaceOwnDatingPreferences,
+  replaceOwnInterests,
+  replaceOwnRelationshipIntentions
+} from '../../src/modules/onboarding/onboarding.service';
 import * as relationshipIntentionsDataAccess from '../../src/modules/relationship-intentions/relationship-intentions.data-access';
 import { ValidationError } from '../../src/utils/errors';
 
 const interests = interestsDataAccess as jest.Mocked<typeof interestsDataAccess>;
 const intentions = relationshipIntentionsDataAccess as jest.Mocked<typeof relationshipIntentionsDataAccess>;
+const genders = gendersDataAccess as jest.Mocked<typeof gendersDataAccess>;
+const preferences = onboardingDataAccess as jest.Mocked<typeof onboardingDataAccess>;
 const transaction = sequelize.transaction as jest.Mock;
 const userId = 'user-1';
 const interestIds = [
@@ -114,5 +137,141 @@ describe('onboarding selection service', () => {
 
     await expect(replaceOwnRelationshipIntentions(userId, intentionIds)).rejects.toThrow('insert failed');
     expect(intentions.findUserRelationshipIntentions).not.toHaveBeenCalled();
+  });
+});
+
+const otherUserId = 'user-2';
+const genderId = '9a12c4b5-8821-4122-901b-5e4d29381002';
+const otherGenderId = '9a12c4b5-8821-4122-901b-5e4d29381003';
+const preferredIntentionId = '2a3b4c5d-0001-4000-8000-000000000001';
+const otherPreferredIntentionId = '2a3b4c5d-0002-4000-8000-000000000002';
+const preferenceInput = {
+  minAge: 22,
+  maxAge: 32,
+  maxDistanceKm: 40,
+  interestedInGenderIds: [genderId.toUpperCase()],
+  preferredIntentionIds: [preferredIntentionId]
+};
+
+describe('onboarding dating preference service', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    transaction.mockImplementation(async (work: (trx: { id: string }) => Promise<unknown>) => work({ id: 'tx' }));
+    genders.findActiveGendersByIds.mockResolvedValue([{ id: genderId }] as never);
+    intentions.findActiveRelationshipIntentionsByIds.mockResolvedValue([{ id: preferredIntentionId }] as never);
+    preferences.createDatingPreference.mockResolvedValue(undefined);
+    preferences.updateDatingPreference.mockResolvedValue(undefined);
+    preferences.replaceDatingPreferenceGenders.mockResolvedValue(undefined);
+    preferences.replaceDatingPreferenceIntentions.mockResolvedValue(undefined);
+    preferences.findDatingPreferenceGenders.mockResolvedValue([{ id: genderId, code: 'WOMAN', name: 'Woman' }]);
+    preferences.findDatingPreferenceIntentions.mockResolvedValue([
+      { id: preferredIntentionId, code: 'LONG_TERM_RELATIONSHIP', name: 'Long-term relationship' }
+    ]);
+  });
+
+  it('creates a preference row on the first save and returns the stored catalog records', async () => {
+    preferences.findDatingPreference
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ minAge: 22, maxAge: 32, maxDistanceKm: 40 });
+
+    const result = await replaceOwnDatingPreferences(userId, preferenceInput);
+
+    expect(preferences.createDatingPreference).toHaveBeenCalledWith(
+      userId,
+      { minAge: 22, maxAge: 32, maxDistanceKm: 40 },
+      { id: 'tx' }
+    );
+    expect(preferences.updateDatingPreference).not.toHaveBeenCalled();
+    expect(preferences.replaceDatingPreferenceGenders).toHaveBeenCalledWith(userId, [genderId], { id: 'tx' });
+    expect(preferences.replaceDatingPreferenceIntentions).toHaveBeenCalledWith(userId, [preferredIntentionId], { id: 'tx' });
+    expect(result).toEqual({
+      minAge: 22,
+      maxAge: 32,
+      maxDistanceKm: 40,
+      interestedInGenders: [{ id: genderId, code: 'WOMAN', name: 'Woman' }],
+      preferredIntentions: [{ id: preferredIntentionId, code: 'LONG_TERM_RELATIONSHIP', name: 'Long-term relationship' }]
+    });
+    expect(JSON.stringify(result)).not.toContain(otherUserId);
+  });
+
+  it('updates the existing preference row on a later save', async () => {
+    preferences.findDatingPreference
+      .mockResolvedValueOnce({ minAge: 18, maxAge: 100, maxDistanceKm: 50 })
+      .mockResolvedValueOnce({ minAge: 22, maxAge: 32, maxDistanceKm: 40 });
+
+    await replaceOwnDatingPreferences(userId, preferenceInput);
+
+    expect(preferences.updateDatingPreference).toHaveBeenCalledWith(
+      userId,
+      { minAge: 22, maxAge: 32, maxDistanceKm: 40 },
+      { id: 'tx' }
+    );
+    expect(preferences.createDatingPreference).not.toHaveBeenCalled();
+  });
+
+  it('replaces gender and intention junctions, including when the new lists are empty', async () => {
+    preferences.findDatingPreference.mockResolvedValue({ minAge: 22, maxAge: 32, maxDistanceKm: 40 });
+    genders.findActiveGendersByIds.mockResolvedValue([{ id: otherGenderId }, { id: genderId }] as never);
+    intentions.findActiveRelationshipIntentionsByIds.mockResolvedValue([
+      { id: otherPreferredIntentionId },
+      { id: preferredIntentionId }
+    ] as never);
+
+    await replaceOwnDatingPreferences(userId, {
+      ...preferenceInput,
+      interestedInGenderIds: [otherGenderId, genderId],
+      preferredIntentionIds: [otherPreferredIntentionId]
+    });
+
+    expect(preferences.replaceDatingPreferenceGenders).toHaveBeenCalledWith(userId, [otherGenderId, genderId], { id: 'tx' });
+    expect(preferences.replaceDatingPreferenceIntentions).toHaveBeenCalledWith(userId, [otherPreferredIntentionId], {
+      id: 'tx'
+    });
+
+    preferences.replaceDatingPreferenceGenders.mockClear();
+    preferences.replaceDatingPreferenceIntentions.mockClear();
+    genders.findActiveGendersByIds.mockResolvedValue([]);
+    intentions.findActiveRelationshipIntentionsByIds.mockResolvedValue([]);
+
+    await replaceOwnDatingPreferences(userId, {
+      ...preferenceInput,
+      interestedInGenderIds: [],
+      preferredIntentionIds: []
+    });
+
+    expect(preferences.replaceDatingPreferenceGenders).toHaveBeenCalledWith(userId, [], { id: 'tx' });
+    expect(preferences.replaceDatingPreferenceIntentions).toHaveBeenCalledWith(userId, [], { id: 'tx' });
+    expect(preferences.replaceDatingPreferenceGenders).not.toHaveBeenCalledWith(otherUserId, expect.anything(), expect.anything());
+  });
+
+  it('does not write when a gender or intention id is unknown or inactive', async () => {
+    genders.findActiveGendersByIds.mockResolvedValue([]);
+
+    await expect(replaceOwnDatingPreferences(userId, preferenceInput)).rejects.toMatchObject({
+      errorCode: 'INVALID_GENDER'
+    });
+    expect(transaction).not.toHaveBeenCalled();
+    expect(preferences.createDatingPreference).not.toHaveBeenCalled();
+    expect(preferences.updateDatingPreference).not.toHaveBeenCalled();
+    expect(preferences.replaceDatingPreferenceGenders).not.toHaveBeenCalled();
+
+    genders.findActiveGendersByIds.mockResolvedValue([{ id: genderId }] as never);
+    intentions.findActiveRelationshipIntentionsByIds.mockResolvedValue([]);
+
+    await expect(replaceOwnDatingPreferences(userId, preferenceInput)).rejects.toMatchObject({
+      errorCode: 'INVALID_RELATIONSHIP_INTENTION'
+    });
+    expect(transaction).not.toHaveBeenCalled();
+    expect(preferences.replaceDatingPreferenceIntentions).not.toHaveBeenCalled();
+  });
+
+  it('rejects the whole transaction when a later write fails', async () => {
+    preferences.findDatingPreference.mockResolvedValueOnce(null);
+    preferences.replaceDatingPreferenceIntentions.mockRejectedValue(new Error('insert failed'));
+
+    await expect(replaceOwnDatingPreferences(userId, preferenceInput)).rejects.toThrow('insert failed');
+    expect(preferences.createDatingPreference).toHaveBeenCalledWith(userId, expect.any(Object), { id: 'tx' });
+    expect(preferences.findDatingPreferenceGenders).not.toHaveBeenCalled();
+    expect(preferences.updateDatingPreference).not.toHaveBeenCalledWith(otherUserId, expect.anything(), expect.anything());
   });
 });

@@ -1,9 +1,13 @@
 import { sequelize } from '../../config/database';
 import { ValidationError } from '../../utils/errors';
+import * as gendersDataAccess from '../genders/genders.data-access';
+import type { GenderCatalogItem } from '../genders/genders.types';
 import * as interestsDataAccess from '../interests/interests.data-access';
 import type { InterestCatalogItem } from '../interests/interests.types';
 import * as relationshipIntentionsDataAccess from '../relationship-intentions/relationship-intentions.data-access';
 import type { RelationshipIntentionCatalogItem } from '../relationship-intentions/relationship-intentions.types';
+import * as onboardingDataAccess from './onboarding.data-access';
+import type { ReplaceDatingPreferencesBody } from './onboarding.validator';
 
 function unavailableIds(requestedIds: string[], activeIds: string[]): string[] {
   const active = new Set(activeIds.map((id) => id.toLowerCase()));
@@ -83,4 +87,85 @@ export async function replaceOwnRelationshipIntentions(
     code: row.code,
     name: row.name
   }));
+}
+
+export interface StoredDatingPreferences {
+  minAge: number;
+  maxAge: number;
+  maxDistanceKm: number;
+  interestedInGenders: GenderCatalogItem[];
+  preferredIntentions: RelationshipIntentionCatalogItem[];
+}
+
+export async function replaceOwnDatingPreferences(
+  userId: string,
+  body: ReplaceDatingPreferencesBody
+): Promise<StoredDatingPreferences> {
+  const activeGenders = await gendersDataAccess.findActiveGendersByIds(body.interestedInGenderIds);
+  const missingGenders = unavailableIds(
+    body.interestedInGenderIds,
+    activeGenders.map((row) => row.id)
+  );
+  rejectUnavailable(
+    'interestedInGenderIds',
+    missingGenders,
+    'INVALID_GENDER',
+    'One or more genders are not available.'
+  );
+
+  const activeIntentions = await relationshipIntentionsDataAccess.findActiveRelationshipIntentionsByIds(
+    body.preferredIntentionIds
+  );
+  const missingIntentions = unavailableIds(
+    body.preferredIntentionIds,
+    activeIntentions.map((row) => row.id)
+  );
+  rejectUnavailable(
+    'preferredIntentionIds',
+    missingIntentions,
+    'INVALID_RELATIONSHIP_INTENTION',
+    'One or more relationship intentions are not available.'
+  );
+
+  const genderIds = canonicalIds(
+    body.interestedInGenderIds,
+    activeGenders.map((row) => row.id)
+  );
+  const intentionIds = canonicalIds(
+    body.preferredIntentionIds,
+    activeIntentions.map((row) => row.id)
+  );
+  const values = {
+    minAge: body.minAge,
+    maxAge: body.maxAge,
+    maxDistanceKm: body.maxDistanceKm
+  };
+
+  return sequelize.transaction(async (transaction) => {
+    const existing = await onboardingDataAccess.findDatingPreference(userId, transaction);
+    if (existing) {
+      await onboardingDataAccess.updateDatingPreference(userId, values, transaction);
+    } else {
+      await onboardingDataAccess.createDatingPreference(userId, values, transaction);
+    }
+
+    await onboardingDataAccess.replaceDatingPreferenceGenders(userId, genderIds, transaction);
+    await onboardingDataAccess.replaceDatingPreferenceIntentions(userId, intentionIds, transaction);
+
+    const stored = await onboardingDataAccess.findDatingPreference(userId, transaction);
+    if (!stored) {
+      throw new Error('Dating preferences were not stored.');
+    }
+
+    const interestedInGenders = await onboardingDataAccess.findDatingPreferenceGenders(userId, transaction);
+    const preferredIntentions = await onboardingDataAccess.findDatingPreferenceIntentions(userId, transaction);
+
+    return {
+      minAge: stored.minAge,
+      maxAge: stored.maxAge,
+      maxDistanceKm: stored.maxDistanceKm,
+      interestedInGenders,
+      preferredIntentions
+    };
+  });
 }

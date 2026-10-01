@@ -1,5 +1,9 @@
 import { randomUUID } from 'crypto';
-import { replaceInterestsSchema, replaceRelationshipIntentionsSchema } from '../../src/modules/onboarding/onboarding.validator';
+import {
+  replaceDatingPreferencesSchema,
+  replaceInterestsSchema,
+  replaceRelationshipIntentionsSchema
+} from '../../src/modules/onboarding/onboarding.validator';
 
 const ids = [
   '1a2b3c4d-0001-4000-8000-000000000001',
@@ -52,5 +56,84 @@ describe('onboarding relationship intention validation', () => {
     expect(
       replaceRelationshipIntentionsSchema.safeParse({ relationshipIntentionIds: [ids[0]], userId: randomUUID() }).success
     ).toBe(false);
+  });
+});
+
+const genderId = '9a12c4b5-8821-4122-901b-5e4d29381002';
+const intentionId = '2a3b4c5d-0001-4000-8000-000000000001';
+
+function datingPreferences(overrides: Record<string, unknown> = {}) {
+  return {
+    minAge: 22,
+    maxAge: 32,
+    maxDistanceKm: 40,
+    interestedInGenderIds: [genderId],
+    preferredIntentionIds: [intentionId],
+    ...overrides
+  };
+}
+
+describe('onboarding dating preference validation', () => {
+  it('accepts a complete request and empty preference lists', () => {
+    expect(replaceDatingPreferencesSchema.parse(datingPreferences())).toEqual(datingPreferences());
+    expect(
+      replaceDatingPreferencesSchema.parse(datingPreferences({ minAge: 18, maxAge: 100, maxDistanceKm: 1 })).maxDistanceKm
+    ).toBe(1);
+    expect(
+      replaceDatingPreferencesSchema.parse(
+        datingPreferences({ maxDistanceKm: 500, interestedInGenderIds: [], preferredIntentionIds: [] })
+      )
+    ).toMatchObject({ interestedInGenderIds: [], preferredIntentionIds: [] });
+  });
+
+  it('rejects a missing numeric field', () => {
+    const { minAge: _minAge, ...withoutMinAge } = datingPreferences();
+    expect(replaceDatingPreferencesSchema.safeParse(withoutMinAge).success).toBe(false);
+  });
+
+  it('rejects a minimum age below 18', () => {
+    expect(replaceDatingPreferencesSchema.safeParse(datingPreferences({ minAge: 17 })).success).toBe(false);
+  });
+
+  it('rejects a maximum age above 100', () => {
+    expect(replaceDatingPreferencesSchema.safeParse(datingPreferences({ maxAge: 101 })).success).toBe(false);
+  });
+
+  it('rejects a maximum age below the minimum age', () => {
+    expect(replaceDatingPreferencesSchema.safeParse(datingPreferences({ minAge: 30, maxAge: 29 })).success).toBe(false);
+  });
+
+  it('rejects a distance below 1 or above 500', () => {
+    expect(replaceDatingPreferencesSchema.safeParse(datingPreferences({ maxDistanceKm: 0 })).success).toBe(false);
+    expect(replaceDatingPreferencesSchema.safeParse(datingPreferences({ maxDistanceKm: 501 })).success).toBe(false);
+  });
+
+  it('rejects a malformed gender or intention id', () => {
+    expect(replaceDatingPreferencesSchema.safeParse(datingPreferences({ interestedInGenderIds: ['not-a-uuid'] })).success).toBe(
+      false
+    );
+    expect(
+      replaceDatingPreferencesSchema.safeParse(datingPreferences({ preferredIntentionIds: ['not-a-uuid'] })).success
+    ).toBe(false);
+  });
+
+  it('rejects duplicate gender or intention ids', () => {
+    expect(
+      replaceDatingPreferencesSchema.safeParse(datingPreferences({ interestedInGenderIds: [genderId, genderId.toUpperCase()] }))
+        .success
+    ).toBe(false);
+    expect(
+      replaceDatingPreferencesSchema.safeParse(
+        datingPreferences({ preferredIntentionIds: [intentionId, intentionId.toUpperCase()] })
+      ).success
+    ).toBe(false);
+  });
+
+  it('rejects an unexpected field', () => {
+    expect(replaceDatingPreferencesSchema.safeParse(datingPreferences({ userId: randomUUID() })).success).toBe(false);
+    expect(replaceDatingPreferencesSchema.safeParse(datingPreferences({ isProfileComplete: true })).success).toBe(false);
+    expect(replaceDatingPreferencesSchema.safeParse(datingPreferences({ relationshipIntentions: [intentionId] })).success).toBe(
+      false
+    );
   });
 });

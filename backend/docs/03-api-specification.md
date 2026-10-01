@@ -611,9 +611,9 @@ From login `user`, and from access-token claims:
 
 ### 11.12 What is live, and what Phase 3 will add
 
-Live now: registration, email and phone verification, resend, login, refresh, logout, forgot-password, reset-password, the public catalog reads in section 11.13, the authenticated basic profile API in section 11.14, and `PUT /api/v1/onboarding/interests` plus `PUT /api/v1/onboarding/relationship-intentions` in section 11.15.
+Live now: registration, email and phone verification, resend, login, refresh, logout, forgot-password, reset-password, the public catalog reads in section 11.13, the authenticated basic profile API in section 11.14, `PUT /api/v1/onboarding/interests` plus `PUT /api/v1/onboarding/relationship-intentions` in section 11.15, and `PUT /api/v1/onboarding/dating-preferences` in section 12.5.
 
-Not implemented, even though the database tables exist: the rest of onboarding, photo upload, `PUT /api/v1/me/interests`, `PUT /api/v1/me/relationship-intentions`, dating preferences, location, the richer profile views in section 13, discovery, likes, matches, chat, subscriptions, payments, and boosts. Do not call those paths.
+Not implemented, even though the database tables exist: the rest of onboarding, photo upload, `PUT /api/v1/me/interests`, `PUT /api/v1/me/relationship-intentions`, `GET /api/v1/dating-preferences`, `PUT /api/v1/dating-preferences`, location, the richer profile views in section 13, discovery, likes, matches, chat, subscriptions, payments, and boosts. Do not call those paths.
 
 Phase 3 Step 1 is the three public catalog reads. Phase 3 Step 3 is `GET`, `POST`, and `PATCH /api/v1/profile`. Interest and relationship-intention selection is the onboarding slice in section 11.15. It is not a renumbered phase step. Gender and relationship-intention seed data exist. Production interests are not seeded, because the approved interest list is not defined. Phase 3 is not complete. Later sections remain the planned contract unless a subsection says it is implemented.
 
@@ -778,7 +778,7 @@ Successful `data` is the selected catalog records, ordered by `display_order` as
 
 ## 12. Onboarding APIs
 
-**Partly implemented.** `PUT /api/v1/onboarding/interests` and `PUT /api/v1/onboarding/relationship-intentions` are live. Their contract is section 11.15. The other routes in this section are the planned contract only and are not mounted. The live basic profile API is section 11.14. Public catalog reads are live in section 11.13.
+**Partly implemented.** `PUT /api/v1/onboarding/interests` and `PUT /api/v1/onboarding/relationship-intentions` are live. Their contract is section 11.15. `PUT /api/v1/onboarding/dating-preferences` is live. Its contract is section 12.5. The other routes in this section are the planned contract only and are not mounted. The live basic profile API is section 11.14. Public catalog reads are live in section 11.13.
 
 The onboarding pipeline enforces sequential profile completion before granting access to discovery.
 
@@ -855,8 +855,10 @@ The onboarding pipeline enforces sequential profile completion before granting a
 ---
 
 ### 12.5 Set Onboarding Dating Preferences
+* **Status:** Implemented. This route replaces the caller's discovery preferences. It does not use `requireVerified`. `GET /api/v1/dating-preferences` and `PUT /api/v1/dating-preferences` in section 17 are not implemented.
 * **Method & Path:** `PUT /api/v1/onboarding/dating-preferences`
-* **Auth:** Authenticated
+* **Auth:** `Authorization: Bearer <accessToken>` and role `USER`.
+* **Ownership:** `req.user.id` only. The body must not include `userId`. Any unexpected field is `400 VALIDATION_ERROR`.
 * **Request Body:**
   ```json
   {
@@ -871,8 +873,23 @@ The onboarding pipeline enforces sequential profile completion before granting a
     ]
   }
   ```
-* **Validation:** `minAge >= 18`, `maxAge <= 100`, `maxAge >= minAge`, `maxDistanceKm` between 1 and 500.
-* **Success Response (`200 OK`):** Returns stored dating preferences.
+* **Validation:** `minAge` and `maxAge` are integers. `minAge >= 18`, `maxAge <= 100`, and `maxAge >= minAge`. `maxDistanceKm` is an integer from 1 to 500. `interestedInGenderIds` and `preferredIntentionIds` are arrays of UUIDs. There is no minimum or maximum count. An empty array is valid. Duplicates are rejected, including different letter case. `400 VALIDATION_ERROR` covers a bad shape, a bad UUID, a duplicate, and a number outside the rules. An unknown or inactive gender is `400 INVALID_GENDER`. An unknown or inactive intention is `400 INVALID_RELATIONSHIP_INTENTION`. No rows are changed when validation fails.
+* **Replace semantics:** One Sequelize transaction creates the caller's `dating_preferences` row, or updates it when it already exists, then replaces `user_dating_preference_genders` and `user_dating_preference_intentions` with the submitted ids. A later call does not append. Another user's rows are not changed. This route does not write `user_relationship_intentions`, `user_interests`, photos, city, location, or `profiles.is_profile_complete`.
+* **Success Response (`200 OK`):** Message: `Dating preferences updated successfully`. `data` is the stored preference, not a raw junction row:
+  ```json
+  {
+    "minAge": 22,
+    "maxAge": 32,
+    "maxDistanceKm": 40,
+    "interestedInGenders": [
+      { "id": "gender-uuid", "code": "WOMAN", "name": "Woman" }
+    ],
+    "preferredIntentions": [
+      { "id": "intention-uuid", "code": "LONG_TERM_RELATIONSHIP", "name": "Long-term relationship" }
+    ]
+  }
+  ```
+  Catalog objects are ordered by `display_order` ascending, then `code` ascending. An empty submitted list is returned as `[]`. `userId`, timestamps, and junction row ids are omitted.
 
 ---
 
@@ -1136,6 +1153,8 @@ Photo objects returned after confirm, list, and patch are `{ "id", "url", "displ
 ---
 
 ## 17. Dating Preference APIs
+
+**Not implemented.** The mounted route is `PUT /api/v1/onboarding/dating-preferences`. See section 12.5. The routes in this section are a later preferences API and are not mounted.
 
 ### 17.1 Get Dating Preferences
 * **Method & Path:** `GET /api/v1/dating-preferences`
