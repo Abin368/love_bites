@@ -1,4 +1,5 @@
 import { sequelize } from '../../config/database';
+import type { UserStatus } from '../../database/models/user.model';
 import { NotFoundError, ValidationError } from '../../utils/errors';
 import * as gendersDataAccess from '../genders/genders.data-access';
 import type { GenderCatalogItem } from '../genders/genders.types';
@@ -269,4 +270,37 @@ export async function getOwnOnboardingStatus(
     completedSteps: [...completedSteps],
     nextStep
   };
+}
+
+export interface OnboardingCompletion {
+  isProfileComplete: true;
+  status: UserStatus;
+}
+
+export async function completeOwnOnboarding(
+  userId: string,
+  isVerified: boolean,
+  isProfileComplete: boolean,
+  accountStatus: UserStatus
+): Promise<OnboardingCompletion> {
+  const onboarding = await getOwnOnboardingStatus(userId, isVerified, isProfileComplete);
+  if (onboarding.isProfileComplete) {
+    return { isProfileComplete: true, status: accountStatus };
+  }
+
+  const completed = new Set(onboarding.completedSteps);
+  const missing = PREREQUISITE_STEPS.filter((step) => !completed.has(step));
+  if (missing.length > 0) {
+    throw new ValidationError(
+      'Onboarding is incomplete.',
+      missing.map((step) => ({
+        field: step,
+        message: `${step} is required`
+      })),
+      'PROFILE_INCOMPLETE'
+    );
+  }
+
+  await profilesDataAccess.markProfileComplete(userId);
+  return { isProfileComplete: true, status: accountStatus };
 }

@@ -778,12 +778,12 @@ Successful `data` is the selected catalog records, ordered by `display_order` as
 
 ## 12. Onboarding APIs
 
-**Partly implemented.** `GET /api/v1/onboarding/status` is live. Its contract is section 12.1. `PUT /api/v1/onboarding/interests` and `PUT /api/v1/onboarding/relationship-intentions` are live. Their contract is section 11.15. `PUT /api/v1/onboarding/dating-preferences` is live. Its contract is section 12.5. The other routes in this section are the planned contract only and are not mounted. The live basic profile API is section 11.14. Public catalog reads are live in section 11.13.
+**Partly implemented.** `GET /api/v1/onboarding/status` is live. Its contract is section 12.1. `PUT /api/v1/onboarding/interests` and `PUT /api/v1/onboarding/relationship-intentions` are live. Their contract is section 11.15. `PUT /api/v1/onboarding/dating-preferences` is live. Its contract is section 12.5. `POST /api/v1/onboarding/complete` is live. Its contract is section 12.7. The other routes in this section are the planned contract only and are not mounted. The live basic profile API is section 11.14. Public catalog reads are live in section 11.13.
 
 The onboarding pipeline enforces sequential profile completion before granting access to discovery.
 
 ### 12.1 Get Onboarding Status
-* **Status:** Implemented. This route is read-only. It does not write `profiles.is_profile_complete`. `POST /api/v1/onboarding/complete` remains unimplemented.
+* **Status:** Implemented. This route is read-only. It does not write `profiles.is_profile_complete`. `POST /api/v1/onboarding/complete` is the route that sets the flag. Its contract is section 12.7.
 * **Method & Path:** `GET /api/v1/onboarding/status`
 * **Auth:** `Authorization: Bearer <accessToken>` and role `USER`. `requireVerified` is not applied. No body and no query parameters.
 * **Missing profile:** `200 OK`. This is not `404 PROFILE_NOT_FOUND`.
@@ -914,10 +914,11 @@ The onboarding pipeline enforces sequential profile completion before granting a
 ---
 
 ### 12.7 Finalize Onboarding & Complete Profile
+* **Status:** Implemented. `authenticate` and `requireRole('USER')` are applied. `requireVerified` is not applied. There is no request body and no query parameters. Ownership is `req.user.id`.
 * **Method & Path:** `POST /api/v1/onboarding/complete`
-* **Auth:** Authenticated
-* **Purpose:** Server validates all onboarding prerequisites (verification, basic profile, $\ge 1$ photo, 3–10 interests, $\ge 1$ intention, dating preferences, location).
-* **Success Response (`200 OK`):**
+* **Prerequisites:** The route uses the same seven steps as section 12.1. All of them must be satisfied: `VERIFICATION` (`req.user.isVerified`; a verified email or a verified phone is enough), `BASIC_PROFILE` (a profile row), `PHOTOS` (1–5 active photos, including one primary; soft-deleted photos and upload reservations do not count), `INTERESTS` (3–10 of the caller's own `user_interests`), `RELATIONSHIP_INTENTIONS` (at least one of the caller's own `user_relationship_intentions`, not `user_dating_preference_intentions`), `DATING_PREFERENCES` (a `dating_preferences` row, including a row with empty junction lists), and `LOCATION` (a non-blank city and a non-null point).
+* **Incomplete (`400 PROFILE_INCOMPLETE`):** `details` lists every missing prerequisite step, in the section 12.1 order. Each item is `{ "field": "<STEP>", "message": "<STEP> is required" }`. Nothing is written. `profiles.is_profile_complete` stays unchanged.
+* **Success Response (`200 OK`):** Message: `Onboarding complete! Welcome to Love Bite.`. `data` is only `isProfileComplete` (`true`) and `status` (the caller's current `users.status`, which verification already sets). Coordinates and onboarding records are not returned.
   ```json
   {
     "success": true,
@@ -928,7 +929,8 @@ The onboarding pipeline enforces sequential profile completion before granting a
     "message": "Onboarding complete! Welcome to Love Bite."
   }
   ```
-* **Errors:** `400 PROFILE_INCOMPLETE` with `details` listing missing prerequisite steps.
+* **Write:** The only change is `profiles.is_profile_complete` set to `true` for the caller. `users.status` and every other profile column stay as they are.
+* **Idempotent:** A caller whose stored flag is already `true` receives the same `200` success body. The route does not write again and does not return a conflict.
 
 ---
 
