@@ -4,6 +4,7 @@ import * as gendersDataAccess from '../genders/genders.data-access';
 import type { GenderCatalogItem } from '../genders/genders.types';
 import * as interestsDataAccess from '../interests/interests.data-access';
 import type { InterestCatalogItem } from '../interests/interests.types';
+import * as profilePhotosDataAccess from '../profile-photos/profile-photos.data-access';
 import * as profilesDataAccess from '../profiles/profiles.data-access';
 import * as relationshipIntentionsDataAccess from '../relationship-intentions/relationship-intentions.data-access';
 import type { RelationshipIntentionCatalogItem } from '../relationship-intentions/relationship-intentions.types';
@@ -191,5 +192,81 @@ export async function updateOwnLocation(userId: string, input: SaveLocationBody)
   return {
     city: input.city,
     updated: true
+  };
+}
+
+const PREREQUISITE_STEPS = [
+  'VERIFICATION',
+  'BASIC_PROFILE',
+  'PHOTOS',
+  'INTERESTS',
+  'RELATIONSHIP_INTENTIONS',
+  'DATING_PREFERENCES',
+  'LOCATION'
+] as const;
+
+export interface OnboardingStatus {
+  isVerified: boolean;
+  isProfileComplete: boolean;
+  completedSteps: string[];
+  nextStep: string | null;
+}
+
+function hasPhotos(photos: Array<{ isPrimary: boolean }>): boolean {
+  const hasPrimaryPhoto = photos.some((photo) => photo.isPrimary);
+  return hasPrimaryPhoto && photos.length >= 1 && photos.length <= 5;
+}
+
+function hasLocation(profile: { city: string | null; location: unknown | null } | null): boolean {
+  if (!profile) {
+    return false;
+  }
+  const hasCity = typeof profile.city === 'string' && profile.city.trim().length > 0;
+  return hasCity && profile.location != null;
+}
+
+export async function getOwnOnboardingStatus(
+  userId: string,
+  isVerified: boolean,
+  isProfileComplete: boolean
+): Promise<OnboardingStatus> {
+  const profile = await profilesDataAccess.findProfileByUserId(userId);
+  const photos = await profilePhotosDataAccess.listActivePhotos(userId);
+  const interests = await interestsDataAccess.findUserInterests(userId);
+  const intentions = await relationshipIntentionsDataAccess.findUserRelationshipIntentions(userId);
+  const datingPreference = await onboardingDataAccess.findDatingPreference(userId);
+
+  const satisfied = new Set<string>();
+  if (isVerified) {
+    satisfied.add('VERIFICATION');
+  }
+  if (profile) {
+    satisfied.add('BASIC_PROFILE');
+  }
+  if (hasPhotos(photos)) {
+    satisfied.add('PHOTOS');
+  }
+  if (interests.length >= 3 && interests.length <= 10) {
+    satisfied.add('INTERESTS');
+  }
+  if (intentions.length >= 1) {
+    satisfied.add('RELATIONSHIP_INTENTIONS');
+  }
+  if (datingPreference) {
+    satisfied.add('DATING_PREFERENCES');
+  }
+  if (hasLocation(profile)) {
+    satisfied.add('LOCATION');
+  }
+
+  const completedSteps = PREREQUISITE_STEPS.filter((step) => satisfied.has(step));
+  const nextIncomplete = PREREQUISITE_STEPS.find((step) => !satisfied.has(step));
+  const nextStep = isProfileComplete ? null : (nextIncomplete ?? 'COMPLETE');
+
+  return {
+    isVerified,
+    isProfileComplete,
+    completedSteps: [...completedSteps],
+    nextStep
   };
 }

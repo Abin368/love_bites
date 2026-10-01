@@ -12,6 +12,8 @@ import {
 
 const router = Router();
 
+router.get('/status', authenticate, requireRole('USER'), onboardingController.getStatus);
+
 router.put(
   '/interests',
   authenticate,

@@ -22,7 +22,7 @@ export interface DatingPreferenceWrite {
 
 export async function findDatingPreference(
   userId: string,
-  transaction: Transaction
+  transaction?: Transaction
 ): Promise<DatingPreferenceRecord | null> {
   const row = await DatingPreference.findOne({
     where: { userId },

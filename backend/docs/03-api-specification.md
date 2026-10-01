@@ -778,25 +778,29 @@ Successful `data` is the selected catalog records, ordered by `display_order` as
 
 ## 12. Onboarding APIs
 
-**Partly implemented.** `PUT /api/v1/onboarding/interests` and `PUT /api/v1/onboarding/relationship-intentions` are live. Their contract is section 11.15. `PUT /api/v1/onboarding/dating-preferences` is live. Its contract is section 12.5. The other routes in this section are the planned contract only and are not mounted. The live basic profile API is section 11.14. Public catalog reads are live in section 11.13.
+**Partly implemented.** `GET /api/v1/onboarding/status` is live. Its contract is section 12.1. `PUT /api/v1/onboarding/interests` and `PUT /api/v1/onboarding/relationship-intentions` are live. Their contract is section 11.15. `PUT /api/v1/onboarding/dating-preferences` is live. Its contract is section 12.5. The other routes in this section are the planned contract only and are not mounted. The live basic profile API is section 11.14. Public catalog reads are live in section 11.13.
 
 The onboarding pipeline enforces sequential profile completion before granting access to discovery.
 
 ### 12.1 Get Onboarding Status
+* **Status:** Implemented. This route is read-only. It does not write `profiles.is_profile_complete`. `POST /api/v1/onboarding/complete` remains unimplemented.
 * **Method & Path:** `GET /api/v1/onboarding/status`
-* **Auth:** Authenticated
-* **Success Response (`200 OK`):**
+* **Auth:** `Authorization: Bearer <accessToken>` and role `USER`. `requireVerified` is not applied. No body and no query parameters.
+* **Missing profile:** `200 OK`. This is not `404 PROFILE_NOT_FOUND`.
+* **Success Response (`200 OK`):** Message: `Onboarding status retrieved successfully`. `data` is only:
   ```json
   {
-    "success": true,
-    "data": {
-      "isVerified": true,
-      "isProfileComplete": false,
-      "completedSteps": ["VERIFICATION", "BASIC_PROFILE", "PHOTOS"],
-      "nextStep": "INTERESTS"
-    }
+    "isVerified": true,
+    "isProfileComplete": false,
+    "completedSteps": ["VERIFICATION"],
+    "nextStep": "BASIC_PROFILE"
   }
   ```
+* **`isVerified`:** The authenticated user's current verification state.
+* **`isProfileComplete`:** The stored `profiles.is_profile_complete` value. A missing profile is `false`. This route does not recalculate or store it.
+* **`completedSteps`:** Prerequisite steps that are currently satisfied, in this order: `VERIFICATION`, `BASIC_PROFILE`, `PHOTOS`, `INTERESTS`, `RELATIONSHIP_INTENTIONS`, `DATING_PREFERENCES`, `LOCATION`. `COMPLETE` is never included.
+* **`nextStep`:** The first incomplete step in that order. When steps 1–7 are satisfied and the stored flag is still `false`, `nextStep` is `COMPLETE`. When the stored flag is `true`, `nextStep` is `null`.
+* **Step rules:** `VERIFICATION` uses the authenticated verification state. `BASIC_PROFILE` is a profile row. `PHOTOS` is 1–5 active photos including one primary. `INTERESTS` is 3–10 of the user's own interests. `RELATIONSHIP_INTENTIONS` is at least one of the user's own relationship intentions, not discovery-preference intentions. `DATING_PREFERENCES` is a `dating_preferences` row, including a row with empty junction lists. `LOCATION` is a non-blank city and a non-null point. Coordinates, photos, interests, and preference records are not returned.
 
 ---
 

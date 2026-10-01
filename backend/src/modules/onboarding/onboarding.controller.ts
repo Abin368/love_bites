@@ -38,3 +38,12 @@ export const updateLocation = asyncHandler(async (req, res) => {
   const location = await onboardingService.updateOwnLocation(req.user!.id, body);
   send(res, location, 'Location updated successfully');
 });
+
+export const getStatus = asyncHandler(async (req, res) => {
+  const status = await onboardingService.getOwnOnboardingStatus(
+    req.user!.id,
+    req.user!.isVerified,
+    req.user!.isProfileComplete
+  );
+  send(res, status, 'Onboarding status retrieved successfully');
+});
