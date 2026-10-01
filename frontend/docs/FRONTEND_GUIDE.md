@@ -8,7 +8,7 @@ This is the frontend integration guide for Love Bite. It tells a frontend develo
 
 ## 1. Purpose
 
-Use this document to wire registration, verification, login, refresh, logout, password reset, the public catalogs, the authenticated basic profile, and onboarding interest and relationship-intention selection. Do not treat later product areas (photos, discovery, chat, payments) as available APIs.
+Use this document to wire registration, verification, login, refresh, logout, password reset, the public catalogs, the authenticated basic profile, onboarding interest and relationship-intention selection, and profile photos. Do not treat later product areas (discovery, chat, payments) as available APIs.
 
 ---
 
@@ -34,9 +34,8 @@ Phase 2 authentication:
 
 Do not call these. Tables may exist in PostgreSQL, but there are no mounted routes or frontend APIs for them:
 
-- The rest of profile onboarding (photos, preferences, location, completion)
+- The rest of profile onboarding (preferences, location, completion)
 - `PUT /api/v1/me/interests` and `PUT /api/v1/me/relationship-intentions`
-- Profile photos
 - Dating preferences
 - Discovery
 - Likes
@@ -698,6 +697,11 @@ If the retried request fails again, stop. Do not refresh a second time for that 
 | PATCH | `/api/v1/profile` | Implemented. Bearer token. Role `USER`. Updates the caller's basic profile. |
 | PUT | `/api/v1/onboarding/interests` | Implemented. Bearer token. Role `USER`. Replaces 3 to 10 interests. |
 | PUT | `/api/v1/onboarding/relationship-intentions` | Implemented. Bearer token. Role `USER`. Replaces one or more intentions. |
+| POST | `/api/v1/profile-photos/upload-url` | Implemented. Bearer token. Role `USER`. Returns a private presigned PUT URL. Does not store a photo row. |
+| POST | `/api/v1/profile-photos/confirm` | Implemented. Bearer token. Role `USER`. Stores the reserved photo. |
+| GET | `/api/v1/profile-photos` | Implemented. Bearer token. Role `USER`. Active photos only. |
+| PATCH | `/api/v1/profile-photos/:photoId` | Implemented. Bearer token. Role `USER`. Changes order and/or primary. |
+| DELETE | `/api/v1/profile-photos/:photoId` | Implemented. Bearer token. Role `USER`. Soft-deletes the caller's photo. |
 
 Paths are prefixed by `API_PREFIX`, which defaults to `/api/v1`.
 
@@ -717,13 +721,21 @@ Intention body: `{ "relationshipIntentionIds": ["uuid"] }`. Minimum 1, no maximu
 
 Both calls replace the signed-in user's current rows. They do not append, and they do not change `isProfileComplete`. A bad UUID, a duplicate, or the wrong count is `400 VALIDATION_ERROR`. An unknown or inactive interest is `400 INVALID_INTEREST`. An unknown or inactive intention is `400 INVALID_RELATIONSHIP_INTENTION`. `PUT /api/v1/me/interests` and `PUT /api/v1/me/relationship-intentions` are not mounted. The full contract is `backend/docs/03-api-specification.md` section 11.15.
 
+Profile photos use the same bearer token and `USER` role. The path is `/api/v1/profile-photos`, not `/api/v1/profile/photos`. The client uploads the file to S3 with the returned PUT URL. This API never receives the image bytes.
+
+`POST /api/v1/profile-photos/upload-url` body: `mimeType` (`image/jpeg`, `image/png`, or `image/webp`), `fileSizeBytes` (integer, 1 to 10485760), and optional `originalFilename` (max 255). Success is `200`. `data` is `photoId`, `uploadUrl`, `storageKey`, and `expiresInSeconds` (`300`). The storage key is always `photos/{userId}/{photoId}.webp`. Send the PUT with the same `Content-Type` as `mimeType`. A sixth active photo is `409 PHOTO_LIMIT_REACHED`.
+
+`POST /api/v1/profile-photos/confirm` body: `photoId`, `storageKey` (the value just returned), `displayOrder` (1–5), and `isPrimary`. Success is `201`. `data` is `id`, `url`, `displayOrder`, and `isPrimary`. `url` is a signed GET URL valid for 3600 seconds. Do not send a different storage key. A missing reservation is `404 RESOURCE_NOT_FOUND`. A mismatched key is `400 INVALID_STORAGE_KEY`.
+
+`GET /api/v1/profile-photos` returns that photo shape for the signed-in user's active photos, ordered by `displayOrder`. `PATCH /api/v1/profile-photos/:photoId` accepts `displayOrder` and/or `isPrimary` and returns the full active list. `DELETE /api/v1/profile-photos/:photoId` returns `{ "deleted": true }`. Another user's photo is `404 RESOURCE_NOT_FOUND`. A completed profile cannot delete its only photo (`409 PHOTO_REQUIRED`). Photo routes do not change `isProfileComplete`. The full contract is `backend/docs/03-api-specification.md` section 14.
+
 ---
 
 ## 24. Phase 3 boundary
 
 Phase 2 authentication is implemented. Phase 3 Step 1 adds the three public catalog reads in section 23. Phase 3 Step 3 adds the basic profile routes in that same table. Interest and relationship-intention selection is also implemented there, on `PUT /api/v1/onboarding/interests` and `PUT /api/v1/onboarding/relationship-intentions`.
 
-The rest of Phase 3 is still planned: photos, location, dating preferences, and profile completion. `PUT /api/v1/me/interests` and `PUT /api/v1/me/relationship-intentions` are not mounted. Registration still does not write `profiles.date_of_birth`. `POST /api/v1/profile` does. `isProfileComplete` stays unchanged by interest and intention selection. A later completion step sets it.
+The rest of Phase 3 is still planned: location, dating preferences, and profile completion. Profile photos are implemented. `PUT /api/v1/me/interests` and `PUT /api/v1/me/relationship-intentions` are not mounted. Registration still does not write `profiles.date_of_birth`. `POST /api/v1/profile` does. `isProfileComplete` stays unchanged by interest selection, intention selection, and photo routes. A later completion step sets it.
 
 Do not call the later Phase 3 paths. They are not mounted. The later sections of `backend/docs/03-api-specification.md` describe that planned contract, except the catalog reads and section 11.15, which are implemented.
 

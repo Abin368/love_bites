@@ -1002,10 +1002,14 @@ The onboarding pipeline enforces sequential profile completion before granting a
 
 ## 14. Photo APIs
 
+**Status:** Implemented for the signed-in `USER`. All five routes use `authenticate` and `requireRole('USER')`. Ownership is `req.user.id`. A profile row is not required. These routes do not change `profiles.is_profile_complete`. Objects stay private. The API never accepts image bytes. There is no S3 delete in this slice.
+
+Photo objects returned after confirm, list, and patch are `{ "id", "url", "displayOrder", "isPrimary" }`. `url` is a presigned `GetObject` URL valid for 3600 seconds. `storageKey` is returned only by the upload-url route.
+
 ### 14.1 Request Presigned S3 Upload Slot
 * **Method & Path:** `POST /api/v1/profile-photos/upload-url`
-* **Auth:** Authenticated
-* **Purpose:** Generates a short-lived S3 `PutObject` presigned URL and reserves a photo slot.
+* **Auth:** Authenticated `USER`
+* **Purpose:** Generates a short-lived S3 `PutObject` presigned URL. The server stores a Redis reservation for 300 seconds and does not insert `profile_photos`.
 * **Request Body:**
   ```json
   {
@@ -1014,17 +1018,20 @@ The onboarding pipeline enforces sequential profile completion before granting a
     "originalFilename": "profile_pic.webp"
   }
   ```
-* **Validation:** `mimeType` in `['image/jpeg', 'image/png', 'image/webp']`, `fileSizeBytes <= 10485760` (10 MB). Max 5 active photos per user.
-* **Success Response (`200 OK`):**
+* **Validation:** `mimeType` in `['image/jpeg', 'image/png', 'image/webp']`. `fileSizeBytes` is an integer from 1 to 10485760. `originalFilename` is optional, trimmed, and at most 255 characters. It is metadata only and is never part of the object key. Unknown fields are rejected.
+* **Limit:** At most 5 active photos (`deleted_at IS NULL`). A sixth request is `409 PHOTO_LIMIT_REACHED`.
+* **Object key:** Server-generated `photos/{userId}/{photoId}.webp`. The signed PUT `ContentType` is the validated MIME type. No public ACL. `expiresInSeconds` is 300.
+* **Success Response (`200 OK`):** Message is `Upload URL created successfully`.
   ```json
   {
     "success": true,
     "data": {
       "photoId": "photo-uuid-1",
       "uploadUrl": "https://lovebite-private-photos.s3.amazonaws.com/photos/user-id/photo-uuid-1.webp?X-Amz-...",
-      "storageKey": "photos/b2f6c91a.../photo-uuid-1.webp",
+      "storageKey": "photos/user-id/photo-uuid-1.webp",
       "expiresInSeconds": 300
-    }
+    },
+    "message": "Upload URL created successfully"
   }
   ```
 
@@ -1032,48 +1039,52 @@ The onboarding pipeline enforces sequential profile completion before granting a
 
 ### 14.2 Confirm Uploaded Photo Metadata
 * **Method & Path:** `POST /api/v1/profile-photos/confirm`
-* **Auth:** Authenticated
+* **Auth:** Authenticated `USER`
 * **Request Body:**
   ```json
   {
     "photoId": "photo-uuid-1",
-    "storageKey": "photos/b2f6c91a.../photo-uuid-1.webp",
+    "storageKey": "photos/user-id/photo-uuid-1.webp",
     "displayOrder": 1,
     "isPrimary": true
   }
   ```
-* **Success Response (`201 Created`):** Returns confirmed photo metadata.
+* **Rules:** `displayOrder` is 1–5. `isPrimary` is boolean. The client `storageKey` must exactly match the Redis reservation for that `photoId` and the authenticated user. MIME type, file size, filename, and the stored key come from the reservation. A missing or expired reservation, or another user's reservation, is `404 RESOURCE_NOT_FOUND`. A mismatched key is `400 INVALID_STORAGE_KEY`. The row is inserted only after those checks, inside a transaction. The reservation is deleted only after commit. A failed transaction leaves the reservation in place.
+* **Order collision:** If another active photo already uses `displayOrder`, that photo moves to the lowest unused order from 1 to 5. The new photo keeps the requested order.
+* **Primary:** `isPrimary: true` clears the current active primary, then inserts this photo as primary. `isPrimary: false` does not invent a primary.
+* **Limit:** The transaction rejects a sixth active photo with `409 PHOTO_LIMIT_REACHED`.
+* **Success Response (`201 Created`):** Message is `Photo confirmed successfully`. `data` is `{ "id", "url", "displayOrder", "isPrimary" }`.
 
 ---
 
 ### 14.3 List Current User Photos
 * **Method & Path:** `GET /api/v1/profile-photos`
-* **Auth:** Authenticated
-* **Success Response (`200 OK`):** Returns array of photo objects with signed GET CDN URLs.
+* **Auth:** Authenticated `USER`
+* **Success Response (`200 OK`):** Message is `Photos retrieved successfully`. `data` is the caller's active photos, `displayOrder` ascending. Deleted photos and other users' photos are omitted. Each item includes a fresh signed GET URL.
 
 ---
 
 ### 14.4 Update Photo Order or Primary Flag
 * **Method & Path:** `PATCH /api/v1/profile-photos/:photoId`
-* **Auth:** Authenticated
-* **Request Body:**
-  ```json
-  {
-    "displayOrder": 2,
-    "isPrimary": false
-  }
-  ```
-* **Success Response (`200 OK`):** Returns updated photo list.
+* **Auth:** Authenticated `USER`
+* **Request Body:** At least one of `displayOrder` (1–5) or `isPrimary` (boolean). Unknown fields are rejected. An empty body is `400 VALIDATION_ERROR`.
+* **Ownership:** The photo must be an active row for `req.user.id`. Any other id is `404 RESOURCE_NOT_FOUND`.
+* **Order collision:** The two photos exchange display orders inside one transaction. No order outside 1–5 is written.
+* **Primary:** `isPrimary: true` clears the current primary and promotes this photo. `isPrimary: false` on the current primary promotes the other active photo with the lowest `displayOrder`. The only active photo stays primary.
+* **Success Response (`200 OK`):** Message is `Photos updated successfully`. `data` is the full active photo list with fresh signed GET URLs.
 
 ---
 
 ### 14.5 Delete Photo
 * **Method & Path:** `DELETE /api/v1/profile-photos/:photoId`
-* **Auth:** Authenticated
+* **Auth:** Authenticated `USER`
 * **Business Rules:**
-  * Cannot delete if it is the only remaining photo of a completed profile (minimum 1 required).
-  * If the primary photo is deleted, the next photo in `displayOrder` is automatically designated primary.
-* **Success Response (`200 OK`):** Returns `{ "deleted": true }`.
+  * Ownership matches patch. A missing or other-user photo is `404 RESOURCE_NOT_FOUND`.
+  * The row is soft-deleted. The S3 object is not deleted.
+  * If `profiles.is_profile_complete` is true and this is the only active photo, the delete is `409 PHOTO_REQUIRED`.
+  * If the deleted photo is primary and other active photos remain, the one with the lowest `displayOrder` becomes primary.
+  * `profiles.is_profile_complete` is not changed.
+* **Success Response (`200 OK`):** Message is `Photo deleted successfully`. `data` is `{ "deleted": true }`.
 
 ---
 

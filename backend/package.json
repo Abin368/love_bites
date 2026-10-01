@@ -36,6 +36,8 @@
   "author": "Love Bite Engineering",
   "license": "UNLICENSED",
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1143.0",
+    "@aws-sdk/s3-request-presigner": "^3.1143.0",
     "argon2": "^0.45.1",
     "cookie-parser": "^1.4.6",
     "cors": "^2.8.5",
