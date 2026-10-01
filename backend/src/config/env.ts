@@ -5,6 +5,11 @@ import { z } from 'zod';
 // Load .env file
 dotenv.config({ path: path.resolve(process.cwd(), '.env') });
 
+const optionalEnvString = z.preprocess(
+  (value) => (typeof value === 'string' && value.trim() === '' ? undefined : value),
+  z.string().trim().min(1).optional()
+);
+
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().positive().default(5000),
@@ -31,10 +36,31 @@ const envSchema = z.object({
   JWT_REFRESH_SECRET: z.string().min(16).default('development-jwt-refresh-secret-minimum-16-chars'),
   JWT_ACCESS_EXPIRATION: z.string().default('15m'),
   // Opaque refresh tokens do not use JWT_REFRESH_SECRET. It stays configured for compatibility.
-  JWT_REFRESH_EXPIRATION: z.string().default('7d')
+  JWT_REFRESH_EXPIRATION: z.string().default('7d'),
+
+  // Photo storage. Credentials come from the AWS SDK default provider chain.
+  // Required in production. Development and test can boot without them.
+  AWS_REGION: optionalEnvString,
+  AWS_S3_BUCKET_NAME: optionalEnvString
 }).superRefine((data, ctx) => {
   if (data.NODE_ENV !== 'production') {
     return;
+  }
+
+  if (!data.AWS_REGION) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['AWS_REGION'],
+      message: 'AWS_REGION is required in production'
+    });
+  }
+
+  if (!data.AWS_S3_BUCKET_NAME) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['AWS_S3_BUCKET_NAME'],
+      message: 'AWS_S3_BUCKET_NAME is required in production'
+    });
   }
 
   const secret = data.JWT_ACCESS_SECRET;

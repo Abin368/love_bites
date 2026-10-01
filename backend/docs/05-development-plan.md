@@ -308,7 +308,7 @@ Implement secure, dual-identifier registration (Email OR Phone), cryptographic p
 
 ## 7. Phase 3 — Profile and Onboarding
 
-**Step 3 status (2026-09-29): basic profile HTTP is implemented. Interest and relationship-intention selection is also implemented on the onboarding routes below. Phase 3 is not complete. Photos, dating preferences, location, and onboarding completion are next. The documents still disagree on Phase 3 step numbers; this selection work is not a renumbered step.**
+**Step 3 status (2026-09-30): basic profile HTTP, interest and relationship-intention selection, and profile photos are implemented. Phase 3 is not complete. Dating preferences, location, and onboarding completion are next. The documents still disagree on Phase 3 step numbers; the photo work is not a renumbered step.**
 
 Implemented in Step 1:
 
@@ -337,7 +337,7 @@ Implemented for interest and relationship-intention selection:
 * `PUT /api/v1/me/interests` and `PUT /api/v1/me/relationship-intentions` are not implemented.
 * These routes do not change `profiles.is_profile_complete`.
 
-Not implemented: the other onboarding HTTP routes, photos, S3, dating preferences, location endpoints, onboarding completion, public profiles, discovery, likes, matches, and chat. Plans, features, and usage limits are still unseeded. Production interests are not seeded.
+Not implemented: the other onboarding HTTP routes, dating preferences, location endpoints, onboarding completion, public profiles, discovery, likes, matches, and chat. Profile photos and the private S3 presign pipeline are implemented. Plans, features, and usage limits are still unseeded. Production interests are not seeded.
 
 ### 7.1 Objectives
 Implement the linear onboarding sequence, demographic metadata management, S3 presigned photo upload pipeline, dating preferences, and profile completion validation.
@@ -356,12 +356,14 @@ Implement the linear onboarding sequence, demographic metadata management, S3 pr
 2. **Basic Profile Step (`PATCH /api/v1/onboarding/profile`):**
    * Validates `firstName`, `genderId` (active gender check), `bio` ($\le 500$ chars), `occupation`, `education`.
    * *Note: `dateOfBirth` is locked from registration and cannot be modified.*
-3. **AWS S3 Photo Upload Pipeline:**
-   * `src/integrations/storage/s3.provider.ts`: Initializes AWS S3 client for private bucket operations.
-   * `POST /api/v1/profile-photos/upload-url`: Validates MIME type (`image/jpeg`, `image/png`, `image/webp`), size ($\le 10\text{ MB}$), and active photo count ($< 5$). Generates short-lived presigned `PutObject` URL for key `photos/{userId}/{uuid}.webp`.
-   * `POST /api/v1/profile-photos/confirm`: Creates `profile_photos` record upon upload confirmation.
-   * `PATCH /api/v1/profile-photos/:photoId`: Updates `displayOrder` or `isPrimary`.
-   * `DELETE /api/v1/profile-photos/:photoId`: Soft-deletes photo record; enforces minimum 1 photo rule for complete profiles.
+3. **AWS S3 Photo Upload Pipeline:** **Implemented.**
+   * `src/integrations/storage/s3.provider.ts` signs private `PutObject` and `GetObject` URLs. It does not delete objects and does not set a public ACL. Credentials come from the AWS SDK default provider chain. `AWS_REGION` and `AWS_S3_BUCKET_NAME` are required in production and optional in development and test.
+   * `POST /api/v1/profile-photos/upload-url`: Validates MIME type (`image/jpeg`, `image/png`, `image/webp`), size (1 to 10 MB), and active photo count (`< 5`). Generates a 300-second presigned `PutObject` URL for `photos/{userId}/{uuid}.webp`. Stores a Redis reservation. Does not insert `profile_photos`.
+   * `POST /api/v1/profile-photos/confirm`: Inserts the `profile_photos` row from that reservation inside a transaction. The client storage key must match the server key. The reservation is removed only after commit.
+   * `GET /api/v1/profile-photos`: Lists the caller's active photos with 3600-second presigned GET URLs.
+   * `PATCH /api/v1/profile-photos/:photoId`: Updates `displayOrder` or `isPrimary` for the caller's active photo.
+   * `DELETE /api/v1/profile-photos/:photoId`: Soft-deletes the photo. A completed profile cannot drop to zero photos. Deleting the primary promotes the lowest remaining `displayOrder`. The S3 object stays until a later purge job.
+   * These routes do not set `profiles.is_profile_complete`.
 4. **Interests & Intentions Setup:**
    * **Implemented:** `PUT /api/v1/onboarding/interests` validates an array of active interest UUIDs (**min 3, max 10**, no duplicates) and replaces `user_interests` in one transaction.
    * **Implemented:** `PUT /api/v1/onboarding/relationship-intentions` validates an array of active intention UUIDs (**min 1**, no duplicates, no maximum) and replaces `user_relationship_intentions` in one transaction.

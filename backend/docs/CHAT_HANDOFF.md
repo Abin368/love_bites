@@ -9,8 +9,8 @@
 
 ## 1. Current Project Status
 
-* **Overall Backend Implementation Status:** **Phase 0 complete. Phase 1 database foundation complete. Phase 2 authentication complete. Backend CI is implemented and verified. Phase 3 public catalogs, profile foundation, basic profile HTTP, and onboarding interest and relationship-intention selection are implemented.** Phase 3 is not complete. Phase 1 Step 1 and Step 2 migrations remain applied to `love_bites_dev`. The Step 2 nullability migration was not applied to `love_bites_dev`. Seeders exist and were not applied to `love_bites_dev`. CD/deployment is not implemented.
-* **Current Development Phase:** **Basic profile HTTP and onboarding interest/intention selection are done. Next work is the rest of Phase 3 (photos, dating preferences, location, onboarding completion), not discovery, likes, chat, or deployment.** The Phase 3 step numbers in the plan still conflict. This selection slice is not a renumbered step.
+* **Overall Backend Implementation Status:** **Phase 0 complete. Phase 1 database foundation complete. Phase 2 authentication complete. Backend CI is implemented and verified. Phase 3 public catalogs, profile foundation, basic profile HTTP, onboarding interest and relationship-intention selection, and profile photos are implemented.** Phase 3 is not complete. Phase 1 Step 1 and Step 2 migrations remain applied to `love_bites_dev`. The nullable city/location migration `20260929120003` is applied on both `love_bites_dev` and `love_bites_test`. Seeders exist and were not applied to `love_bites_dev`. CD/deployment is not implemented.
+* **Current Development Phase:** **Profile photos and the private S3 presign pipeline are done. Next work is the rest of Phase 3 (dating preferences, location, onboarding completion), not discovery, likes, chat, or deployment.** The Phase 3 step numbers in the plan still conflict. This photo slice is not a renumbered step.
 * **What is Working:**
   * Base project setup (`package.json`, `tsconfig.json`, `.env.example`, `.sequelizerc`, `jest.config.ts`).
   * Express application (`src/app.ts`) with security headers (Helmet), CORS, JSON parser, cookie parser, HPP, and request ID tracking.
@@ -25,6 +25,7 @@
   * Phase 3 Step 2 profile foundation: `profiles.city` and `profiles.location` are nullable. `src/modules/profiles/profiles.data-access.ts` finds, creates, and updates a partial profile.
   * Phase 3 Step 3 basic profile HTTP: `GET`, `POST`, and `PATCH /api/v1/profile`. Authenticated `USER` only. `is_profile_complete` stays false for a basic profile.
   * Onboarding selection: `PUT /api/v1/onboarding/interests` and `PUT /api/v1/onboarding/relationship-intentions`. Authenticated `USER` only. Each call replaces that user's junction rows in one transaction. `profiles.is_profile_complete` is not changed. `PUT /api/v1/me/interests` and `PUT /api/v1/me/relationship-intentions` are not mounted.
+  * Profile photos: `POST /api/v1/profile-photos/upload-url`, `POST /api/v1/profile-photos/confirm`, `GET /api/v1/profile-photos`, `PATCH /api/v1/profile-photos/:photoId`, and `DELETE /api/v1/profile-photos/:photoId`. Authenticated `USER` only. Private S3 presigned PUT (300 seconds) and GET (3600 seconds). Redis holds the upload reservation. The database row is created on confirm. Soft delete does not remove the S3 object. `profiles.is_profile_complete` is not changed.
   * Sequelize seeders for genders and relationship intentions. Idempotent on `code`. Production interests are not seeded.
   * Automated unit and integration test suite. The original 12 Phase 0 tests still pass. Catalog coverage is in the PostgreSQL suite.
   * Clean TypeScript compilation (`npm run build`).
@@ -32,7 +33,7 @@
   * Backend CI: `.github/workflows/backend-ci.yml`. It runs on pushes to `develop` and on pull requests targeting `develop`. `develop` is the integration branch. `main` is the eventual higher-level branch in the current workflow (`feature branch` → `develop` → `main`). CI does not run for `main`.
 * **What is Not Yet Implemented:**
   * Production interest seed data. The approved interest list is not defined. Plans, features, and usage limits are also unseeded.
-  * The rest of Phase 3: the other onboarding HTTP routes, photos, S3, dating preferences, location endpoints, onboarding completion, and public profiles. Registration still validates `dateOfBirth` for age 18+ and does **not** store it or create a `profiles` row. `POST /api/v1/profile` stores date of birth on the profile. A basic profile keeps null `city` and `location`, and `is_profile_complete` stays false. Saving interests or intentions does not set that flag.
+  * The rest of Phase 3: the other onboarding HTTP routes, dating preferences, location endpoints, onboarding completion, and public profiles. Profile photos are implemented. Registration still validates `dateOfBirth` for age 18+ and does **not** store it or create a `profiles` row. `POST /api/v1/profile` stores date of birth on the profile. A basic profile keeps null `city` and `location`, and `is_profile_complete` stays false. Saving interests, intentions, or photos does not set that flag.
   * The remaining domain modules (Photos, Dating Preferences, Location, Discovery, Likes, Passes, Matches, Chat, Realtime Socket.IO, Safety, Notifications, Subscriptions, Entitlements, Payments, Admin). `PUT /api/v1/me/interests` and `PUT /api/v1/me/relationship-intentions` are not implemented. The basic profile HTTP API is implemented. The onboarding interest and intention routes are implemented.
   * Real email or SMS delivery. Phase 2 uses mock providers only.
   * Payment providers, webhook handlers, and notification generation.
@@ -109,7 +110,7 @@ HTTP Request
 | **Authentication** | **Implemented (Phase 2)** | `src/modules/auth/`, `src/middleware/auth.middleware.ts`, `src/middleware/role.middleware.ts` | Email and/or phone registration, Argon2id, 15-minute HS256 access JWT, 7-day opaque refresh cookie, SHA-256 hash in `auth_refresh_tokens`, single-use rotation, reuse revokes all active sessions. `dateOfBirth` is validated and not stored. No profile row is created. |
 | **Users** | **Schema Implemented (Phase 1 Step 1)** | `src/database/models/user.model.ts` | Root identity table, UUID PK, identifier/role/status CHECKs, partial unique email/phone indexes, paranoid `deleted_at`. No user APIs yet. |
 | **Profiles** | **Basic profile API implemented (Phase 3 Step 3)** | `profile.model.ts`, `src/modules/profiles/`, migration `20260929120003` | 1:1 with users. `GET`, `POST`, and `PATCH /api/v1/profile` require `authenticate` and role `USER`. Ownership is `req.user.id`. Writable fields are `firstName`, `dateOfBirth`, `genderId`, `bio`, `occupation`, and `education`. `city` and `location` stay nullable. `location` remains `geography(Point, 4326)`. `chk_profiles_age_18_plus` is unchanged. Callers cannot set `isProfileComplete`. A basic profile stays incomplete until city, location, photos, interests, intentions, and dating preferences exist. |
-| **Photos** | **Schema Implemented (Phase 1 Step 1)** | `src/database/models/profile-photo.model.ts` | `user_id` → `users.id`, storage key, display order 1..5, primary-photo partial unique index. No S3/upload APIs yet. |
+| **Photos** | **Private upload pipeline implemented** | `src/modules/profile-photos/`, `src/integrations/storage/`, `profile-photo.model.ts` | `user_id` → `users.id`. Server key `photos/{userId}/{photoId}.webp`. Display order 1–5. At most one active primary. Soft delete. Presigned private PUT and GET. No S3 delete. Does not set `is_profile_complete`. |
 | **Genders** | **Catalog API implemented (Phase 3 Step 1)** | `src/modules/genders/`, `gender.model.ts` | Public `GET /api/v1/genders` returns active rows (`id`, `code`, `name`) ordered by `display_order`. Seeder inserts `MAN`, `WOMAN`, `NON_BINARY`, `PREFER_NOT_TO_SAY`. |
 | **Interests** | **Catalog read and onboarding selection implemented; not seeded** | `src/modules/interests/`, `src/modules/onboarding/`, `interest.model.ts`, `user-interest.model.ts` | Public `GET /api/v1/interests` returns active rows (`id`, `code`, `name`, `category`). Empty `data: []` is success. No production interest seed. `PUT /api/v1/onboarding/interests` replaces the caller's `user_interests` with 3 to 10 active ids. `PUT /api/v1/me/interests` is not mounted. |
 | **Relationship Intentions** | **Catalog read and onboarding selection implemented** | `src/modules/relationship-intentions/`, `src/modules/onboarding/`, `relationship-intention.model.ts`, junction models | Public `GET /api/v1/relationship-intentions` returns active rows (`id`, `code`, `name`) ordered by `display_order`. Seeder inserts `LONG_TERM_RELATIONSHIP`, `SOMETHING_CASUAL`, `FRIENDSHIP`, `NOT_SURE_YET`. `PUT /api/v1/onboarding/relationship-intentions` replaces the caller's `user_relationship_intentions` with at least one active id. `PUT /api/v1/me/relationship-intentions` is not mounted. |
@@ -171,9 +172,9 @@ Primary Key Strategy: UUIDv4 (gen_random_uuid())
 ## 6. API Status
 
 ### Status Summary
-* **Implemented Endpoints:** 9 authentication routes, public `GET /api/v1/genders`, `GET /api/v1/interests`, and `GET /api/v1/relationship-intentions`, authenticated `GET`, `POST`, and `PATCH /api/v1/profile`, plus `PUT /api/v1/onboarding/interests` and `PUT /api/v1/onboarding/relationship-intentions`.
-* **Partially Implemented Endpoints:** interest and relationship-intention catalogs remain public reads. User selection is only the two onboarding PUT routes. `PUT /api/v1/me/interests` and `PUT /api/v1/me/relationship-intentions` are not mounted. The basic profile API does not cover photos, location, or completion.
-* **Planned Endpoints:** the rest of onboarding, the fuller `/profiles/me` and public profile views, photos, dating preferences, location, discovery, likes, matches, chat, and the remaining routes in `03-api-specification.md`. Phase 3 is not complete.
+* **Implemented Endpoints:** 9 authentication routes, public `GET /api/v1/genders`, `GET /api/v1/interests`, and `GET /api/v1/relationship-intentions`, authenticated `GET`, `POST`, and `PATCH /api/v1/profile`, `PUT /api/v1/onboarding/interests`, `PUT /api/v1/onboarding/relationship-intentions`, and the five `/api/v1/profile-photos` routes.
+* **Partially Implemented Endpoints:** interest and relationship-intention catalogs remain public reads. User selection is only the two onboarding PUT routes. `PUT /api/v1/me/interests` and `PUT /api/v1/me/relationship-intentions` are not mounted. The basic profile API does not cover location or completion. Photo routes cover upload, confirm, list, reorder/primary, and soft delete.
+* **Planned Endpoints:** the rest of onboarding, the fuller `/profiles/me` and public profile views, dating preferences, location, discovery, likes, matches, chat, and the remaining routes in `03-api-specification.md`. Phase 3 is not complete. Profile photos are mounted.
 
 ### Planned API Catalog Overview (Base Path: `/api/v1`)
 
@@ -201,10 +202,11 @@ Primary Key Strategy: UUIDv4 (gen_random_uuid())
 | **Profiles** | `GET /profiles/me` | Authenticated | Planned. Return the fuller private profile and preferences. Not mounted. |
 | **Profiles** | `PATCH /profiles/me` | Authenticated | Not mounted. Basic field updates use `PATCH /profile`. |
 | **Profiles** | `GET /profiles/:userId` | Authenticated | Public candidate profile with rounded `distanceKm`. |
-| **Photos** | `POST /profile-photos/upload-url` | Authenticated | Validate MIME/size, generate S3 PutObject presigned URL. |
-| **Photos** | `POST /profile-photos/confirm` | Authenticated | Save photo record in database. |
-| **Photos** | `PATCH /profile-photos/:photoId` | Authenticated | Update display order or primary status. |
-| **Photos** | `DELETE /profile-photos/:photoId` | Authenticated | Soft-delete photo (enforce min 1 photo rule). |
+| **Photos** | `POST /profile-photos/upload-url` | Authenticated `USER` | **Implemented.** Validate MIME/size, reserve the slot in Redis for 300 seconds, return a private presigned PUT URL. No database insert. |
+| **Photos** | `POST /profile-photos/confirm` | Authenticated `USER` | **Implemented.** Insert the photo from the server reservation. Client storage key must match. |
+| **Photos** | `GET /profile-photos` | Authenticated `USER` | **Implemented.** Active photos for the caller, with 3600-second signed GET URLs. |
+| **Photos** | `PATCH /profile-photos/:photoId` | Authenticated `USER` | **Implemented.** Update display order or primary status. Other users receive `404 RESOURCE_NOT_FOUND`. |
+| **Photos** | `DELETE /profile-photos/:photoId` | Authenticated `USER` | **Implemented.** Soft-delete. Completed profiles must keep one active photo. No S3 delete. |
 | **Config** | `GET /genders`, `/interests`, `/relationship-intentions` | Public | **Implemented.** Active rows only, `display_order` ascending, 100 requests / 60 seconds / IP. Interests may be an empty array. |
 | **Preferences**| `GET /dating-preferences`, `PUT /dating-preferences` | Authenticated | Fetch and update matching preferences. |
 | **Discovery** | `GET /discovery` | Authenticated | Get next candidate card (PostGIS spatial filter, Boost weighted). |
@@ -280,7 +282,7 @@ Primary Key Strategy: UUIDv4 (gen_random_uuid())
 | **Authorization / IDOR** | **Not Implemented** | Strict resource ownership validation (`resource.user_id === req.user.id`) + UUIDv4 non-enumerable IDs. Role middleware exists; resource ownership begins in Phase 3. |
 | **HTTP Security Headers** | **Implemented (Phase 0)** | Helmet middleware in `createApp()`. CSP/HSTS hardening still planned for Phase 12. |
 | **Payload Size Bounds** | **Implemented (Phase 0)** | `express.json({ limit: '100kb' })`. |
-| **File Upload & S3 Security** | **Not Implemented** | Direct client-to-S3 presigned URLs, private bucket, MIME whitelisting, 10MB max size. |
+| **File Upload & S3 Security** | **Implemented for profile photos** | Direct client-to-S3 presigned URLs, private objects, MIME whitelist, 10MB max size, server-generated keys. No public ACL. No S3 delete yet. |
 | **Payment & Webhook Security** | **Not Implemented** | HMAC-SHA256 signature verification + idempotency ledger table `processed_webhooks`. |
 | **Error Handling & Sanitization**| **Implemented (Phase 0)** | Centralized `error.middleware.ts`; internal traces stripped in production. |
 | **Logging & Redaction** | **Implemented** | Winston JSON logger redacts passwords, password hashes, access tokens, refresh tokens, new passwords, OTPs, and coordinates. |
@@ -290,7 +292,7 @@ Primary Key Strategy: UUIDv4 (gen_random_uuid())
 
 ## 10. Testing Status
 
-* **Existing Tests:** `npm test` is 77/77. `npm run test:integration:pg` is 54/54, including catalog, profile, and onboarding selection HTTP tests. The original 12 Phase 0 tests are unchanged and still pass.
+* **Existing Tests:** `npm test` is 92/92. `npm run test:integration:pg` is 68/68, including catalog, profile, onboarding selection, and profile photo HTTP tests. The original 12 Phase 0 tests are unchanged and still pass.
 * **Test Framework:** **Jest + ts-jest** (Unit), **Supertest** (Integration). Playwright E2E is still planned.
 * **Covered Functionality:** AppError hierarchy, logger redaction, health endpoints, auth validation, Argon2id, JWT claims and expiry, refresh rotation/reuse decisions, auth and role middleware, the auth HTTP lifecycle, the public gender, interest, and relationship-intention catalogs, the basic profile API, and onboarding interest and relationship-intention replacement.
 * **Phase 2 verification (2026-09-24):** `npm run build` succeeded. `npm test` **50/50 passing**. Auth integration tests use in-memory user, refresh-token, and Redis doubles. They do not connect to `love_bites_dev`. No migrations were created or run.
@@ -332,8 +334,8 @@ Primary Key Strategy: UUIDv4 (gen_random_uuid())
 
 ## 12. Work Currently In Progress
 
-* **Status:** **Phase 3 Step 2 profile foundation is implemented.** Do not start profile HTTP, photos, location endpoints, discovery, payments, or deployment in the same change.
-* **Context:** `profiles.city` and `profiles.location` are nullable. Authentication behaviour is unchanged: no profile, or `is_profile_complete = false`, still reports incomplete. The new migration was not applied to `love_bites_dev`.
+* **Status:** **Profile photos are implemented.** Do not start dating preferences, location endpoints, discovery, payments, or deployment in the same change.
+* **Context:** Upload reservations live in Redis for 300 seconds. `profile_photos` rows are inserted on confirm. `is_profile_complete` is unchanged. No migration was added.
 
 ---
 
@@ -344,7 +346,7 @@ The implementation should follow the phased sequence established in `05-developm
 1. **Phase 0 — Project Setup & Base Infrastructure:** Initialize Node.js, TypeScript, Express, Zod env validation, Sequelize connection pool, Redis client, centralized error middleware, Winston/Pino logger, and Jest test harness.
 2. **Phase 1 — Database Foundation & Base Migrations:** Setup migrations 01–09 (PostGIS extensions, reference catalogs, core schemas, indexes, constraints, seed data).
 3. **Phase 2 — Authentication & Accounts:** **Complete.** Registration, verification, login, opaque refresh rotation, password reset, auth/role middleware, and auth rate limits.
-4. **Phase 3 — Profile & Onboarding:** **In progress.** Step 1 catalogs and Step 2 profile foundation are done. Next is profile HTTP. Photos, interests, dating preferences, location endpoints, and profile completion remain later steps. Registration still does not persist `dateOfBirth`.
+4. **Phase 3 — Profile & Onboarding:** **In progress.** Catalogs, profile foundation, basic profile HTTP, interest and intention selection, and profile photos are done. Next is dating preferences, then location, then onboarding completion. Registration still does not persist `dateOfBirth`.
 5. **Phase 4 — Location & Discovery:** Single-card PostGIS `ST_DWithin` spatial query, mutual preference filtering, Boost multipliers, coordinate privacy.
 6. **Phase 5 — Likes, Passes & Matches:** Swiping service, Free daily quota (10 swipes), reciprocal like check, canonical pair match creation transaction, Premium Undo rollback, unmatching.
 7. **Phase 6 — Chat & Realtime Messaging:** Socket.IO server + Redis adapter, 6-step message authorization, PostgreSQL message persistence, cursor-paginated history, Free/Premium media limits.
@@ -403,10 +405,10 @@ The following architectural and business decisions are established and must **no
 
 ## 16. Recommended Next Task
 
-### Task: **Phase 3 — Step 3: Profile HTTP**
-Step 2 can store a partial profile with null `city` and `location`. Phase 3 is not complete. Profile routes, onboarding routes, photos, preferences, location endpoints, completion, and public profiles are not implemented.
+### Task: **Phase 3 — Dating preferences**
+Profile photos are implemented. Phase 3 is not complete. Dating preferences, location, onboarding completion, and public profiles are not implemented.
 
-Next work is the profile HTTP surface. Do not start discovery, likes, chat, or payments. Do not invent a production interest catalog.
+Next work is dating preferences. Do not start discovery, likes, chat, or payments. Do not invent a production interest catalog.
 
 ---
 
@@ -422,3 +424,4 @@ Next work is the profile HTTP surface. Do not start discovery, likes, chat, or p
 | **2026-09-28** | Backend CI | **Verified** | `.github/workflows/backend-ci.yml` runs on pushes to `develop` and pull requests targeting `develop`. GitHub Actions, `ubuntu-latest`, Node.js 20, `npm ci`, `npm run build`, `npm test`, `npm run test:integration:pg`, temporary `postgis/postgis:16-3.4` service, existing `love_bites_test` guard. No Redis service. Redis hardening deferred. CD/deployment not implemented. The GitHub Actions check returned green. |
 | **2026-09-29** | Phase 3 Step 1 — Catalogs and seed data | **Implemented** | Public gender, interest, and relationship-intention GETs. Gender and relationship-intention seeders only. Interests not seeded. No migration. `love_bites_dev` was not seeded. Phase 3 is not complete. |
 | **2026-09-29** | Phase 3 Step 2 — Profile foundation | **Implemented** | Migration `20260929120003` makes `profiles.city` and `profiles.location` nullable. Geography type and GiST index unchanged. Profile data access only. No profile HTTP. Partial profiles stay incomplete. `love_bites_dev` was not migrated. Phase 3 is not complete. Step 3 is next. |
+| **2026-09-30** | Phase 3 — Profile photos | **Implemented** | Five `/api/v1/profile-photos` routes. Private S3 presigned PUT (300s) and GET (3600s). Redis upload reservation. Row inserted on confirm. Soft delete without S3 deletion. No migration. `is_profile_complete` is not written. |

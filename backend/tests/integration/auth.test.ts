@@ -39,6 +39,19 @@ jest.mock('../../src/modules/profiles/profiles.data-access', () => ({
   },
   updateProfile: async () => undefined
 }));
+jest.mock('../../src/modules/profile-photos/profile-photos.data-access', () => ({
+  lockUser: async () => false,
+  listActivePhotos: async () => [],
+  isProfileMarkedComplete: async () => false,
+  updateDisplayOrder: async () => undefined,
+  clearActivePrimary: async () => undefined,
+  setActivePrimary: async () => undefined,
+  insertPhoto: async () => {
+    throw new Error('profile photo data access is not used by authentication tests');
+  },
+  softDeletePhoto: async () => undefined,
+  swapDisplayOrders: async () => undefined
+}));
 
 import { app } from '../../src/app';
 
