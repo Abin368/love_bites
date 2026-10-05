@@ -9,8 +9,8 @@
 
 ## 1. Current Project Status
 
-* **Overall Backend Implementation Status:** **Phase 0 complete. Phase 1 database foundation complete. Phase 2 authentication complete. Phase 3 onboarding complete. Backend CI is implemented and verified.** Phase 4 — Discovery is next and is not implemented. Phase 1 Step 1 and Step 2 migrations remain applied to `love_bites_dev`. The nullable city/location migration `20260929120003` is applied on both `love_bites_dev` and `love_bites_test`. Seeders exist and were not applied to `love_bites_dev`. CD/deployment is not implemented.
-* **Current Development Phase:** **Phase 3 onboarding is done. Next work is Phase 4 — Discovery.** Do not start discovery, likes, chat, payments, or deployment until that phase is requested. Production interests are still not seeded.
+* **Overall Backend Implementation Status:** **Phase 0 complete. Phase 1 database foundation complete. Phase 2 authentication complete. Phase 3 onboarding complete. Phase 4 — Discovery complete. Backend CI is implemented and verified.** Phase 5 — Likes, Passes and Matches is next and is not implemented. Phase 1 Step 1 and Step 2 migrations remain applied to `love_bites_dev`. The nullable city/location migration `20260929120003` is applied on both `love_bites_dev` and `love_bites_test`. Seeders exist and were not applied to `love_bites_dev`. CD/deployment is not implemented.
+* **Current Development Phase:** **Phase 4 Discovery is done. Next work is Phase 5 — Likes, Passes and Matches.** Do not start likes, chat, payments, or deployment until that phase is requested. Production interests are still not seeded.
 * **What is Working:**
   * Base project setup (`package.json`, `tsconfig.json`, `.env.example`, `.sequelizerc`, `jest.config.ts`).
   * Express application (`src/app.ts`) with security headers (Helmet), CORS, JSON parser, cookie parser, HPP, and request ID tracking.
@@ -30,6 +30,7 @@
   * Onboarding location: `PUT /api/v1/onboarding/location`. Authenticated `USER` only. Requires an existing profile. Stores a trimmed city and a PostGIS geography Point, SRID 4326. The response is `{ "city", "updated": true }` and does not include coordinates. `PUT /api/v1/location` is not mounted. `profiles.is_profile_complete` is not changed.
   * Onboarding status: `GET /api/v1/onboarding/status`. Authenticated `USER` only. Read-only. Returns `isVerified`, the stored `isProfileComplete`, `completedSteps`, and `nextStep`. It does not calculate `isProfileComplete` from the step list.
   * Onboarding completion: `POST /api/v1/onboarding/complete`. Authenticated `USER` only. `requireVerified` is not applied. Requires all seven prerequisites. Sets only `profiles.is_profile_complete`. Does not change `users.status`. Does not issue a JWT. Incomplete requests return `400 PROFILE_INCOMPLETE` and write nothing. A repeat call is `200`, not `409`.
+  * Phase 4 Discovery: `GET /api/v1/discovery`. Authenticated `USER` only. `requireVerified` is not on the route; the service checks the current verification state. One candidate, or `candidate: null`. `distanceKm` is a number to one decimal place. Coordinates are not returned. Like, pass, super-like, and undo are not mounted.
   * Sequelize seeders for genders and relationship intentions. Idempotent on `code`. Production interests are not seeded.
   * Automated unit and integration test suite. The original 12 Phase 0 tests still pass. Catalog coverage is in the PostgreSQL suite.
   * Clean TypeScript compilation (`npm run build`).
@@ -38,7 +39,7 @@
 * **What is Not Yet Implemented:**
   * Production interest seed data. The approved interest list is not defined. Plans, features, and usage limits are also unseeded.
   * Fuller profile views (`GET /api/v1/profiles/me`, `GET /api/v1/profiles/:userId`) and the unmounted aliases `PATCH /api/v1/onboarding/profile`, `PUT /api/v1/location`, `PUT /api/v1/me/interests`, `PUT /api/v1/me/relationship-intentions`, `GET /api/v1/dating-preferences`, and `PUT /api/v1/dating-preferences`. Registration still validates `dateOfBirth` for age 18+ and does **not** store it or create a `profiles` row. `POST /api/v1/profile` stores date of birth on the profile. Saving interests, intentions, photos, dating preferences, or location does not set `profiles.is_profile_complete`. Only `POST /api/v1/onboarding/complete` sets that flag.
-  * The remaining domain modules (Discovery, Likes, Passes, Matches, Chat, Realtime Socket.IO, Safety, Notifications, Subscriptions, Entitlements, Payments, Admin). Phase 4 — Discovery is next. Do not treat the discovery sections of the API specification as live.
+  * The remaining domain modules (Likes, Passes, Matches, Chat, Realtime Socket.IO, Safety, Notifications, Subscriptions, Entitlements, Payments, Admin). Phase 5 — Likes, Passes and Matches is next. Do not treat like, pass, undo, or match routes as live.
   * Real email or SMS delivery. Phase 2 uses mock providers only.
   * Payment providers, webhook handlers, and notification generation.
   * CD/deployment. No deployment target has been selected. Docker and deployment infrastructure remain future work.
@@ -119,10 +120,10 @@ HTTP Request
 | **Interests** | **Catalog read and onboarding selection implemented; not seeded** | `src/modules/interests/`, `src/modules/onboarding/`, `interest.model.ts`, `user-interest.model.ts` | Public `GET /api/v1/interests` returns active rows (`id`, `code`, `name`, `category`). Empty `data: []` is success. No production interest seed. `PUT /api/v1/onboarding/interests` replaces the caller's `user_interests` with 3 to 10 active ids. `PUT /api/v1/me/interests` is not mounted. |
 | **Relationship Intentions** | **Catalog read and onboarding selection implemented** | `src/modules/relationship-intentions/`, `src/modules/onboarding/`, `relationship-intention.model.ts`, junction models | Public `GET /api/v1/relationship-intentions` returns active rows (`id`, `code`, `name`) ordered by `display_order`. Seeder inserts `LONG_TERM_RELATIONSHIP`, `SOMETHING_CASUAL`, `FRIENDSHIP`, `NOT_SURE_YET`. `PUT /api/v1/onboarding/relationship-intentions` replaces the caller's `user_relationship_intentions` with at least one active id. `PUT /api/v1/me/relationship-intentions` is not mounted. |
 | **Dating Preferences** | **Onboarding replace implemented** | `src/modules/onboarding/`, `dating-preference.model.ts`, junction models | `PUT /api/v1/onboarding/dating-preferences` replaces the caller's age range, distance, `user_dating_preference_genders`, and `user_dating_preference_intentions`. Empty id lists are allowed. Does not write `user_relationship_intentions` or `is_profile_complete`. `GET` and `PUT /api/v1/dating-preferences` are not mounted. |
-| **Location & PostGIS** | **Onboarding location API implemented** | `src/modules/onboarding/`, `profiles.data-access.ts`, `profiles.location` | `PUT /api/v1/onboarding/location` stores a trimmed city and `geography(Point, 4326)` via `ST_SetSRID(ST_MakePoint(longitude, latitude), 4326)::geography`. Response omits coordinates. Does not set `is_profile_complete`. `PUT /api/v1/location` is not mounted. Discovery queries are not implemented. |
+| **Location & PostGIS** | **Onboarding location API implemented** | `src/modules/onboarding/`, `profiles.data-access.ts`, `profiles.location` | `PUT /api/v1/onboarding/location` stores a trimmed city and `geography(Point, 4326)` via `ST_SetSRID(ST_MakePoint(longitude, latitude), 4326)::geography`. Response omits coordinates. Does not set `is_profile_complete`. `PUT /api/v1/location` is not mounted. `GET /api/v1/discovery` reads the point and returns numeric `distanceKm` only. |
 | **Onboarding status** | **Implemented** | `src/modules/onboarding/onboarding.service.ts` | `GET /api/v1/onboarding/status` returns `isVerified`, stored `isProfileComplete`, `completedSteps`, and `nextStep`. Order: `VERIFICATION`, `BASIC_PROFILE`, `PHOTOS`, `INTERESTS`, `RELATIONSHIP_INTENTIONS`, `DATING_PREFERENCES`, `LOCATION`. All seven satisfied with the flag still false yields `nextStep: COMPLETE`. Stored flag true yields `nextStep: null`. Read-only. |
 | **Onboarding completion** | **Implemented** | `src/modules/onboarding/onboarding.service.ts` | `POST /api/v1/onboarding/complete` requires the same seven prerequisites. `profiles.is_profile_complete` is the completion source of truth. `users.status` is separate and is not updated. Incomplete: `400 PROFILE_INCOMPLETE` with every missing step, and no write. Complete: `{ "isProfileComplete": true, "status": "<users.status>" }`. Idempotent `200`, not `409`. No JWT reissue. |
-| **Discovery Engine** | **Not Implemented** | `src/modules/discovery/` | Single-card candidate delivery, unlimited card browsing, PostGIS `ST_DWithin` spatial query, mutual preference filtering, Boost multipliers, exclusion of self/blocks/passes/matches. |
+| **Discovery Engine** | **Implemented (Phase 4)** | `src/modules/discovery/` | `GET /api/v1/discovery`. Authenticated `USER`. `requireVerified` is not on the route; the service checks current verification. Incomplete callers get `400 PROFILE_INCOMPLETE`. One card or `candidate: null`. Mutual distance, age, gender, and intentions. Empty preferred gender or intention lists match nobody. Excludes self, non-`ACTIVE`, soft-deleted, incomplete, missing location, missing primary photo, the viewer's active `LIKE`/`PASS`/`SUPER_LIKE`, active matches, and blocks either way. Undone actions, incoming passes, and `UNMATCHED`/`UNDONE` matches stay eligible. Reports are not a filter. Rank: highest active boost, then `profiles.created_at DESC`. `distanceKm` is a number to one decimal place. No coordinates and no pagination. Like, pass, super-like, and undo are not mounted. |
 | **Likes** | **Schema Implemented (Phase 1 Step 2)** | `like.model.ts` | `likes.action` stores `LIKE`, `PASS`, and `SUPER_LIKE`. Partial unique `uq_likes_active_pair` where `is_undone = FALSE`. No like API or quota enforcement. |
 | **Passes** | **Schema only, via `likes`** | `like.model.ts` | No separate passes table. Pass behavior is a `likes` row. No pass API. |
 | **Matches** | **Schema Implemented (Phase 1 Step 2)** | `match.model.ts` | `chk_matches_canonical_order` enforces `user_one_id < user_two_id`. Partial unique active pair allows later re-match after `UNMATCHED` or `UNDONE`. No match API. |
@@ -178,9 +179,9 @@ Primary Key Strategy: UUIDv4 (gen_random_uuid())
 ## 6. API Status
 
 ### Status Summary
-* **Implemented Endpoints:** 9 authentication routes, public `GET /api/v1/genders`, `GET /api/v1/interests`, and `GET /api/v1/relationship-intentions`, authenticated `GET`, `POST`, and `PATCH /api/v1/profile`, `PUT /api/v1/onboarding/interests`, `PUT /api/v1/onboarding/relationship-intentions`, `PUT /api/v1/onboarding/dating-preferences`, `PUT /api/v1/onboarding/location`, `GET /api/v1/onboarding/status`, `POST /api/v1/onboarding/complete`, and the five `/api/v1/profile-photos` routes.
+* **Implemented Endpoints:** 9 authentication routes, public `GET /api/v1/genders`, `GET /api/v1/interests`, and `GET /api/v1/relationship-intentions`, authenticated `GET`, `POST`, and `PATCH /api/v1/profile`, `PUT /api/v1/onboarding/interests`, `PUT /api/v1/onboarding/relationship-intentions`, `PUT /api/v1/onboarding/dating-preferences`, `PUT /api/v1/onboarding/location`, `GET /api/v1/onboarding/status`, `POST /api/v1/onboarding/complete`, the five `/api/v1/profile-photos` routes, and `GET /api/v1/discovery`.
 * **Intentionally unmounted aliases:** `PUT /api/v1/me/interests`, `PUT /api/v1/me/relationship-intentions`, `GET /api/v1/dating-preferences`, `PUT /api/v1/dating-preferences`, `PUT /api/v1/location`, and `PATCH /api/v1/onboarding/profile`. Interest selection, dating preferences, location, and basic profile updates use the mounted onboarding and `/profile` routes above.
-* **Planned Endpoints:** the fuller `/profiles/me` and public profile views, discovery, likes, matches, chat, and the remaining routes in `03-api-specification.md`. Phase 3 onboarding is complete. Phase 4 — Discovery is next and is not implemented.
+* **Planned Endpoints:** the fuller `/profiles/me` and public profile views, likes, passes, undo, matches, chat, and the remaining routes in `03-api-specification.md`. Phase 4 — Discovery is complete. Phase 5 — Likes, Passes and Matches is next and is not implemented.
 
 ### Planned API Catalog Overview (Base Path: `/api/v1`)
 
@@ -207,7 +208,7 @@ Primary Key Strategy: UUIDv4 (gen_random_uuid())
 | **Profiles** | `PATCH /profile` | Authenticated `USER` | **Implemented.** Update the caller's basic profile fields. Empty body is `400 VALIDATION_ERROR`. |
 | **Profiles** | `GET /profiles/me` | Authenticated | Planned. Return the fuller private profile and preferences. Not mounted. |
 | **Profiles** | `PATCH /profiles/me` | Authenticated | Not mounted. Basic field updates use `PATCH /profile`. |
-| **Profiles** | `GET /profiles/:userId` | Authenticated | Public candidate profile with rounded `distanceKm`. |
+| **Profiles** | `GET /profiles/:userId` | Authenticated | Not mounted. Planned public profile view. |
 | **Photos** | `POST /profile-photos/upload-url` | Authenticated `USER` | **Implemented.** Validate MIME/size, reserve the slot in Redis for 300 seconds, return a private presigned PUT URL. No database insert. |
 | **Photos** | `POST /profile-photos/confirm` | Authenticated `USER` | **Implemented.** Insert the photo from the server reservation. Client storage key must match. |
 | **Photos** | `GET /profile-photos` | Authenticated `USER` | **Implemented.** Active photos for the caller, with 3600-second signed GET URLs. |
@@ -215,10 +216,10 @@ Primary Key Strategy: UUIDv4 (gen_random_uuid())
 | **Photos** | `DELETE /profile-photos/:photoId` | Authenticated `USER` | **Implemented.** Soft-delete. Completed profiles must keep one active photo. No S3 delete. |
 | **Config** | `GET /genders`, `/interests`, `/relationship-intentions` | Public | **Implemented.** Active rows only, `display_order` ascending, 100 requests / 60 seconds / IP. Interests may be an empty array. |
 | **Preferences**| `GET /dating-preferences`, `PUT /dating-preferences` | Authenticated | Not mounted. Onboarding save uses `PUT /onboarding/dating-preferences`. |
-| **Discovery** | `GET /discovery` | Authenticated | Get next candidate card (PostGIS spatial filter, Boost weighted). |
-| **Likes** | `POST /discovery/:userId/like` | Authenticated | Free quota check (10/day), record like, trigger mutual match. |
-| **Passes** | `POST /discovery/:userId/pass` | Authenticated | Free quota check (10/day), record permanent pass. |
-| **Undo** | `POST /discovery/undo` | Premium (`UNDO_ACTION`)| Rollback immediately preceding action within 5 minutes. |
+| **Discovery** | `GET /discovery` | Authenticated `USER` | **Implemented.** One candidate or `candidate: null`. Verification is checked in the service. `400 PROFILE_INCOMPLETE` when onboarding is not ready. `distanceKm` is a number to one decimal place. No pagination. |
+| **Likes** | `POST /discovery/:userId/like` | Authenticated | **Not implemented. Phase 5.** Free quota check (10/day), record like, trigger mutual match. |
+| **Passes** | `POST /discovery/:userId/pass` | Authenticated | **Not implemented. Phase 5.** Free quota check (10/day), record permanent pass. |
+| **Undo** | `POST /discovery/undo` | Premium (`UNDO_ACTION`)| **Not implemented. Phase 5.** Rollback immediately preceding action within 5 minutes. |
 | **Who Liked Me**| `GET /likes/who-liked-me` | Authenticated | Free: `{ count: N, admirers: [] }`; Premium: full admirer list. |
 | **Matches** | `GET /matches` | Authenticated | Cursor-paginated active matches list. |
 | **Matches** | `DELETE /matches/:matchId` | Authenticated | Unmatch; close conversation; allow rematch. |
@@ -259,18 +260,18 @@ Primary Key Strategy: UUIDv4 (gen_random_uuid())
 
 ## 8. Business Rules Already Implemented
 
-> **Current Status:** Age 18+ is enforced at registration and on basic profile writes. Password hashing, verification, login status checks, and refresh rotation are enforced. Phase 3 onboarding rules below are enforced. Discovery quotas, swipe permanence, chat limits, and payments are not enforced yet.
+> **Current Status:** Age 18+ is enforced at registration and on basic profile writes. Password hashing, verification, login status checks, and refresh rotation are enforced. Phase 3 onboarding rules and the Phase 4 Discovery read are enforced. Like, pass, undo, quotas, chat limits, and payments are not implemented yet.
 
 ### Product Rules:
 1. **Age Threshold:** Users must be at least 18 years old at registration (`dateOfBirth <= CURRENT_DATE - INTERVAL '18 years'`).
-2. **Onboarding Completeness:** `POST /api/v1/onboarding/complete` sets `profiles.is_profile_complete` only when verification, a profile row, 1–5 active photos with one primary, 3–10 own interests, at least one own `user_relationship_intentions` row, a `dating_preferences` row, and a non-blank city plus a non-null point are all present. `users.status` is not changed. Discovery exclusion is not implemented yet.
+2. **Onboarding Completeness:** `POST /api/v1/onboarding/complete` sets `profiles.is_profile_complete` only when verification, a profile row, 1–5 active photos with one primary, 3–10 own interests, at least one own `user_relationship_intentions` row, a `dating_preferences` row, and a non-blank city plus a non-null point are all present. `users.status` is not changed. `GET /api/v1/discovery` returns `400 PROFILE_INCOMPLETE` when the caller is missing a profile, completion, dating preferences, or location, and it excludes candidates who are incomplete, have no location, or have no active primary photo.
 3. **Photo Invariants:** At most 5 active photos. JPEG, PNG, or WebP, at most 10 MB. Private S3 objects and presigned URLs. The first confirmed photo becomes primary. Active photos keep exactly one primary. Deleting the primary promotes another active photo. A completed profile cannot delete its only active photo. Soft delete does not remove the S3 object.
 4. **Interests, intentions, preferences, and location:** Interest replacement is 3 to 10 active ids. Own relationship-intention replacement is at least 1. Dating-preference gender and intention arrays may be empty. Those saves, and location, do not set `profiles.is_profile_complete`. `user_dating_preference_intentions` is not the user's own intentions.
 5. **Combined Daily Swipe Quota:** Free users have a shared daily quota of **10 actions** covering both Likes and Passes combined.
 6. **Pass Permanence:** A Pass action permanently excludes the candidate from future discovery in Phase 1.
 7. **Canonical Match Storage:** In `matches`, `user_one_id < user_two_id` is strictly enforced to prevent duplicate pair rows.
 8. **Chat Access Invariant:** Chat is unlocked only after a mutual match is established. Free users are limited to 20 text messages/day and cannot send media.
-9. **Coordinate Privacy:** Exact latitude and longitude coordinates are never serialized in API responses; responses return only the city name and rounded kilometer distance.
+9. **Coordinate Privacy:** Exact latitude and longitude coordinates are never serialized in API responses. Live Discovery returns `city` and numeric `distanceKm` rounded to one decimal place.
 10. **Server-Side Liker Masking:** Free users calling `GET /likes/who-liked-me` receive only aggregate count (`{ count: N, admirers: [] }`) with zero admirer metadata or photo URLs in the response.
 11. **Payment Webhook Authority:** Subscriptions are activated/renewed exclusively via verified Razorpay webhook events, never client success callbacks.
 12. **Renewal Grace Period:** Failed subscription renewals enter a 24-hour grace period with full Premium access before downgrade to Free.
@@ -285,7 +286,7 @@ Primary Key Strategy: UUIDv4 (gen_random_uuid())
 | **Authentication Security** | **Implemented (Phase 2)** | Argon2id, 15-minute access JWT, opaque refresh token, SHA-256 storage, rotation, and reuse detection. |
 | **Rate Limiting** | **Implemented for auth and public catalogs** | Redis sliding window: register, login, and forgot-password are 5 requests / 60 seconds / IP. OTP resend is 1 request / 60 seconds / identifier. Catalog GETs share `ratelimit:public:<ip>` at 100 requests / 60 seconds. |
 | **CORS** | **Implemented (Phase 0)** | Whitelisted frontend origins with `credentials: true`. |
-| **Authorization / IDOR** | **Implemented for Phase 3 own resources** | Profile, photo, and onboarding writes use `req.user.id`. Another user's photo is `404 RESOURCE_NOT_FOUND`. `ADMIN` is `403 FORBIDDEN` on these routes. Discovery, chat, and admin ownership checks are not implemented. |
+| **Authorization / IDOR** | **Implemented for Phase 3 own resources and Discovery** | Profile, photo, and onboarding writes use `req.user.id`. Another user's photo is `404 RESOURCE_NOT_FOUND`. `ADMIN` is `403 FORBIDDEN` on these routes and on `GET /api/v1/discovery`. Discovery checks verification in the service. Chat and admin ownership checks are not implemented. |
 | **HTTP Security Headers** | **Implemented (Phase 0)** | Helmet middleware in `createApp()`. CSP/HSTS hardening still planned for Phase 12. |
 | **Payload Size Bounds** | **Implemented (Phase 0)** | `express.json({ limit: '100kb' })`. |
 | **File Upload & S3 Security** | **Implemented for profile photos** | Direct client-to-S3 presigned URLs, private objects, MIME whitelist, 10MB max size, server-generated keys. No public ACL. No S3 delete yet. |
@@ -298,17 +299,18 @@ Primary Key Strategy: UUIDv4 (gen_random_uuid())
 
 ## 10. Testing Status
 
-* **Existing Tests:** Latest Phase 3 verification, preserved from the implementation handoff: onboarding service unit tests **22 passed**; onboarding completion PostgreSQL integration **17 passed**; full Jest **18 suites / 124 tests passed**; PostgreSQL integration **10 suites / 105 tests passed**; `npm run build` passed. This documentation sync did not rerun the suite. The original 12 Phase 0 tests remain in the suite.
+* **Existing Tests:** Latest Phase 4 verification, from the closure audit on 2026-10-05: focused Discovery PostgreSQL tests **15 passed**; full PostgreSQL integration **11 suites / 120 tests passed**; full Jest **18 suites / 124 tests passed**; `npm run build` passed. This documentation sync did not rerun the suite. The original 12 Phase 0 tests remain in the suite.
 * **Test Framework:** **Jest + ts-jest** (Unit), **Supertest** (Integration). Playwright E2E is still planned.
-* **Covered Functionality:** AppError hierarchy, logger redaction, health endpoints, auth validation, Argon2id, JWT claims and expiry, refresh rotation/reuse decisions, auth and role middleware, the auth HTTP lifecycle, the public catalogs, the basic profile API, onboarding interests and relationship intentions, profile photos, dating preferences, location, onboarding status, and onboarding completion.
+* **Covered Functionality:** AppError hierarchy, logger redaction, health endpoints, auth validation, Argon2id, JWT claims and expiry, refresh rotation/reuse decisions, auth and role middleware, the auth HTTP lifecycle, the public catalogs, the basic profile API, onboarding interests and relationship intentions, profile photos, dating preferences, location, onboarding status, onboarding completion, and `GET /api/v1/discovery`.
 * **Phase 2 verification (2026-09-24):** `npm run build` succeeded. `npm test` **50/50 passing**. Auth integration tests use in-memory user, refresh-token, and Redis doubles. They do not connect to `love_bites_dev`. No migrations were created or run.
 * **Phase 3 Step 1 verification (2026-09-29):** `npm run build` succeeded. `npm test` **50/50 passing**. `npm run test:integration:pg` **21/21 passing**. Catalog tests use `love_bites_test` and the in-memory Redis double. Seeders were applied twice on `love_bites_test` only, then undone. `love_bites_dev` was not seeded. No migration was created.
 * **Phase 3 Step 2 verification (2026-09-29):** `npm run build` succeeded. `npm test` **50/50 passing**. `npm run test:integration:pg` **24/24 passing**. The new migration ran on `love_bites_test` only. `love_bites_dev` was not migrated. `.env` was not changed.
 * **Interest and intention selection verification (2026-09-29):** `npm run build` succeeded. `npm test` **77/77 passing**. `npm run test:integration:pg` **54/54 passing**. Tests created temporary catalog rows in `love_bites_test` only. No migration was created. No production interest seed was added. `love_bites_dev` was not changed. `.env` was not changed.
 * **PostgreSQL integration tests:** `npm run test:integration:pg` uses the existing `scripts/test-database.js` safety infrastructure. That script creates `love_bites_test`, runs Sequelize migrations with `--env test`, and the database guard refuses `love_bites_dev`. CI does not call `npm run db:migrate`.
 * **Phase 3 completion verification (2026-10-05, implementation handoff):** onboarding service unit tests 22 passed. Completion PostgreSQL integration 17 passed. Full Jest 18 suites / 124 tests passed. PostgreSQL integration 10 suites / 105 tests passed. Build passed.
+* **Phase 4 Discovery verification (2026-10-05, closure audit):** focused Discovery PostgreSQL tests 15 passed. PostgreSQL integration 11 suites / 120 tests passed. Jest 18 suites / 124 tests passed. Build passed. This documentation sync did not rerun those commands.
 * **Missing Tests:**
-  * Discovery PostGIS queries, Likes/Passes quota, concurrency-safe matching, undo rollback, chat authorisation, Razorpay webhook idempotency, and admin route security.
+  * Likes/Passes quota, concurrency-safe matching, undo rollback, chat authorisation, Razorpay webhook idempotency, and admin route security.
 * **Current Test Commands:** `npm test`, `npm run test:unit`, `npm run test:integration`, `npm run test:integration:pg`.
 * **Migration Commands:** `npm run db:migrate`, `npm run db:migrate:status`, `npm run db:migrate:undo` (or `npx sequelize-cli ...`). `.sequelizerc` loads `src/config/sequelize.cli.js`. Local development migration commands are separate from CI. CI does not run `npm run db:migrate`.
 * **Seed Commands:** `npm run db:seed` and `npm run db:seed:undo` call Sequelize CLI. Use `--env test` with the test-database environment. Do not point them at `love_bites_dev` unless that environment is intentionally being seeded.
@@ -334,7 +336,7 @@ Primary Key Strategy: UUIDv4 (gen_random_uuid())
 | **2. Documentation Filename Discrepancies** | Two files in `backend/docs/` use prefixed names (`docs_01-product-requirements.md` and `backend_docs_01-backend-architecture.md`) while cross-references mention unprefixed names. | Both documents are located in `backend/docs/`. | Keep existing filenames; treat `backend/docs/` as the documentation container. |
 | **3. Sequelize GEOMETRY vs geography** | `02-database-design.md` §26 shows `DataTypes.GEOMETRY`, while SQL SoT is `geography(Point, 4326)`. | Step 1 migration uses raw SQL `geography(Point, 4326)`. Model uses `DataTypes.GEOGRAPHY('POINT', 4326)`. | Keep geography; do not switch the column to geometry. |
 | **4. Onboarding vs NOT NULL location/city** | Closed. `profiles.city` and `profiles.location` are nullable. `PUT /api/v1/onboarding/location` writes both. Completion still requires a non-blank city and a non-null point. | A basic profile does not set `is_profile_complete`. | Do not treat a null city or location as a completed profile. |
-| **7. Documentation follow-ups outside this Phase 3 sync** | Other backend docs can still describe discovery, chat, payments, and fuller profile views as if they were the next build step, or use older filenames. | This handoff and `03-api-specification.md` mark those areas as not implemented. | Leave discovery, chat, payments, and safety as future work. Do not seed production interests until an approved list exists. `02-database-design.md` still shows a planned `DataTypes.GEOMETRY` snippet; the column remains geography. |
+| **7. Documentation follow-ups outside this Phase 4 sync** | Other backend docs can still describe likes, chat, payments, and fuller profile views as if they were the next build step, or use older filenames. | This handoff and `03-api-specification.md` mark Discovery as complete and those later areas as not implemented. | Leave likes, chat, payments, and safety as future work. Do not seed production interests until an approved list exists. `02-database-design.md` still shows a planned `DataTypes.GEOMETRY` snippet; the column remains geography. |
 | **5. Mock email and SMS delivery** | Phase 2 does not send real email or SMS. The mock outbox keeps messages only outside production. | Interfaces are `EmailSender` and `SmsSender`. | Choose a provider in a later phase. Do not add Twilio, MSG91, SNS, or SMTP during auth. |
 | **6. `pgcrypto` added in extensions migration** | Documented PK default is `gen_random_uuid()`, which requires `pgcrypto` on PostgreSQL 16/18. User-requested extensions were `postgis` and `uuid-ossp`. | Extensions migration enables all three with `IF NOT EXISTS`. | Leave as-is unless a later environment forbids `pgcrypto`. |
 
@@ -342,8 +344,8 @@ Primary Key Strategy: UUIDv4 (gen_random_uuid())
 
 ## 12. Work Currently In Progress
 
-* **Status:** **No Phase 3 work is in progress. Phase 3 onboarding is complete.**
-* **Context:** Do not start Phase 4 — Discovery, likes, chat, payments, or deployment until that work is requested. Do not add a production interest seed. Do not mount `GET` or `PUT /api/v1/dating-preferences`, `PUT /api/v1/location`, or `PATCH /api/v1/onboarding/profile` as part of a documentation follow-up.
+* **Status:** **No Phase 4 work is in progress. Phase 4 Discovery is complete.**
+* **Context:** Do not start Phase 5 — Likes, Passes and Matches, chat, payments, or deployment until that work is requested. Do not add a production interest seed. Do not mount `GET` or `PUT /api/v1/dating-preferences`, `PUT /api/v1/location`, or `PATCH /api/v1/onboarding/profile` as part of a documentation follow-up.
 
 ---
 
@@ -355,8 +357,8 @@ The implementation should follow the phased sequence established in `05-developm
 2. **Phase 1 — Database Foundation & Base Migrations:** Setup migrations 01–09 (PostGIS extensions, reference catalogs, core schemas, indexes, constraints, seed data).
 3. **Phase 2 — Authentication & Accounts:** **Complete.** Registration, verification, login, opaque refresh rotation, password reset, auth/role middleware, and auth rate limits.
 4. **Phase 3 — Profile & Onboarding:** **Complete.** Catalogs, basic profile, interests, relationship intentions, profile photos, dating preferences, location, onboarding status, and onboarding completion are done. Completion sets only `profiles.is_profile_complete`. `users.status` stays separate. Registration still does not persist `dateOfBirth`.
-5. **Phase 4 — Discovery:** **Next.** Not implemented. Single-card PostGIS discovery, mutual preference filtering, Boost multipliers, and discovery coordinate privacy remain future work. Onboarding location storage is already done in Phase 3.
-6. **Phase 5 — Likes, Passes & Matches:** Swiping service, Free daily quota (10 swipes), reciprocal like check, canonical pair match creation transaction, Premium Undo rollback, unmatching.
+5. **Phase 4 — Discovery:** **Complete.** `GET /api/v1/discovery` returns one mutually filtered candidate, or `candidate: null`. `distanceKm` is a number to one decimal place. Coordinates are not returned. Onboarding location storage was already done in Phase 3.
+6. **Phase 5 — Likes, Passes & Matches:** **Next. Not implemented.** Swiping service, Free daily quota (10 swipes), reciprocal like check, canonical pair match creation transaction, Premium Undo rollback, unmatching.
 7. **Phase 6 — Chat & Realtime Messaging:** Socket.IO server + Redis adapter, 6-step message authorization, PostgreSQL message persistence, cursor-paginated history, Free/Premium media limits.
 8. **Phase 7 — Safety & Moderation:** Bidirectional blocking, misconduct reports submission, admin moderation triage queue.
 9. **Phase 8 — Subscriptions & Centralized Entitlements:** Entitlement engine (`hasEntitlement`, `checkAndIncrementUsage`), plans, usage limits, usage records, credit balances, boost sessions.
@@ -379,7 +381,7 @@ The following architectural and business decisions are established and must **no
 * **No Repository Pattern:** Generic repositories or DAOs are strictly forbidden. Use dedicated feature Data Access modules.
 * **Authentication:** Argon2id password hashing + 15-minute HS256 access JWT + 7-day opaque refresh token in an `HttpOnly`, `SameSite=Strict` cookie. The raw refresh token is never stored; only its SHA-256 hash is stored. `JWT_REFRESH_SECRET` remains in the environment and is unused.
 * **Storage:** AWS S3 private bucket with direct client uploads via short-lived presigned URLs.
-* **Location Privacy:** PostGIS spherical geometry (`geography(Point, 4326)`); exact coordinates are **never** returned in API responses; distances $< 1\text{ km}$ return `"Less than 1 km away"`.
+* **Location Privacy:** PostGIS spherical geometry (`geography(Point, 4326)`); exact coordinates are **never** returned in API responses. Live Discovery returns numeric `distanceKm` rounded to one decimal place.
 * **Payment Gateway:** Razorpay integrated behind `IPaymentProvider` interface; subscription activation driven **strictly by webhook events** verified via HMAC-SHA256 signatures; duplicate events deduplicated via `processed_webhooks`.
 * **Centralized Entitlements:** Feature access and daily usage quotas managed centrally via `entitlements.service.ts`. No hardcoded boolean `user.isPremium` checks scattered across controllers.
 * **Product Quotas (Free Tier):**
@@ -413,10 +415,10 @@ The following architectural and business decisions are established and must **no
 
 ## 16. Recommended Next Task
 
-### Task: **Phase 4 — Discovery**
-Phase 0, Phase 1, Phase 2, and Phase 3 onboarding are complete. Discovery is not implemented. Do not start discovery until that phase is requested.
+### Task: **Phase 5 — Likes, Passes and Matches**
+Phase 0, Phase 1, Phase 2, Phase 3 onboarding, and Phase 4 Discovery are complete. Likes, passes, super-likes, undo, and match creation are not implemented. Do not start Phase 5 until that phase is requested.
 
-Do not invent a production interest catalog. Do not implement `GET /api/v1/dating-preferences`, `PUT /api/v1/dating-preferences`, `PUT /api/v1/location`, or `PATCH /api/v1/onboarding/profile` as a substitute for discovery. Do not change `users.status` from onboarding completion.
+Do not invent a production interest catalog. Do not implement `GET /api/v1/dating-preferences`, `PUT /api/v1/dating-preferences`, `PUT /api/v1/location`, or `PATCH /api/v1/onboarding/profile` as a substitute for likes. Do not change `users.status` from onboarding completion.
 
 ---
 
@@ -435,3 +437,4 @@ Do not invent a production interest catalog. Do not implement `GET /api/v1/datin
 | **2026-09-30** | Phase 3 — Profile photos | **Implemented** | Five `/api/v1/profile-photos` routes. Private S3 presigned PUT (300s) and GET (3600s). Redis upload reservation. Row inserted on confirm. Soft delete without S3 deletion. No migration. `is_profile_complete` is not written. |
 | **2026-10-01** | Phase 3 — Onboarding dating preferences | **Implemented** | `PUT /api/v1/onboarding/dating-preferences`. Replaces age range, distance, target genders, and target intentions in one transaction. Empty id lists are allowed. Does not write `user_relationship_intentions` or `is_profile_complete`. No migration. `GET` and `PUT /api/v1/dating-preferences` are not mounted. |
 | **2026-10-05** | Phase 3 — Onboarding complete | **Complete** | Location, status, and completion are live with the earlier catalogs, profile, interests, intentions, photos, and dating preferences. Completion has seven prerequisites, sets only `profiles.is_profile_complete`, leaves `users.status` unchanged, is idempotent, and returns `400 PROFILE_INCOMPLETE` with no write when a step is missing. No JWT reissue. Verification preserved from the implementation handoff: onboarding service unit tests 22 passed; completion PostgreSQL integration 17 passed; Jest 18 suites / 124 tests passed; PostgreSQL integration 10 suites / 105 tests passed; build passed. Phase 4 — Discovery is next. |
+| **2026-10-05** | Phase 4 — Discovery | **Complete** | `GET /api/v1/discovery` is live. One mutually eligible card, or `candidate: null`. `distanceKm` is a number to one decimal place. No like, pass, super-like, or undo routes. Closure audit: Discovery PostgreSQL tests 15 passed; PostgreSQL integration 11 suites / 120 tests passed; Jest 18 suites / 124 tests passed; build passed. This documentation sync did not rerun those commands. Phase 5 — Likes, Passes and Matches is next. |

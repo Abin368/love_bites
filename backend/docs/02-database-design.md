@@ -546,7 +546,7 @@ WHERE p.user_id != :currentUserId
 
 ### 7.4 Location Privacy Mandate
 * **The API layer must NEVER return `profiles.location` coordinates (latitude/longitude) in any client response payload.**
-* Client responses include only `profiles.city` and the server-calculated approximate distance rounded to the nearest kilometer (e.g., `distance_km: 5`).
+* Client responses include `profiles.city` and numeric `distanceKm`, rounded to one decimal place (for example, `4.2`). Latitude and longitude are not returned.
 
 ---
 

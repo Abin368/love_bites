@@ -199,33 +199,34 @@ The platform relies on a local radius discovery model:
 * **No Exact Coordinates:** The system **must never** deliver raw latitude and longitude coordinates of any user to any client API payload.
 * **Exposed Location Data:** Clients receive only:
   1. The user's registered City/Town name.
-  2. The calculated approximate distance (e.g., *"5 km away"* or *"Less than 1 km away"*).
+  2. On the live Discovery card, numeric `distanceKm`, rounded to one decimal place. Latitude and longitude are not returned.
 
 ---
 
 ## 7. Discovery Engine & Matching Mechanics
 
 ### 7.1 Single-Card Discovery Stack
+The live Discovery API returns one candidate card at a time. Pass, like, super-like, and undo are Phase 5 and are not implemented.
 * Users view candidate profiles **one at a time**.
-* **Supported User Actions:**
+* **Later user actions (Phase 5):**
   * **Pass:** Swipe Left or tap "Pass" button.
   * **Like:** Swipe Right or tap "Like" button.
   * **Super Like:** Tap "Super Like" button (Premium only).
   * **Undo:** Tap "Undo" button (Premium only, immediately previous action).
 
 ### 7.2 Candidate Exclusion Criteria
-The discovery generation engine must filter out candidate profile B for viewing user A if *any* of the following conditions are true:
+`GET /api/v1/discovery` filters out candidate profile B for viewing user A if any of the following are true:
 
-1. B is the user A (Self).
-2. B's profile is incomplete or account status is not `ACTIVE`.
-3. A and B are already matched.
-4. A has blocked B, or B has blocked A.
-5. A has permanently passed B (or B has passed A, if strict mutual discovery rule is enforced).
-6. A or B is suspended, banned, or soft-deleted.
-7. A and B do not satisfy **mutual** dating preferences (Gender interest, Age ranges, Relationship intentions).
-8. B's location falls outside user A's configured radius, or A falls outside B's configured radius.
+1. B is user A.
+2. B's account status is not `ACTIVE`, or B is soft-deleted.
+3. B's profile is incomplete, B has no location, or B has no active primary photo.
+4. A and B have a match with status `ACTIVE`. An `UNMATCHED` or `UNDONE` match does not exclude B.
+5. A has blocked B, or B has blocked A.
+6. A has an active `LIKE`, `PASS`, or `SUPER_LIKE` toward B (`is_undone = false`). An undone action does not exclude B. B's incoming `PASS` toward A does not exclude B.
+7. A and B do not both satisfy distance, age, gender preference, and relationship-intention overlap. Distance uses inclusive PostGIS `ST_DWithin`. Age uses completed years and is inclusive. An empty preferred-gender list or an empty preferred-intention list produces no candidate.
+8. A is unverified, or A's profile, dating preferences, or location are missing. That caller receives a verification error or `400 PROFILE_INCOMPLETE`, not an empty stack.
 
-*Note: Browsing/viewing candidate cards does not consume action quotas.*
+Reports are not a Discovery exclusion. Browsing candidate cards does not consume action quotas. Like, pass, super-like, and undo actions are Phase 5 and are not implemented.
 
 ### 7.3 Swipe Actions Logic
 

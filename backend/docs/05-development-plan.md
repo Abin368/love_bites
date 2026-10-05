@@ -308,7 +308,7 @@ Implement secure, dual-identifier registration (Email OR Phone), cryptographic p
 
 ## 7. Phase 3 — Profile and Onboarding
 
-**Phase 3 status (2026-10-05): complete.** Catalogs, basic profile HTTP, interests, relationship intentions, profile photos, dating preferences, location, onboarding status, and onboarding completion are implemented. **Phase 4 — Discovery is next and is not implemented.** Production interests are not seeded. `PATCH /api/v1/onboarding/profile`, `PUT /api/v1/location`, `PUT /api/v1/me/interests`, `PUT /api/v1/me/relationship-intentions`, `GET /api/v1/dating-preferences`, and `PUT /api/v1/dating-preferences` are not mounted.
+**Phase 3 status (2026-10-05): complete.** Catalogs, basic profile HTTP, interests, relationship intentions, profile photos, dating preferences, location, onboarding status, and onboarding completion are implemented. **Phase 4 — Discovery is complete.** `GET /api/v1/discovery` is implemented. **Phase 5 — Likes, Passes and Matches is next and is not implemented.** Production interests are not seeded. `PATCH /api/v1/onboarding/profile`, `PUT /api/v1/location`, `PUT /api/v1/me/interests`, `PUT /api/v1/me/relationship-intentions`, `GET /api/v1/dating-preferences`, and `PUT /api/v1/dating-preferences` are not mounted.
 
 Implemented in Step 1:
 
@@ -400,70 +400,24 @@ Implement the linear onboarding sequence, demographic metadata management, S3 pr
 
 ## 8. Phase 4 — Discovery and Location
 
-**Next phase. Not implemented.** Do not treat the steps below as a built API.
+**Phase 4 status (2026-10-05): complete.** The live route is `GET /api/v1/discovery`. The response contract is section 19 of `03-api-specification.md`. Like, pass, super-like, undo, and match creation are Phase 5 and are not implemented.
 
 ### 8.1 Objectives
-Implement high-performance, single-card spatial discovery using PostGIS spatial indexing (`ST_DWithin`), strict exclusion criteria, mutual preference filtering, and Boost ranking multipliers.
+Deliver one mutually eligible candidate card with PostGIS `ST_DWithin`, strict exclusion, mutual preference filtering, and boost ranking.
 
-### 8.2 Discovery Engine Implementation
-1. **Single-Card Discovery Endpoint (`GET /api/v1/discovery`):**
-   * Fetches candidate profiles **one at a time**.
-   * Browsing candidates is **unlimited for both Free and Premium users** (quotas apply only to Like/Pass actions).
-2. **PostGIS Query Formulation (`discovery.data-access.ts`):**
-   ```sql
-   SELECT p.user_id, p.first_name, p.city, p.bio, p.occupation, p.education,
-          ROUND((ST_Distance(p.location, u_prof.location) / 1000.0)::numeric, 0) AS distance_km,
-          COALESCE(bs.multiplier, 1.0) AS boost_multiplier
-   FROM profiles p
-   JOIN users u ON u.id = p.user_id
-   JOIN dating_preferences dp_cand ON dp_cand.user_id = p.user_id
-   CROSS JOIN (SELECT location, user_id FROM profiles WHERE user_id = :currentUserId) u_prof
-   JOIN dating_preferences dp_view ON dp_view.user_id = u_prof.user_id
-   LEFT JOIN boost_sessions bs ON bs.user_id = p.user_id AND bs.is_active = TRUE AND bs.expires_at > CURRENT_TIMESTAMP
-   WHERE p.user_id != :currentUserId
-     AND u.status = 'ACTIVE' AND u.deleted_at IS NULL
-     AND p.is_profile_complete = TRUE
-     -- Primary photo existence
-     AND EXISTS (SELECT 1 FROM profile_photos WHERE user_id = p.user_id AND is_primary = TRUE AND deleted_at IS NULL)
-     -- Mutual spatial proximity
-     AND ST_DWithin(p.location, u_prof.location, dp_view.max_distance_km * 1000)
-     AND ST_DWithin(u_prof.location, p.location, dp_cand.max_distance_km * 1000)
-     -- Mutual age preference
-     AND EXTRACT(YEAR FROM AGE(p.date_of_birth)) BETWEEN dp_view.min_age AND dp_view.max_age
-     AND EXTRACT(YEAR FROM AGE((SELECT date_of_birth FROM profiles WHERE user_id = :currentUserId))) BETWEEN dp_cand.min_age AND dp_cand.max_age
-     -- Mutual gender preference
-     AND EXISTS (SELECT 1 FROM user_dating_preference_genders WHERE user_id = :currentUserId AND gender_id = p.gender_id)
-     AND EXISTS (SELECT 1 FROM user_dating_preference_genders WHERE user_id = p.user_id AND gender_id = (SELECT gender_id FROM profiles WHERE user_id = :currentUserId))
-     -- Mutual intention overlap
-     AND EXISTS (
-       SELECT 1 FROM user_relationship_intentions uri
-       JOIN user_dating_preference_intentions udpi ON udpi.relationship_intention_id = uri.relationship_intention_id
-       WHERE uri.user_id = p.user_id AND udpi.user_id = :currentUserId
-     )
-     -- Exclude active likes and permanent passes
-     AND NOT EXISTS (SELECT 1 FROM likes WHERE from_user_id = :currentUserId AND to_user_id = p.user_id AND is_undone = FALSE)
-     -- Exclude active matches
-     AND NOT EXISTS (
-       SELECT 1 FROM matches 
-       WHERE ((user_one_id = LEAST(:currentUserId, p.user_id) AND user_two_id = GREATEST(:currentUserId, p.user_id))) 
-         AND status = 'ACTIVE'
-     )
-     -- Exclude bidirectional blocks
-     AND NOT EXISTS (
-       SELECT 1 FROM blocks 
-       WHERE (blocker_id = :currentUserId AND blocked_id = p.user_id) 
-          OR (blocker_id = p.user_id AND blocked_id = :currentUserId)
-     )
-   ORDER BY boost_multiplier DESC, p.created_at DESC
-   LIMIT 1;
-   ```
-3. **Location Privacy Guardrails:**
-   * `profiles.location` is never included in the JSON output.
-   * If `distance_km < 1`, the response returns `"Less than 1 km away"` to eliminate trilateration risks.
+### 8.2 Implemented behavior
+1. **Single-card endpoint (`GET /api/v1/discovery`):** Returns one candidate, or `{ "candidate": null }` when nobody qualifies. There is no cursor, offset, or seen-state. A repeat call can return the same candidate until eligibility or ranking changes. Browsing does not consume a like or pass quota.
+2. **Authentication:** `authenticate` and `requireRole('USER')`. `requireVerified` is not on the route. The service checks the current verification state and returns `403 EMAIL_NOT_VERIFIED` or `403 PHONE_NOT_VERIFIED`. A missing profile, an incomplete profile, missing dating preferences, or a missing location returns `400 PROFILE_INCOMPLETE`.
+3. **Eligibility:** The candidate is a different `ACTIVE` user, is not soft-deleted, has a completed profile, a non-null location, and an active primary photo. The viewer's active `LIKE`, `PASS`, or `SUPER_LIKE` excludes the candidate while `is_undone = false`. An undone action does not. An incoming `PASS` does not. An `ACTIVE` match excludes the pair. `UNMATCHED` and `UNDONE` matches do not. A block in either direction excludes the pair. Reports are not part of the query.
+4. **Mutual filters:** Both distance radii, both age ranges, both gender lists, and both relationship-intention overlaps. `ST_DWithin` and age `BETWEEN` are inclusive. Age is completed years. An empty preferred-gender list or an empty preferred-intention list produces no candidate.
+5. **Ranking:** Highest active boost multiplier, then `profiles.created_at DESC`, limit 1. Active means `is_active = true` and `expires_at > CURRENT_TIMESTAMP`. Several active boosts use the highest multiplier. No active boost uses `1.0`.
+6. **Response:** `distanceKm` is a number rounded to one decimal place. Coordinates, `location`, and `storageKey` are omitted. Photo URLs are private signed download URLs. The card includes the candidate's own interests and own relationship intentions.
 
 ---
 
 ## 9. Phase 5 — Likes, Passes and Matches
+
+**Next phase. Not implemented.** Do not treat the steps below as a built API.
 
 ### 9.1 Objectives
 Implement swipe action mechanics (`LIKE`, `PASS`, `SUPER_LIKE`), daily action quota tracking for Free users, race-condition-free mutual matching, single-level Premium Undo, and clean Unmatching/Re-matching lifecycles.
@@ -697,7 +651,7 @@ Verify and enforce all security baselines documented in `backend/docs/04-securit
 * [ ] **Argon2id Hashing:** Verify parameters (`timeCost: 3, memoryCost: 65536, parallelism: 4`).
 * [ ] **JWT Dual-Token Security:** Verify 15-minute access token lifespan and single-use refresh token rotation with reuse detection.
 * [ ] **IDOR & Mass Assignment Defense:** Verify all mutating endpoints enforce resource ownership (`resource.user_id === req.user.id`) and Zod attribute stripping.
-* [ ] **Anti-Trilateration Spatial Security:** Verify `profiles.location` is excluded from all API outputs and distances $< 1\text{ km}$ return `"Less than 1 km away"`.
+* [ ] **Anti-Trilateration Spatial Security:** Verify `profiles.location`, latitude, and longitude are excluded from API outputs. Live Discovery returns numeric `distanceKm` rounded to one decimal place.
 * [ ] **S3 Bucket Hardening:** Verify public access is blocked, object keys use server-generated UUIDs, and MIME types/file sizes are strictly validated.
 * [ ] **Payment Security:** Verify Razorpay HMAC-SHA256 signature verification and webhook idempotency via `processed_webhooks`.
 * [ ] **Rate Limiting:** Verify Redis sliding-window limiters on authentication, OTP generation, swiping, and chat endpoints.
@@ -829,7 +783,7 @@ To maintain strict adherence to dependency constraints, development should follo
 | **Onboarding** | Auth, Verification | `profiles`, `dating_preferences`, `user_interests`, `user_relationship_intentions` | `/onboarding/*`, `/onboarding/complete` | Integration (Linear Stage Validation) |
 | **Photos (S3)** | Profile Module, AWS S3 | `profile_photos` | `/profile-photos/upload-url`, `/profile-photos/confirm`, `/profile-photos/:photoId` | Unit (S3 Mock) + Integration (Limits) |
 | **Location** | Profile Module, PostGIS | `profiles` (PostGIS `location`) | `/location`, `/onboarding/location` | Integration (PostGIS Point Storage) |
-| **Discovery** | Profiles, Preferences, Location, Blocks, Passes | `profiles`, `dating_preferences`, `likes`, `matches`, `blocks`, `boost_sessions` | `GET /discovery` | Integration (PostGIS `ST_DWithin`, Filters) |
+| **Discovery** | Profiles, Preferences, Location, Blocks, Passes | `profiles`, `dating_preferences`, `likes`, `matches`, `blocks`, `boost_sessions` | `GET /discovery` (implemented) | Integration (PostGIS `ST_DWithin`, mutual filters, exclusions, boost ranking) |
 | **Likes & Passes** | Discovery, Entitlements | `likes`, `usage_records` | `POST /discovery/:userId/like`, `POST /discovery/:userId/pass` | Integration (Quotas, Duplicate Swipes) |
 | **Matches** | Likes Module | `matches`, `conversations`, `notifications` | `GET /matches`, `DELETE /matches/:matchId` | Integration (Concurrency, Rematching) |
 | **Premium Undo** | Likes, Matches, Entitlements | `likes`, `matches`, `conversations` | `POST /discovery/undo` | Integration (Match Reversion, Rollback) |

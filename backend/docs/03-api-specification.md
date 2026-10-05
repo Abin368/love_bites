@@ -13,7 +13,7 @@ This document defines the **RESTful API Specification** and **Socket.IO Realtime
 
 ### Implementation status
 
-Phase 2 authentication and Phase 3 onboarding are implemented. Sections **4**, **11**, **12**, and **14** describe that live behavior. Sections **13** and **17** onward are the planned contract and are not mounted, except where a subsection says otherwise. `PUT /api/v1/me/interests`, `PUT /api/v1/me/relationship-intentions`, `GET /api/v1/dating-preferences`, `PUT /api/v1/dating-preferences`, `PUT /api/v1/location`, and `PATCH /api/v1/onboarding/profile` are not implemented.
+Phase 2 authentication, Phase 3 onboarding, and Phase 4 Discovery are implemented. Sections **4**, **11**, **12**, **14**, and **19** describe that live behavior. Sections **13**, **17**, **18**, and **20** onward are the planned contract and are not mounted, except where a subsection says otherwise. `PUT /api/v1/me/interests`, `PUT /api/v1/me/relationship-intentions`, `GET /api/v1/dating-preferences`, `PUT /api/v1/dating-preferences`, `PUT /api/v1/location`, and `PATCH /api/v1/onboarding/profile` are not implemented. Phase 5 — Likes, Passes and Matches is next and is not implemented.
 
 Health checks are also live: `GET /health` and `GET /api/v1/health`.
 
@@ -22,7 +22,7 @@ Health checks are also live: `GET /health` and `GET /api/v1/health`.
 * **Dual-Token Authentication:** Ephemeral JWT Access Tokens (15-minute validity) paired with Rotating Refresh Tokens delivered via secure `HTTP-Only`, `SameSite=Strict`, `Secure` cookies.
 * **Centralized Entitlements & Server-Side Enforcement:** Feature gating (Free vs. Premium tiers) and rate/usage quota limits (10 combined Swipes/day, 20 text messages/day for Free users) are strictly verified server-side. Frontend clients are never trusted with entitlement decisions.
 * **Privacy & Security by Design:** 
-  * Exact spatial coordinates (`latitude`, `longitude`) are **NEVER** returned in any client payload. Clients receive only the registered `city` and an approximate server-calculated distance in kilometers.
+  * Exact spatial coordinates (`latitude`, `longitude`) are **NEVER** returned in any client payload. Live Discovery returns the registered `city` and numeric `distanceKm`, rounded to one decimal place.
   * Liker identities for non-paying Free users are filtered server-side (returning only aggregate counts, with zero personal metadata or photos in API responses).
 * **Idempotent Financial Operations:** Razorpay webhook events and client checkout verifications are guaranteed idempotent via database transaction boundaries and unique event ledgers.
 * **Realtime Synchronization:** Socket.IO handles low-latency chat delivery and instant match alerts, backed by PostgreSQL as the authoritative persistence tier.
@@ -625,13 +625,13 @@ From login `user`, and from access-token claims:
 
 ### 11.12 What is live
 
-Live now: registration, email and phone verification, resend, login, refresh, logout, forgot-password, reset-password, the public catalog reads in section 11.13, the authenticated basic profile API in section 11.14, onboarding interests and relationship intentions in section 11.15, profile photos in section 14, dating preferences in section 12.5, location in section 12.6, onboarding status in section 12.1, and onboarding completion in section 12.7.
+Live now: registration, email and phone verification, resend, login, refresh, logout, forgot-password, reset-password, the public catalog reads in section 11.13, the authenticated basic profile API in section 11.14, onboarding interests and relationship intentions in section 11.15, profile photos in section 14, dating preferences in section 12.5, location in section 12.6, onboarding status in section 12.1, onboarding completion in section 12.7, and `GET /api/v1/discovery` in section 19.
 
-Phase 3 onboarding is complete. Gender and relationship-intention seed data exist. Production interests are not seeded, because the approved interest list is not defined.
+Phase 3 onboarding is complete. Phase 4 — Discovery is complete. Gender and relationship-intention seed data exist. Production interests are not seeded, because the approved interest list is not defined.
 
-Not implemented: `PUT /api/v1/me/interests`, `PUT /api/v1/me/relationship-intentions`, `GET /api/v1/dating-preferences`, `PUT /api/v1/dating-preferences`, `PUT /api/v1/location`, `PATCH /api/v1/onboarding/profile`, the richer profile views in section 13, discovery, likes, matches, chat, subscriptions, payments, and boosts. Do not call those paths.
+Not implemented: `PUT /api/v1/me/interests`, `PUT /api/v1/me/relationship-intentions`, `GET /api/v1/dating-preferences`, `PUT /api/v1/dating-preferences`, `PUT /api/v1/location`, `PATCH /api/v1/onboarding/profile`, the richer profile views in section 13, likes, passes, super-likes, undo, matches, chat, subscriptions, payments, and boosts. Do not call those paths.
 
-Phase 4 — Discovery is next and is not implemented. Later sections remain the planned contract unless a subsection says it is implemented.
+Phase 5 — Likes, Passes and Matches is next and is not implemented. Sections 20 and 21 remain the planned contract. Later sections remain the planned contract unless a subsection says it is implemented.
 
 ### 11.13 Public catalog reads
 
@@ -1261,16 +1261,23 @@ Photo objects returned after confirm, list, and patch are `{ "id", "url", "displ
 
 ## 19. Discovery APIs
 
+**Implemented.** Phase 4 is complete. The only live Discovery route is `GET /api/v1/discovery`. It has no query string and no body. It does not accept cursor or offset pagination, and it does not record a seen-state. A repeat call can return the same candidate until eligibility or ranking changes. Like, pass, super-like, and undo remain Phase 5 and are not mounted.
+
 ### 19.1 Get Next Discovery Candidate Card
 * **Method & Path:** `GET /api/v1/discovery`
-* **Auth:** Authenticated
-* **Behavior & Business Rules:**
-  * Evaluates PostGIS mutual distance (`ST_DWithin`) using `idx_profiles_location_gist`.
-  * Enforces mutual age, gender, and relationship intention filters.
-  * Excludes: self, incomplete profiles, inactive accounts, active matches, blocks, and permanently passed profiles.
-  * Applies Boost multipliers to discovery candidate ranking.
-  * **Quota Rule:** Browsing candidate profiles is **unlimited for both Free and Premium users**. Quota is consumed ONLY upon submitting a Like or Pass action.
-* **Success Response (`200 OK`):**
+* **Auth:** Authenticated `USER`. The route uses `authenticate` and `requireRole('USER')`. `requireVerified` is not attached. The Discovery service checks the current authenticated verification state.
+* **Caller results:**
+  * Missing token: `401 AUTH_REQUIRED`.
+  * Invalid token, or a deleted account: `401 INVALID_TOKEN`.
+  * Any role other than `USER`, including `ADMIN`: `403 FORBIDDEN`.
+  * Suspended: `403 ACCOUNT_SUSPENDED`. Banned: `403 ACCOUNT_BANNED`.
+  * Unverified email account: `403 EMAIL_NOT_VERIFIED`. Unverified phone account: `403 PHONE_NOT_VERIFIED`.
+  * Missing profile, a profile that is not marked complete, missing dating preferences, or a missing location: `400 PROFILE_INCOMPLETE`. An incomplete caller does not receive an empty stack.
+* **Candidate eligibility:** The candidate is a different user with `users.status = 'ACTIVE'`, `users.deleted_at IS NULL`, `profiles.is_profile_complete = true`, a non-null location, and an active primary photo. The query excludes the candidate when the viewer has an active `LIKE`, `PASS`, or `SUPER_LIKE` (`likes.is_undone = false`), when the pair has a match with `status = 'ACTIVE'`, or when either user has blocked the other. An undone viewer action does not exclude the candidate. A candidate's incoming `PASS` does not exclude the candidate. `UNMATCHED` and `UNDONE` matches do not exclude the candidate. Reports are not part of this query.
+* **Mutual filters:** PostGIS `ST_DWithin` requires the distance to fall within both users' `max_distance_km`. The boundary is inclusive. Age uses completed years, `EXTRACT(YEAR FROM AGE(date_of_birth))`, and both ages must fall inside the other user's `min_age` to `max_age`, inclusive. Each user's gender must appear in the other user's preferred genders. Each user's own relationship intentions must overlap the other user's preferred intentions. An empty preferred-gender list or an empty preferred-intention list produces no candidate. An empty list is not treated as "no preference".
+* **Ranking:** One row. Highest currently active boost multiplier first, then `profiles.created_at DESC`. An active boost has `is_active = true` and `expires_at > CURRENT_TIMESTAMP`. Several active boosts use the highest multiplier. No active boost uses `1.0`.
+* **Quota:** Browsing is unlimited. This route does not consume a like or pass quota. Those quotas belong to Phase 5.
+* **Success Response (`200 OK`):** Message: `Discovery candidate retrieved successfully`.
   ```json
   {
     "success": true,
@@ -1279,28 +1286,35 @@ Photo objects returned after confirm, list, and patch are `{ "id", "url", "displ
         "id": "c3e7d81b-9932-4233-812c-6f5e39482130",
         "firstName": "Jordan",
         "age": 25,
-        "gender": { "name": "Woman", "code": "WOMAN" },
+        "gender": { "id": "gen-1", "code": "WOMAN", "name": "Woman" },
         "bio": "Designer & coffee enthusiast.",
         "occupation": "Product Designer",
         "education": "NID",
         "city": "Bengaluru",
-        "distanceKm": 4,
-        "isSuperLiked": false,
+        "distanceKm": 4.2,
         "photos": [
-          { "id": "p-1", "url": "https://cdn.lovebite.app/signed/...", "displayOrder": 1, "isPrimary": true },
-          { "id": "p-2", "url": "https://cdn.lovebite.app/signed/...", "displayOrder": 2, "isPrimary": false }
+          { "id": "p-1", "url": "https://signed.example/photo-1", "displayOrder": 1, "isPrimary": true },
+          { "id": "p-2", "url": "https://signed.example/photo-2", "displayOrder": 2, "isPrimary": false }
         ],
-        "interests": [{ "id": "int-1", "name": "Design" }, { "id": "int-2", "name": "Coffee" }],
-        "relationshipIntentions": [{ "id": "rel-1", "name": "Long-term relationship" }]
+        "interests": [
+          { "id": "int-1", "code": "DESIGN", "name": "Design", "category": "Creative" }
+        ],
+        "relationshipIntentions": [
+          { "id": "rel-1", "code": "LONG_TERM_RELATIONSHIP", "name": "Long-term relationship" }
+        ]
       }
-    }
+    },
+    "message": "Discovery candidate retrieved successfully"
   }
   ```
-  *(Returns `data: { "candidate": null }` if no eligible candidates remain in the stack).*
+  `id` is the candidate user id. `age` is a number of completed years. `bio`, `occupation`, `education`, and `city` may be null. `distanceKm` is a number rounded to one decimal place, including values below 1, such as `0.7`. Photos are the candidate's active photos, ordered by `displayOrder`, with private signed download URLs valid for 3600 seconds. Interests are the candidate's own interests (`id`, `code`, `name`, `category`). `category` may be null. Relationship intentions are the candidate's own intentions (`id`, `code`, `name`). The response does not include `storageKey`, latitude, longitude, `location`, email, phone, password, or tokens.
+* **Empty stack (`200 OK`):** The same message. `data` is `{ "candidate": null }`.
 
 ---
 
 ## 20. Like / Pass APIs
+
+**Not implemented.** Phase 5 — Likes, Passes and Matches is next. Do not call these paths.
 
 ### 20.1 Like a Profile
 * **Method & Path:** `POST /api/v1/discovery/:userId/like`
@@ -1356,6 +1370,8 @@ Photo objects returned after confirm, list, and patch are `{ "id", "url", "displ
 ---
 
 ## 21. Undo APIs
+
+**Not implemented.** Phase 5 — Likes, Passes and Matches is next. Do not call this path.
 
 ### 21.1 Undo Immediately Preceding Action
 * **Method & Path:** `POST /api/v1/discovery/undo`
@@ -1932,7 +1948,7 @@ Rate limits are enforced using Redis sliding-window algorithms:
 | **Photos** (`/profile-photos/*`) | `profile_photos` |
 | **Interests / Intentions** | `interests`, `user_interests`, `relationship_intentions`, `user_relationship_intentions` |
 | **Dating Preferences** | `dating_preferences`, `user_dating_preference_genders`, `user_dating_preference_intentions` |
-| **Discovery** (`/discovery`) | `profiles` (PostGIS GiST), `dating_preferences`, `user_dating_preference_genders`, `user_dating_preference_intentions`, `likes`, `matches`, `blocks`, `boost_sessions` |
+| **Discovery** (`GET /discovery`, implemented) | `profiles` (PostGIS GiST), `users`, `genders`, `dating_preferences`, `user_dating_preference_genders`, `user_dating_preference_intentions`, `user_relationship_intentions`, `relationship_intentions`, `user_interests`, `interests`, `profile_photos`, `likes`, `matches`, `blocks`, `boost_sessions` |
 | **Likes & Passes** | `likes`, `matches`, `conversations`, `notifications`, `usage_records` |
 | **Undo** (`/discovery/undo`) | `likes`, `matches`, `conversations`, `subscriptions`, `plan_features` |
 | **Matches & Conversations** | `matches`, `conversations` |

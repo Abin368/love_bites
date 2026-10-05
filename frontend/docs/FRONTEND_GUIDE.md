@@ -8,7 +8,7 @@ This is the frontend integration guide for Love Bite. It tells a frontend develo
 
 ## 1. Purpose
 
-Use this document to wire registration, verification, login, refresh, logout, password reset, and the Phase 3 onboarding contract: public catalogs, the basic profile, photos, interests, relationship intentions, dating preferences, location, onboarding status, and onboarding completion. Do not treat later product areas (discovery, chat, payments) as available APIs.
+Use this document to wire registration, verification, login, refresh, logout, password reset, the Phase 3 onboarding contract, and Phase 4 Discovery: public catalogs, the basic profile, photos, interests, relationship intentions, dating preferences, location, onboarding status, onboarding completion, and `GET /api/v1/discovery`. Do not treat later product areas (likes, matches, chat, payments) as available APIs.
 
 ---
 
@@ -32,6 +32,8 @@ Phase 2 authentication:
 
 Phase 3 onboarding is implemented. Section 26 is the flow. Section 23 lists the paths.
 
+Phase 4 Discovery is implemented. Section 27 is `GET /api/v1/discovery`.
+
 ### Not implemented yet
 
 Do not call these. Tables may exist in PostgreSQL, but there are no mounted routes or frontend APIs for them:
@@ -41,7 +43,6 @@ Do not call these. Tables may exist in PostgreSQL, but there are no mounted rout
 - `PUT /api/v1/me/interests` and `PUT /api/v1/me/relationship-intentions`
 - `GET /api/v1/dating-preferences` and `PUT /api/v1/dating-preferences`
 - `GET /api/v1/profiles/me` and `GET /api/v1/profiles/:userId`
-- Discovery
 - Likes
 - Matches
 - Conversations
@@ -711,6 +712,7 @@ If the retried request fails again, stop. Do not refresh a second time for that 
 | GET | `/api/v1/profile-photos` | Implemented. Bearer token. Role `USER`. Active photos only. |
 | PATCH | `/api/v1/profile-photos/:photoId` | Implemented. Bearer token. Role `USER`. Changes order and/or primary. |
 | DELETE | `/api/v1/profile-photos/:photoId` | Implemented. Bearer token. Role `USER`. Soft-deletes the caller's photo. |
+| GET | `/api/v1/discovery` | Implemented. Bearer token. Role `USER`. One candidate card, or `candidate: null`. |
 
 Paths are prefixed by `API_PREFIX`, which defaults to `/api/v1`.
 
@@ -775,7 +777,7 @@ Phase 2 authentication is implemented. Phase 3 onboarding is implemented: catalo
 
 `GET /api/v1/dating-preferences` and `PUT /api/v1/dating-preferences` are not mounted. `PUT /api/v1/me/interests` and `PUT /api/v1/me/relationship-intentions` are not mounted. `PUT /api/v1/location` and `PATCH /api/v1/onboarding/profile` are not mounted. Registration still does not write `profiles.date_of_birth`. `POST /api/v1/profile` does.
 
-Phase 4 — Discovery is next and is not implemented. The later sections of `backend/docs/03-api-specification.md` describe that planned contract. Do not call discovery, likes, matches, or chat.
+Phase 4 — Discovery is complete. Call `GET /api/v1/discovery` as described in section 27. Phase 5 — Likes, Passes and Matches is next and is not implemented. Do not call likes, passes, super-likes, undo, matches, or chat.
 
 ---
 
@@ -800,9 +802,25 @@ Call these in this order. Each save stands on its own. Do not call `POST /api/v1
 3. Add photos with `POST /api/v1/profile-photos/upload-url`, upload the file to the returned URL, then `POST /api/v1/profile-photos/confirm`. List, reorder, and delete with the other `/api/v1/profile-photos` routes.
 4. Replace the user's own interests with `PUT /api/v1/onboarding/interests` (3 to 10 active ids).
 5. Replace the user's own relationship intentions with `PUT /api/v1/onboarding/relationship-intentions` (at least one active id). These are `user_relationship_intentions`, not discovery preferences.
-6. Replace discovery preferences with `PUT /api/v1/onboarding/dating-preferences`. `interestedInGenderIds` and `preferredIntentionIds` are who the user wants to discover. Empty arrays are allowed. A saved `dating_preferences` row is enough for this step.
+6. Replace discovery preferences with `PUT /api/v1/onboarding/dating-preferences`. `interestedInGenderIds` and `preferredIntentionIds` are who the user wants to discover. Empty arrays are allowed on that save. A saved `dating_preferences` row is enough for this step. An empty gender list or an empty intention list does not mean open preferences: `GET /api/v1/discovery` then returns no candidate.
 7. Set location with `PUT /api/v1/onboarding/location`. Read `city` from the response. Do not expect coordinates.
 8. Call `POST /api/v1/onboarding/complete` once the status `nextStep` is `COMPLETE`. Success `data` is only `isProfileComplete` and `status`.
 9. Keep using `GET /api/v1/onboarding/status` to decide the current step. `isProfileComplete` there is the stored flag. If every prerequisite is done and that flag is still false, `nextStep` is `COMPLETE`. After completion, `nextStep` is `null`.
 
 `PROFILE_INCOMPLETE` is HTTP 400. `details` can contain more than one missing step. Fix those steps, then call completion again. A second successful completion returns the same `200`.
+
+---
+
+## 27. Discovery
+
+`GET /api/v1/discovery` returns the next candidate card. Send `Authorization: Bearer <accessToken>`. The signed-in user must have role `USER`. There is no query string and no body. There is no pagination. Calling it again can return the same person until that person is no longer eligible. Do not call like, pass, super-like, or undo. Those routes are not mounted.
+
+Verification is required. The route does not attach a separate verification middleware. An unverified email account is `403 EMAIL_NOT_VERIFIED`. An unverified phone account is `403 PHONE_NOT_VERIFIED`. A missing token is `401 AUTH_REQUIRED`. A bad token is `401 INVALID_TOKEN`. An admin is `403 FORBIDDEN`. Suspended and banned accounts use `403 ACCOUNT_SUSPENDED` and `403 ACCOUNT_BANNED`.
+
+A caller who is missing a profile, whose profile is not complete, who has no dating preferences, or who has no location receives `400 PROFILE_INCOMPLETE`. That is not an empty card.
+
+Success is `200` with message `Discovery candidate retrieved successfully`. `data.candidate` is the card, or `null` when nobody qualifies.
+
+The card fields are `id`, `firstName`, `age`, `gender` (`id`, `code`, `name`), `bio`, `occupation`, `education`, `city`, `distanceKm`, `photos`, `interests`, and `relationshipIntentions`. `distanceKm` is a number rounded to one decimal place, including values below 1. Photos are active photos in display order. Each photo is `id`, `url`, `displayOrder`, and `isPrimary`. `url` is a private signed download URL. Interests are the candidate's own interests: `id`, `code`, `name`, and `category`. Relationship intentions are the candidate's own intentions: `id`, `code`, and `name`.
+
+Do not expect latitude, longitude, `location`, `storageKey`, email, phone, password, or tokens. Do not expect `isSuperLiked`. The full contract is `backend/docs/03-api-specification.md` section 19.

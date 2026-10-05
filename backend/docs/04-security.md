@@ -247,10 +247,10 @@ Rate limiting uses **Redis sliding-window counters** to isolate burst abuse whil
 ## 12. Discovery & Dating Security
 
 ### 12.1 Server-Side Filter Enforcements
-The discovery engine filters candidates strictly server-side using PostGIS and SQL constraints. Clients cannot alter discovery criteria by tampering with query strings:
-* **Permanent Pass Enforcement:** If user $A$ has an active pass record against candidate $B$ in `likes`, candidate $B$ is excluded via `NOT EXISTS` in the primary SQL query.
-* **Mutual Preference Enforcement:** The candidate must satisfy the viewer's preferences, AND the viewer must satisfy the candidate's preferences (Age, Gender, Distance).
-* **Self & Match Exclusion:** Viewer ID, active matches, and active bidirectional blocks are excluded at the database level.
+`GET /api/v1/discovery` filters candidates in PostgreSQL. The route has no query string, so a client cannot change the criteria:
+* **Active viewer actions:** An active `likes` row from the viewer (`LIKE`, `PASS`, or `SUPER_LIKE` with `is_undone = false`) excludes the candidate. An undone row does not. The candidate's incoming `PASS` does not.
+* **Mutual preference enforcement:** Both distance radii (`ST_DWithin`, inclusive), both age ranges (completed years, inclusive), both gender lists, and both relationship-intention overlaps are required. An empty preferred-gender or preferred-intention list matches nobody.
+* **Other exclusions:** The candidate must be a different `ACTIVE` user, not soft-deleted, with a completed profile, a non-null location, and an active primary photo. An `ACTIVE` match and a block in either direction are excluded. `UNMATCHED` and `UNDONE` matches are not. Reports are not part of this query.
 
 ### 12.2 Server-Side Liker Identity Protection ("Who Liked You")
 * **The Vulnerability:** Returning full admirer profiles with a frontend CSS/UI blur filter allows attackers to inspect HTTP responses and bypass monetization.
@@ -287,11 +287,11 @@ To prevent accidental data leakage, domain services must use explicit **Response
 1. **Storage Specification:** Stored as PostGIS `geography(Point, 4326)` in `profiles.location`.
 2. **Zero Coordinate Leakage Mandate:**
    * Raw `latitude` and `longitude` coordinates are **NEVER** serialized in any API response.
-   * Public discovery and profile endpoints return only:
-     1. Registered `city` name (e.g., `"Bengaluru"`).
-     2. Approximate distance rounded to the nearest integer kilometer:
-        $$\text{distanceKm} = \text{ROUND}(\text{ST\_Distance}(\text{userA.location}, \text{userB.location}) / 1000)$$
-3. **Anti-Trilateration Defense:** Distances $< 1\text{ km}$ are clamped to return `"Less than 1 km away"` to prevent malicious geometric trilateration of user residences.
+   * Live Discovery returns only:
+     1. Registered `city` name (for example, `"Bengaluru"`).
+     2. Numeric `distanceKm`, rounded to one decimal place:
+        $$\text{distanceKm} = \text{ROUND}(\text{ST\_Distance}(\text{userA.location}, \text{userB.location}) / 1000,\ 1)$$
+3. **Coordinate privacy:** Values below 1 km stay numeric, for example `0.7`. Latitude, longitude, and `profiles.location` are not returned.
 
 ---
 

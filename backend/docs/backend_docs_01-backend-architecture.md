@@ -414,7 +414,7 @@ WHERE ST_DWithin(u.location, :currentUserLocation, :maxDistanceMeters)
 
 ### Coordinate Privacy Guardrail
 * **Exact spatial coordinates are NEVER exposed in client API responses.**
-* API responses expose only `city`, `locality`, and rounded/calculated distance values in kilometers (e.g., `distanceKm: 4`).
+* Live Discovery exposes `city` and numeric `distanceKm`, rounded to one decimal place (for example, `4.2`). Latitude and longitude are not returned.
 
 ---
 
