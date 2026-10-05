@@ -35,7 +35,8 @@ jest.mock('../../src/modules/onboarding/onboarding.data-access', () => ({
 
 jest.mock('../../src/modules/profiles/profiles.data-access', () => ({
   findProfileByUserId: jest.fn(),
-  updateProfileLocation: jest.fn()
+  updateProfileLocation: jest.fn(),
+  markProfileComplete: jest.fn()
 }));
 
 jest.mock('../../src/modules/profile-photos/profile-photos.data-access', () => ({
@@ -47,6 +48,7 @@ import * as gendersDataAccess from '../../src/modules/genders/genders.data-acces
 import * as interestsDataAccess from '../../src/modules/interests/interests.data-access';
 import * as onboardingDataAccess from '../../src/modules/onboarding/onboarding.data-access';
 import {
+  completeOwnOnboarding,
   getOwnOnboardingStatus,
   replaceOwnDatingPreferences,
   replaceOwnInterests,
@@ -456,5 +458,67 @@ describe('onboarding status service', () => {
 
     expect(status.completedSteps).toEqual(['VERIFICATION', 'BASIC_PROFILE', 'INTERESTS', 'RELATIONSHIP_INTENTIONS', 'DATING_PREFERENCES']);
     expect(status.nextStep).toBe('PHOTOS');
+  });
+});
+
+describe('onboarding completion service', () => {
+  beforeEach(() => {
+    profiles.findProfileByUserId.mockReset();
+    profiles.updateProfileLocation.mockReset();
+    profiles.markProfileComplete.mockReset();
+    photos.listActivePhotos.mockReset();
+    interests.findUserInterests.mockReset();
+    intentions.findUserRelationshipIntentions.mockReset();
+    preferences.findDatingPreference.mockReset();
+    profiles.findProfileByUserId.mockResolvedValue(null);
+    photos.listActivePhotos.mockResolvedValue([]);
+    interests.findUserInterests.mockResolvedValue([]);
+    intentions.findUserRelationshipIntentions.mockResolvedValue([]);
+    preferences.findDatingPreference.mockResolvedValue(null);
+    profiles.markProfileComplete.mockResolvedValue(undefined);
+  });
+
+  function satisfyAll(): void {
+    profiles.findProfileByUserId.mockResolvedValue({ city: 'Bengaluru', location: { type: 'Point' } } as never);
+    photos.listActivePhotos.mockResolvedValue([{ isPrimary: true }] as never);
+    interests.findUserInterests.mockResolvedValue([{}, {}, {}] as never);
+    intentions.findUserRelationshipIntentions.mockResolvedValue([{}] as never);
+    preferences.findDatingPreference.mockResolvedValue({ minAge: 18, maxAge: 100, maxDistanceKm: 50 });
+  }
+
+  it('lists every missing prerequisite and does not write', async () => {
+    profiles.findProfileByUserId.mockResolvedValue({ city: null, location: null } as never);
+    interests.findUserInterests.mockResolvedValue([{}, {}] as never);
+
+    await expect(completeOwnOnboarding(userId, true, false, 'ACTIVE')).rejects.toMatchObject({
+      statusCode: 400,
+      errorCode: 'PROFILE_INCOMPLETE',
+      details: [
+        { field: 'PHOTOS', message: 'PHOTOS is required' },
+        { field: 'INTERESTS', message: 'INTERESTS is required' },
+        { field: 'RELATIONSHIP_INTENTIONS', message: 'RELATIONSHIP_INTENTIONS is required' },
+        { field: 'DATING_PREFERENCES', message: 'DATING_PREFERENCES is required' },
+        { field: 'LOCATION', message: 'LOCATION is required' }
+      ]
+    });
+    expect(profiles.markProfileComplete).not.toHaveBeenCalled();
+    expect(profiles.updateProfileLocation).not.toHaveBeenCalled();
+  });
+
+  it('sets the completion flag when every prerequisite is satisfied', async () => {
+    satisfyAll();
+
+    const result = await completeOwnOnboarding(userId, true, false, 'ACTIVE');
+
+    expect(result).toEqual({ isProfileComplete: true, status: 'ACTIVE' });
+    expect(profiles.markProfileComplete).toHaveBeenCalledTimes(1);
+    expect(profiles.markProfileComplete).toHaveBeenCalledWith(userId);
+  });
+
+  it('returns success without writing when the stored flag is already true', async () => {
+    const result = await completeOwnOnboarding(userId, false, true, 'ACTIVE');
+
+    expect(result).toEqual({ isProfileComplete: true, status: 'ACTIVE' });
+    expect(profiles.markProfileComplete).not.toHaveBeenCalled();
   });
 });

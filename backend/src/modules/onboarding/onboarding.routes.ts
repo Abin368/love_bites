@@ -46,4 +46,6 @@ router.put(
   onboardingController.updateLocation
 );
 
+router.post('/complete', authenticate, requireRole('USER'), onboardingController.completeOnboarding);
+
 export const onboardingRoutes = router;

@@ -308,7 +308,7 @@ Implement secure, dual-identifier registration (Email OR Phone), cryptographic p
 
 ## 7. Phase 3 — Profile and Onboarding
 
-**Step 3 status (2026-10-01): basic profile HTTP, interest and relationship-intention selection, profile photos, and onboarding dating preferences are implemented. Phase 3 is not complete. Location and onboarding completion are next. The documents still disagree on Phase 3 step numbers; the photo work is not a renumbered step.**
+**Phase 3 status (2026-10-05): complete.** Catalogs, basic profile HTTP, interests, relationship intentions, profile photos, dating preferences, location, onboarding status, and onboarding completion are implemented. **Phase 4 — Discovery is next and is not implemented.** Production interests are not seeded. `PATCH /api/v1/onboarding/profile`, `PUT /api/v1/location`, `PUT /api/v1/me/interests`, `PUT /api/v1/me/relationship-intentions`, `GET /api/v1/dating-preferences`, and `PUT /api/v1/dating-preferences` are not mounted.
 
 Implemented in Step 1:
 
@@ -345,7 +345,7 @@ Implemented for dating preferences:
 * The response returns the stored age range, distance, and catalog objects `{ "id", "code", "name" }`. This route does not write `user_relationship_intentions` or `profiles.is_profile_complete`.
 * `GET /api/v1/dating-preferences` and `PUT /api/v1/dating-preferences` are not implemented.
 
-Not implemented: the other onboarding HTTP routes, location endpoints, onboarding completion, public profiles, discovery, likes, matches, and chat. Profile photos and the private S3 presign pipeline are implemented. Plans, features, and usage limits are still unseeded. Production interests are not seeded.
+Not implemented in this phase: public profile views, `PATCH /api/v1/onboarding/profile`, `PUT /api/v1/location`, `GET /api/v1/dating-preferences`, and `PUT /api/v1/dating-preferences`. Discovery, likes, matches, and chat remain later phases. Profile photos, location, onboarding status, and onboarding completion are implemented. Plans, features, and usage limits are still unseeded. Production interests are not seeded.
 
 ### 7.1 Objectives
 Implement the linear onboarding sequence, demographic metadata management, S3 presigned photo upload pipeline, dating preferences, and profile completion validation.
@@ -359,11 +359,13 @@ Implement the linear onboarding sequence, demographic metadata management, S3 pr
 ```
 
 ### 7.3 Implementation Steps
-1. **Onboarding Status Tracker (`GET /api/v1/onboarding/status`):**
-   * Evaluates completion of each required stage and returns `completedSteps` and `nextStep`.
-2. **Basic Profile Step (`PATCH /api/v1/onboarding/profile`):**
-   * Validates `firstName`, `genderId` (active gender check), `bio` ($\le 500$ chars), `occupation`, `education`.
-   * *Note: `dateOfBirth` is locked from registration and cannot be modified.*
+1. **Onboarding Status Tracker (`GET /api/v1/onboarding/status`):** **Implemented.**
+   * Returns `isVerified`, the stored `isProfileComplete`, `completedSteps`, and `nextStep`. It does not write `profiles.is_profile_complete`.
+   * Step order: `VERIFICATION`, `BASIC_PROFILE`, `PHOTOS`, `INTERESTS`, `RELATIONSHIP_INTENTIONS`, `DATING_PREFERENCES`, `LOCATION`, then `COMPLETE`.
+   * When steps 1–7 are satisfied and the stored flag is still false, `nextStep` is `COMPLETE`. When the stored flag is true, `nextStep` is `null`.
+2. **Basic Profile Step:** **Implemented** as `GET`, `POST`, and `PATCH /api/v1/profile`. `PATCH /api/v1/onboarding/profile` is not mounted.
+   * Writable fields are `firstName`, `dateOfBirth`, `genderId`, `bio`, `occupation`, and `education`. `dateOfBirth` is stored here, not at registration, and can be updated.
+   * The client cannot set `isProfileComplete`. These routes do not complete onboarding.
 3. **AWS S3 Photo Upload Pipeline:** **Implemented.**
    * `src/integrations/storage/s3.provider.ts` signs private `PutObject` and `GetObject` URLs. It does not delete objects and does not set a public ACL. Credentials come from the AWS SDK default provider chain. `AWS_REGION` and `AWS_S3_BUCKET_NAME` are required in production and optional in development and test.
    * `POST /api/v1/profile-photos/upload-url`: Validates MIME type (`image/jpeg`, `image/png`, `image/webp`), size (1 to 10 MB), and active photo count (`< 5`). Generates a 300-second presigned `PutObject` URL for `photos/{userId}/{uuid}.webp`. Stores a Redis reservation. Does not insert `profile_photos`.
@@ -382,20 +384,23 @@ Implement the linear onboarding sequence, demographic metadata management, S3 pr
    * Creates or updates `dating_preferences`, then replaces `user_dating_preference_genders` and `user_dating_preference_intentions` in one transaction.
    * Does not write `user_relationship_intentions` and does not set `profiles.is_profile_complete`.
    * `GET /api/v1/dating-preferences` and `PUT /api/v1/dating-preferences` are not this step.
-6. **Location Setup (`PUT /api/v1/onboarding/location` / `PUT /api/v1/location`):**
-   * Captures `city`, `latitude`, `longitude`.
-   * Stores as PostGIS point: `ST_SetSRID(ST_MakePoint(longitude, latitude), 4326)` in `profiles.location`.
-   * API response returns `{ "city": "...", "updated": true }` with zero coordinate reflections.
-7. **Onboarding Finalization (`POST /api/v1/onboarding/complete`):**
-   * Validates that all prerequisites are satisfied: verified account, basic info, $\ge 1$ photo (with 1 primary), 3–10 interests, $\ge 1$ intention, dating preferences, and location.
-   * Sets `profiles.is_profile_complete = TRUE`, making the profile eligible for discovery.
-8. **Profile Views:**
+6. **Location Setup (`PUT /api/v1/onboarding/location`):** **Implemented.** `PUT /api/v1/location` is not mounted.
+   * Captures trimmed `city` (1–100), `latitude` (-90 to 90), and `longitude` (-180 to 180). A profile row must already exist.
+   * Stores as PostGIS geography Point: `ST_SetSRID(ST_MakePoint(longitude, latitude), 4326)::geography` in `profiles.location`.
+   * API response returns `{ "city": "...", "updated": true }` with zero coordinate reflections. It does not set `profiles.is_profile_complete`.
+7. **Onboarding Finalization (`POST /api/v1/onboarding/complete`):** **Implemented.** `requireVerified` is not applied.
+   * Requires all seven prerequisites: verification, a profile row, 1–5 active photos with one primary, 3–10 own interests, at least one own relationship intention, a `dating_preferences` row, and a non-blank city plus a non-null point.
+   * Incomplete requests return `400 PROFILE_INCOMPLETE` with every missing step in `details`. Nothing is written.
+   * Success sets only `profiles.is_profile_complete = TRUE` and returns `{ "isProfileComplete": true, "status": "<users.status>" }`. It does not change `users.status`, does not issue a JWT, and is idempotent.
+8. **Profile Views:** **Not implemented.** These are not part of the completed onboarding API.
    * `GET /api/v1/profiles/me`: Returns private profile with signed photo CDN URLs.
    * `GET /api/v1/profiles/:userId`: Returns public candidate profile, verifies bidirectional block state, and computes server-side `distanceKm`.
 
 ---
 
 ## 8. Phase 4 — Discovery and Location
+
+**Next phase. Not implemented.** Do not treat the steps below as a built API.
 
 ### 8.1 Objectives
 Implement high-performance, single-card spatial discovery using PostGIS spatial indexing (`ST_DWithin`), strict exclusion criteria, mutual preference filtering, and Boost ranking multipliers.

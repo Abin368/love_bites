@@ -47,3 +47,13 @@ export const getStatus = asyncHandler(async (req, res) => {
   );
   send(res, status, 'Onboarding status retrieved successfully');
 });
+
+export const completeOnboarding = asyncHandler(async (req, res) => {
+  const completion = await onboardingService.completeOwnOnboarding(
+    req.user!.id,
+    req.user!.isVerified,
+    req.user!.isProfileComplete,
+    req.user!.status
+  );
+  send(res, completion, 'Onboarding complete! Welcome to Love Bite.');
+});

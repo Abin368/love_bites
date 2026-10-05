@@ -103,6 +103,10 @@ export async function updateProfile(
   });
 }
 
+export async function markProfileComplete(userId: string): Promise<void> {
+  await Profile.update({ isProfileComplete: true }, { where: { userId } });
+}
+
 export async function updateProfileLocation(
   userId: string,
   input: ProfileLocationUpdate,
