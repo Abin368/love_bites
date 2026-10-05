@@ -8,7 +8,7 @@ This is the frontend integration guide for Love Bite. It tells a frontend develo
 
 ## 1. Purpose
 
-Use this document to wire registration, verification, login, refresh, logout, password reset, the public catalogs, the authenticated basic profile, onboarding interest and relationship-intention selection, and profile photos. Do not treat later product areas (discovery, chat, payments) as available APIs.
+Use this document to wire registration, verification, login, refresh, logout, password reset, and the Phase 3 onboarding contract: public catalogs, the basic profile, photos, interests, relationship intentions, dating preferences, location, onboarding status, and onboarding completion. Do not treat later product areas (discovery, chat, payments) as available APIs.
 
 ---
 
@@ -30,13 +30,17 @@ Phase 2 authentication:
 
 `GET /health` and `GET /api/v1/health` also exist. They are not auth endpoints.
 
+Phase 3 onboarding is implemented. Section 26 is the flow. Section 23 lists the paths.
+
 ### Not implemented yet
 
 Do not call these. Tables may exist in PostgreSQL, but there are no mounted routes or frontend APIs for them:
 
-- The rest of profile onboarding (location, completion)
+- `PATCH /api/v1/onboarding/profile` (use `GET`, `POST`, and `PATCH /api/v1/profile`)
+- `PUT /api/v1/location` (use `PUT /api/v1/onboarding/location`)
 - `PUT /api/v1/me/interests` and `PUT /api/v1/me/relationship-intentions`
 - `GET /api/v1/dating-preferences` and `PUT /api/v1/dating-preferences`
+- `GET /api/v1/profiles/me` and `GET /api/v1/profiles/:userId`
 - Discovery
 - Likes
 - Matches
@@ -108,11 +112,11 @@ Claims:
 | `sub` | User id |
 | `role` | `USER` or `ADMIN` |
 | `isVerified` | Whether a stored email or phone is verified |
-| `isProfileComplete` | Whether a completed profile row exists |
+| `isProfileComplete` | Stored `profiles.is_profile_complete`. False until onboarding completion. |
 | `iat` | Issued-at (seconds) |
 | `exp` | Expiry (seconds) |
 
-These claims are a snapshot. After verification, log in again or refresh to receive updated `isVerified`.
+These claims are a snapshot. After verification, log in again or refresh to receive updated `isVerified`. `POST /api/v1/onboarding/complete` does not issue a new access token. Refresh or log in again when the client needs the `isProfileComplete` claim to become `true`. `GET /api/v1/onboarding/status` already returns the stored flag.
 
 ### Refresh token
 
@@ -535,7 +539,8 @@ Registration returns channel flags. Login returns the account summary. The acces
 | `status` | Register `data`, login `user` | `UNVERIFIED` until a required identifier is verified, then `ACTIVE`. `SUSPENDED` and `BANNED` are rejected at login and refresh. `DELETED` accounts are not returned as a successful session. |
 | `emailVerified` / `phoneVerified` | Register `data` only | That channel. Not on the login `user` object. |
 | `isVerified` | Login `user` and JWT | True when a stored email is verified, or a stored phone is verified. |
-| `isProfileComplete` | Login `user` and JWT | True only when a profile row is marked complete. Registration and a basic profile leave this `false`. |
+| `isProfileComplete` | Login `user`, JWT, and `GET /api/v1/onboarding/status` | The stored `profiles.is_profile_complete` flag. It is not calculated from the onboarding steps. Registration, a basic profile, and the other onboarding saves leave it `false` until `POST /api/v1/onboarding/complete`. |
+| `status` on completion | `POST /api/v1/onboarding/complete` `data.status` | The current `users.status`. Verification sets this. Completion does not change it. |
 | `role` | Login `user` and JWT | `USER` for accounts created by register. |
 | `nextStep` | Register `data` only | `VERIFY_EMAIL` or `VERIFY_PHONE`. |
 
@@ -671,7 +676,7 @@ If the retried request fails again, stop. Do not refresh a second time for that 
 - Do not log verification codes.
 - Do not log or display password-reset tokens beyond the reset form that receives them.
 - Do not trust frontend validation as a security boundary. The backend is authoritative.
-- `isProfileComplete` is true only when the stored profile flag is true. A basic profile from `POST /api/v1/profile` leaves it `false`.
+- `isProfileComplete` is the stored `profiles.is_profile_complete` flag. A basic profile and the other onboarding saves leave it `false`. Only `POST /api/v1/onboarding/complete` sets it. That call does not change `users.status`.
 - Do not invent API endpoints that are not implemented.
 
 ---
@@ -698,6 +703,9 @@ If the retried request fails again, stop. Do not refresh a second time for that 
 | PUT | `/api/v1/onboarding/interests` | Implemented. Bearer token. Role `USER`. Replaces 3 to 10 interests. |
 | PUT | `/api/v1/onboarding/relationship-intentions` | Implemented. Bearer token. Role `USER`. Replaces one or more intentions. |
 | PUT | `/api/v1/onboarding/dating-preferences` | Implemented. Bearer token. Role `USER`. Replaces age range, distance, and target genders and intentions. |
+| PUT | `/api/v1/onboarding/location` | Implemented. Bearer token. Role `USER`. Stores city and a private point. Response has no coordinates. |
+| GET | `/api/v1/onboarding/status` | Implemented. Bearer token. Role `USER`. Read-only step status. |
+| POST | `/api/v1/onboarding/complete` | Implemented. Bearer token. Role `USER`. Sets the stored completion flag when all seven prerequisites are met. |
 | POST | `/api/v1/profile-photos/upload-url` | Implemented. Bearer token. Role `USER`. Returns a private presigned PUT URL. Does not store a photo row. |
 | POST | `/api/v1/profile-photos/confirm` | Implemented. Bearer token. Role `USER`. Stores the reserved photo. |
 | GET | `/api/v1/profile-photos` | Implemented. Bearer token. Role `USER`. Active photos only. |
@@ -734,17 +742,40 @@ Profile photos use the same bearer token and `USER` role. The path is `/api/v1/p
 
 `POST /api/v1/profile-photos/confirm` body: `photoId`, `storageKey` (the value just returned), `displayOrder` (1–5), and `isPrimary`. Success is `201`. `data` is `id`, `url`, `displayOrder`, and `isPrimary`. `url` is a signed GET URL valid for 3600 seconds. Do not send a different storage key. A missing reservation is `404 RESOURCE_NOT_FOUND`. A mismatched key is `400 INVALID_STORAGE_KEY`.
 
-`GET /api/v1/profile-photos` returns that photo shape for the signed-in user's active photos, ordered by `displayOrder`. `PATCH /api/v1/profile-photos/:photoId` accepts `displayOrder` and/or `isPrimary` and returns the full active list. `DELETE /api/v1/profile-photos/:photoId` returns `{ "deleted": true }`. Another user's photo is `404 RESOURCE_NOT_FOUND`. A completed profile cannot delete its only photo (`409 PHOTO_REQUIRED`). Photo routes do not change `isProfileComplete`. The full contract is `backend/docs/03-api-specification.md` section 14.
+`GET /api/v1/profile-photos` returns that photo shape for the signed-in user's active photos, ordered by `displayOrder`. `PATCH /api/v1/profile-photos/:photoId` accepts `displayOrder` and/or `isPrimary` and returns the full active list. `DELETE /api/v1/profile-photos/:photoId` returns `{ "deleted": true }`. Another user's photo is `404 RESOURCE_NOT_FOUND`. A completed profile cannot delete its only photo (`409 PHOTO_REQUIRED`). The first confirmed photo becomes primary. Deleting the primary promotes another active photo. At most 5 active photos. JPEG, PNG, or WebP, at most 10 MB. Photo routes do not change `isProfileComplete`. The full contract is `backend/docs/03-api-specification.md` section 14.
+
+`PUT /api/v1/onboarding/location` uses the same bearer token and `USER` role. Verification is not required. A profile must already exist. No profile is `404 PROFILE_NOT_FOUND`.
+
+Body: `city` (trimmed, non-empty, at most 100 characters), `latitude` (finite, -90 to 90), and `longitude` (finite, -180 to 180). Success is `200` with message `Location updated successfully`. `data` is only `{ "city": "<trimmed city>", "updated": true }`. Do not expect `latitude`, `longitude`, or `location` in that response, or on `GET /api/v1/profile`. The server stores a PostGIS geography Point, SRID 4326. This route does not change `isProfileComplete`. `PUT /api/v1/location` is not mounted. The full contract is `backend/docs/03-api-specification.md` section 12.6.
+
+`GET /api/v1/onboarding/status` has no body. Success is `200` with message `Onboarding status retrieved successfully`. `data` is only `isVerified`, `isProfileComplete`, `completedSteps`, and `nextStep`. `isProfileComplete` is the stored flag. A missing profile is `200` with `isProfileComplete: false`, not `404`. `completedSteps` uses this order and never includes `COMPLETE`: `VERIFICATION`, `BASIC_PROFILE`, `PHOTOS`, `INTERESTS`, `RELATIONSHIP_INTENTIONS`, `DATING_PREFERENCES`, `LOCATION`. `nextStep` is the first missing step. When all seven are satisfied and the stored flag is still false, `nextStep` is `COMPLETE`. When the stored flag is true, `nextStep` is `null`. The full contract is section 12.1.
+
+`POST /api/v1/onboarding/complete` has no body. It does not require a separate verification middleware. It requires the same seven prerequisites as status. Success is `200`:
+
+```json
+{
+  "success": true,
+  "data": {
+    "isProfileComplete": true,
+    "status": "ACTIVE"
+  },
+  "message": "Onboarding complete! Welcome to Love Bite."
+}
+```
+
+`data` contains only `isProfileComplete` and `status`. `status` is the current account status (`users.status`). Completion does not change it. The call sets only the stored profile flag. It does not return a profile, coordinates, photos, or steps, and it does not issue a new JWT. Calling it again returns the same `200`. It does not return `409`.
+
+An incomplete account is `400` with code `PROFILE_INCOMPLETE`. `error.details` lists every missing prerequisite. Each item is `{ "field": "<STEP>", "message": "<STEP> is required" }`. Nothing is written. Do not call completion after every edit. None of the onboarding PUT routes complete the profile by themselves.
 
 ---
 
 ## 24. Phase 3 boundary
 
-Phase 2 authentication is implemented. Phase 3 Step 1 adds the three public catalog reads in section 23. Phase 3 Step 3 adds the basic profile routes in that same table. Interest and relationship-intention selection is also implemented there, on `PUT /api/v1/onboarding/interests` and `PUT /api/v1/onboarding/relationship-intentions`. Dating preferences are implemented on `PUT /api/v1/onboarding/dating-preferences`.
+Phase 2 authentication is implemented. Phase 3 onboarding is implemented: catalogs, basic profile, photos, own interests, own relationship intentions, dating preferences, location, onboarding status, and onboarding completion. Section 26 is the order to call them.
 
-The rest of Phase 3 is still planned: location and profile completion. Profile photos and `PUT /api/v1/onboarding/dating-preferences` are implemented. `GET /api/v1/dating-preferences` and `PUT /api/v1/dating-preferences` are not mounted. `PUT /api/v1/me/interests` and `PUT /api/v1/me/relationship-intentions` are not mounted. Registration still does not write `profiles.date_of_birth`. `POST /api/v1/profile` does. `isProfileComplete` stays unchanged by interest selection, intention selection, photo routes, and dating-preference saves. A later completion step sets it.
+`GET /api/v1/dating-preferences` and `PUT /api/v1/dating-preferences` are not mounted. `PUT /api/v1/me/interests` and `PUT /api/v1/me/relationship-intentions` are not mounted. `PUT /api/v1/location` and `PATCH /api/v1/onboarding/profile` are not mounted. Registration still does not write `profiles.date_of_birth`. `POST /api/v1/profile` does.
 
-Do not call the later Phase 3 paths. They are not mounted. The later sections of `backend/docs/03-api-specification.md` describe that planned contract, except the catalog reads and section 11.15, which are implemented.
+Phase 4 — Discovery is next and is not implemented. The later sections of `backend/docs/03-api-specification.md` describe that planned contract. Do not call discovery, likes, matches, or chat.
 
 ---
 
@@ -757,3 +788,21 @@ When something is unclear, use this order:
 3. The other backend documents for product, architecture, database, security, and the development plan.
 
 If documentation conflicts with the running backend, investigate the implementation and report the discrepancy. Do not guess a request field, error code, or endpoint into existence.
+
+---
+
+## 26. Onboarding flow
+
+Call these in this order. Each save stands on its own. Do not call `POST /api/v1/onboarding/complete` after every edit. Use `GET /api/v1/onboarding/status` to see which step is next.
+
+1. Verify the account (`POST /api/v1/auth/verify-email` or `POST /api/v1/auth/verify-phone`). Verification is what can set `users.status` to `ACTIVE`.
+2. Create or update the basic profile with `POST` or `PATCH /api/v1/profile`. This does not complete onboarding.
+3. Add photos with `POST /api/v1/profile-photos/upload-url`, upload the file to the returned URL, then `POST /api/v1/profile-photos/confirm`. List, reorder, and delete with the other `/api/v1/profile-photos` routes.
+4. Replace the user's own interests with `PUT /api/v1/onboarding/interests` (3 to 10 active ids).
+5. Replace the user's own relationship intentions with `PUT /api/v1/onboarding/relationship-intentions` (at least one active id). These are `user_relationship_intentions`, not discovery preferences.
+6. Replace discovery preferences with `PUT /api/v1/onboarding/dating-preferences`. `interestedInGenderIds` and `preferredIntentionIds` are who the user wants to discover. Empty arrays are allowed. A saved `dating_preferences` row is enough for this step.
+7. Set location with `PUT /api/v1/onboarding/location`. Read `city` from the response. Do not expect coordinates.
+8. Call `POST /api/v1/onboarding/complete` once the status `nextStep` is `COMPLETE`. Success `data` is only `isProfileComplete` and `status`.
+9. Keep using `GET /api/v1/onboarding/status` to decide the current step. `isProfileComplete` there is the stored flag. If every prerequisite is done and that flag is still false, `nextStep` is `COMPLETE`. After completion, `nextStep` is `null`.
+
+`PROFILE_INCOMPLETE` is HTTP 400. `details` can contain more than one missing step. Fix those steps, then call completion again. A second successful completion returns the same `200`.

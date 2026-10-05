@@ -13,7 +13,7 @@ This document defines the **RESTful API Specification** and **Socket.IO Realtime
 
 ### Implementation status
 
-Phase 2 authentication is implemented and verified. Sections **4** and **11** below describe that live behavior, including the basic profile API in section **11.14** and interest and relationship-intention selection in section **11.15**. Sections **12** onward (the rest of onboarding, the richer profile views, discovery, likes, chat, subscriptions, payments, and the rest) are the planned contract. Those routes are **not** mounted, except where a subsection says the live contract is section **11.15**. Do not call the unmounted routes. `PUT /api/v1/me/interests` and `PUT /api/v1/me/relationship-intentions` are not implemented.
+Phase 2 authentication and Phase 3 onboarding are implemented. Sections **4**, **11**, **12**, and **14** describe that live behavior. Sections **13** and **17** onward are the planned contract and are not mounted, except where a subsection says otherwise. `PUT /api/v1/me/interests`, `PUT /api/v1/me/relationship-intentions`, `GET /api/v1/dating-preferences`, `PUT /api/v1/dating-preferences`, `PUT /api/v1/location`, and `PATCH /api/v1/onboarding/profile` are not implemented.
 
 Health checks are also live: `GET /health` and `GET /api/v1/health`.
 
@@ -102,7 +102,15 @@ Refreshing rotates the token: the previous refresh row is revoked and a new cook
 
 Live public routes (no `Authorization` header): register, verify-email, verify-phone, resend-verification, login, refresh, forgot-password, reset-password, `GET /genders`, `GET /interests`, and `GET /relationship-intentions`.
 
-`POST /api/v1/auth/logout` is the only live route that requires `Authorization: Bearer <accessToken>`. An unverified account (`status: UNVERIFIED`) may log in and log out. Suspended and banned accounts are rejected with `403`.
+Live routes that require `Authorization: Bearer <accessToken>`:
+
+* `POST /api/v1/auth/logout`. An unverified account may log in and log out.
+* `GET`, `POST`, and `PATCH /api/v1/profile`.
+* `PUT /api/v1/onboarding/interests`, `PUT /api/v1/onboarding/relationship-intentions`, `PUT /api/v1/onboarding/dating-preferences`, and `PUT /api/v1/onboarding/location`.
+* `GET /api/v1/onboarding/status` and `POST /api/v1/onboarding/complete`.
+* `POST /api/v1/profile-photos/upload-url`, `POST /api/v1/profile-photos/confirm`, `GET /api/v1/profile-photos`, `PATCH /api/v1/profile-photos/:photoId`, and `DELETE /api/v1/profile-photos/:photoId`.
+
+Those profile, onboarding, and photo routes also require role `USER`. `requireVerified` is not applied, so an unverified `USER` may call them. Any other role, including `ADMIN`, receives `403 FORBIDDEN`. Suspended and banned accounts are rejected with `403` by the authentication middleware.
 
 There is no live admin API yet. `requireRole('ADMIN')` exists for later routes.
 
@@ -183,7 +191,13 @@ All failed HTTP requests return a standardized, machine-parseable JSON error env
 | `PHONE_NOT_VERIFIED` | 403 | Account requires SMS OTP verification. |
 | `ACCOUNT_SUSPENDED` | 403 | User account is temporarily suspended by admin. |
 | `ACCOUNT_BANNED` | 403 | User account has been permanently terminated. |
-| `PROFILE_INCOMPLETE` | 403 | Onboarding is incomplete; discovery/matching locked. |
+| `PROFILE_INCOMPLETE` | 400 | `POST /api/v1/onboarding/complete` was called before all seven prerequisites were satisfied. `details` lists every missing step. Nothing is written. |
+| `INVALID_INTEREST` | 400 | One or more interest ids are unknown or inactive. |
+| `INVALID_RELATIONSHIP_INTENTION` | 400 | One or more relationship intention ids are unknown or inactive. |
+| `INVALID_STORAGE_KEY` | 400 | The confirm storage key does not match the upload reservation. |
+| `PHOTO_LIMIT_REACHED` | 409 | The caller already has 5 active photos. |
+| `PHOTO_CONFLICT` | 409 | Photo order or primary photo conflicts with an existing photo. |
+| `PHOTO_REQUIRED` | 409 | A completed profile cannot delete its only active photo. |
 | `PREMIUM_REQUIRED` | 403 | Feature requires an active Premium subscription. |
 | `FORBIDDEN` | 403 | Insufficient role permissions or resource access denied. |
 | `RESOURCE_NOT_FOUND` | 404 | Target entity does not exist or is soft-deleted. |
@@ -283,7 +297,7 @@ Send email, phone, or both. At least one identifier is required.
 | `termsAccepted` | Yes | Must be the boolean `true`. |
 | `privacyAccepted` | Yes | Must be the boolean `true`. |
 
-`dateOfBirth` is validated and then discarded. Phase 2 does **not** store it on the user, and it does **not** create a profile. Do not read the date of birth back from the user after registration. Phase 3 will persist it on the profile.
+`dateOfBirth` is validated and then discarded. Registration does **not** store it on the user, and it does **not** create a profile. Do not read the date of birth back from the user after registration. `POST /api/v1/profile` stores it on the profile.
 
 `201 Created`:
 
@@ -609,13 +623,15 @@ From login `user`, and from access-token claims:
 | 429 | `RATE_LIMITED` | Show the message and wait. There is no `Retry-After` header. |
 | 500 | `INTERNAL_SERVER_ERROR` | Generic failure. Message: `An unexpected error occurred. Please try again later.` |
 
-### 11.12 What is live, and what Phase 3 will add
+### 11.12 What is live
 
-Live now: registration, email and phone verification, resend, login, refresh, logout, forgot-password, reset-password, the public catalog reads in section 11.13, the authenticated basic profile API in section 11.14, `PUT /api/v1/onboarding/interests` plus `PUT /api/v1/onboarding/relationship-intentions` in section 11.15, and `PUT /api/v1/onboarding/dating-preferences` in section 12.5.
+Live now: registration, email and phone verification, resend, login, refresh, logout, forgot-password, reset-password, the public catalog reads in section 11.13, the authenticated basic profile API in section 11.14, onboarding interests and relationship intentions in section 11.15, profile photos in section 14, dating preferences in section 12.5, location in section 12.6, onboarding status in section 12.1, and onboarding completion in section 12.7.
 
-Not implemented, even though the database tables exist: the rest of onboarding, photo upload, `PUT /api/v1/me/interests`, `PUT /api/v1/me/relationship-intentions`, `GET /api/v1/dating-preferences`, `PUT /api/v1/dating-preferences`, location, the richer profile views in section 13, discovery, likes, matches, chat, subscriptions, payments, and boosts. Do not call those paths.
+Phase 3 onboarding is complete. Gender and relationship-intention seed data exist. Production interests are not seeded, because the approved interest list is not defined.
 
-Phase 3 Step 1 is the three public catalog reads. Phase 3 Step 3 is `GET`, `POST`, and `PATCH /api/v1/profile`. Interest and relationship-intention selection is the onboarding slice in section 11.15. It is not a renumbered phase step. Gender and relationship-intention seed data exist. Production interests are not seeded, because the approved interest list is not defined. Phase 3 is not complete. Later sections remain the planned contract unless a subsection says it is implemented.
+Not implemented: `PUT /api/v1/me/interests`, `PUT /api/v1/me/relationship-intentions`, `GET /api/v1/dating-preferences`, `PUT /api/v1/dating-preferences`, `PUT /api/v1/location`, `PATCH /api/v1/onboarding/profile`, the richer profile views in section 13, discovery, likes, matches, chat, subscriptions, payments, and boosts. Do not call those paths.
+
+Phase 4 — Discovery is next and is not implemented. Later sections remain the planned contract unless a subsection says it is implemented.
 
 ### 11.13 Public catalog reads
 
@@ -686,7 +702,7 @@ The response `data` object is only:
 
 `city` is returned and is null until a later location step. `location` is never returned. Password hashes, refresh tokens, OTP data, and other user security fields are not returned.
 
-`isProfileComplete` is stored on `profiles.is_profile_complete` and is never taken from the request. Creating or updating a basic profile does not set it to `true`. It stays `false` while city, location, a primary photo, 3–10 interests, at least one relationship intention, or dating preferences are missing. This step does not write those values. A later completion step is what sets the flag. Editing a basic field does not clear a flag that was already `true`.
+`isProfileComplete` is the stored `profiles.is_profile_complete` flag and is never taken from the request. Creating or updating a basic profile does not set it to `true`. It stays `false` until `POST /api/v1/onboarding/complete` sets it. That completion route is separate from `users.status`. Editing a basic field does not clear a flag that was already `true`.
 
 #### Get own profile
 
@@ -778,9 +794,31 @@ Successful `data` is the selected catalog records, ordered by `display_order` as
 
 ## 12. Onboarding APIs
 
-**Partly implemented.** `GET /api/v1/onboarding/status` is live. Its contract is section 12.1. `PUT /api/v1/onboarding/interests` and `PUT /api/v1/onboarding/relationship-intentions` are live. Their contract is section 11.15. `PUT /api/v1/onboarding/dating-preferences` is live. Its contract is section 12.5. `POST /api/v1/onboarding/complete` is live. Its contract is section 12.7. The other routes in this section are the planned contract only and are not mounted. The live basic profile API is section 11.14. Public catalog reads are live in section 11.13.
+**Implemented** for the signed-in `USER`, except `PATCH /api/v1/onboarding/profile`, which is not mounted. The live basic profile API is section 11.14. Public catalog reads are section 11.13.
 
-The onboarding pipeline enforces sequential profile completion before granting access to discovery.
+Live routes:
+
+* `GET /api/v1/onboarding/status` — section 12.1
+* `PUT /api/v1/onboarding/interests` — sections 11.15 and 12.3
+* `PUT /api/v1/onboarding/relationship-intentions` — sections 11.15 and 12.4
+* `PUT /api/v1/onboarding/dating-preferences` — section 12.5
+* `PUT /api/v1/onboarding/location` — section 12.6
+* `POST /api/v1/onboarding/complete` — section 12.7
+
+`PUT /api/v1/location`, `PATCH /api/v1/onboarding/profile`, `PUT /api/v1/me/interests`, `PUT /api/v1/me/relationship-intentions`, `GET /api/v1/dating-preferences`, and `PUT /api/v1/dating-preferences` are not mounted.
+
+These routes use `authenticate` and `requireRole('USER')`. `requireVerified` is not applied. `ADMIN` receives `403 FORBIDDEN`. The PUT and POST routes do not have to be called in order. Only completion requires every prerequisite.
+
+### Account status and profile completion
+
+These are different values.
+
+* **Account status** is `users.status`. Verification is what moves an account to `ACTIVE`. Onboarding completion returns the caller's current account status and does not change it.
+* **Profile completion** is the stored `profiles.is_profile_complete` flag. `GET /api/v1/onboarding/status` returns that stored flag. The status evaluator does not calculate it. `POST /api/v1/onboarding/complete` is the operation that sets the flag to `true`.
+
+Saving a basic profile, photos, interests, relationship intentions, dating preferences, or location does not set `profiles.is_profile_complete` and does not update `users.status`. None of these routes issue a new JWT.
+
+The status order is `VERIFICATION`, `BASIC_PROFILE`, `PHOTOS`, `INTERESTS`, `RELATIONSHIP_INTENTIONS`, `DATING_PREFERENCES`, `LOCATION`, then `COMPLETE`.
 
 ### 12.1 Get Onboarding Status
 * **Status:** Implemented. This route is read-only. It does not write `profiles.is_profile_complete`. `POST /api/v1/onboarding/complete` is the route that sets the flag. Its contract is section 12.7.
@@ -796,8 +834,8 @@ The onboarding pipeline enforces sequential profile completion before granting a
     "nextStep": "BASIC_PROFILE"
   }
   ```
-* **`isVerified`:** The authenticated user's current verification state.
-* **`isProfileComplete`:** The stored `profiles.is_profile_complete` value. A missing profile is `false`. This route does not recalculate or store it.
+* **`isVerified`:** The authenticated user's current verification state (`req.user.isVerified`). A verified email or a verified phone is enough. This is not `users.status`.
+* **`isProfileComplete`:** The stored `profiles.is_profile_complete` value, loaded for the authenticated user. A missing profile is `false`. This route does not recalculate or store it. See the account-status distinction at the start of section 12.
 * **`completedSteps`:** Prerequisite steps that are currently satisfied, in this order: `VERIFICATION`, `BASIC_PROFILE`, `PHOTOS`, `INTERESTS`, `RELATIONSHIP_INTENTIONS`, `DATING_PREFERENCES`, `LOCATION`. `COMPLETE` is never included.
 * **`nextStep`:** The first incomplete step in that order. When steps 1–7 are satisfied and the stored flag is still `false`, `nextStep` is `COMPLETE`. When the stored flag is `true`, `nextStep` is `null`.
 * **Step rules:** `VERIFICATION` uses the authenticated verification state. `BASIC_PROFILE` is a profile row. `PHOTOS` is 1–5 active photos including one primary. `INTERESTS` is 3–10 of the user's own interests. `RELATIONSHIP_INTENTIONS` is at least one of the user's own relationship intentions, not discovery-preference intentions. `DATING_PREFERENCES` is a `dating_preferences` row, including a row with empty junction lists. `LOCATION` is a non-blank city and a non-null point. Coordinates, photos, interests, and preference records are not returned.
@@ -805,20 +843,9 @@ The onboarding pipeline enforces sequential profile completion before granting a
 ---
 
 ### 12.2 Save Basic Profile Info
-* **Method & Path:** `PATCH /api/v1/onboarding/profile`
-* **Auth:** Authenticated
-* **Request Body:**
-  ```json
-  {
-    "firstName": "Alex",
-    "genderId": "9a12c4b5-8821-4122-901b-5e4d29381001",
-    "bio": "Adventure enthusiast, coffee lover, and dog parent.",
-    "occupation": "Software Engineer",
-    "education": "B.Tech Computer Science"
-  }
-  ```
-* **Validation:** `firstName` (1–50 chars), `genderId` (valid UUID referencing active gender), `bio` (max 500 chars).
-* **Success Response (`200 OK`):** Returns updated profile summary.
+* **Status:** The mounted routes are `GET`, `POST`, and `PATCH /api/v1/profile`. See section 11.14. `PATCH /api/v1/onboarding/profile` is not mounted.
+* **Auth:** Authenticated `USER`. `requireVerified` is not applied. `ADMIN` is `403 FORBIDDEN`.
+* **Completion:** Creating or updating the basic profile does not set `profiles.is_profile_complete` and does not change `users.status`. The client cannot send `isProfileComplete`.
 
 ---
 
@@ -898,8 +925,10 @@ The onboarding pipeline enforces sequential profile completion before granting a
 ---
 
 ### 12.6 Set Onboarding Location
+* **Status:** Implemented. `PUT /api/v1/location` is not mounted. This route does not use `requireVerified`. It does not set `profiles.is_profile_complete` and does not change `users.status`.
 * **Method & Path:** `PUT /api/v1/onboarding/location`
-* **Auth:** Authenticated
+* **Auth:** `Authorization: Bearer <accessToken>` and role `USER`.
+* **Ownership:** `req.user.id` only. A profile row must already exist. No profile is `404 PROFILE_NOT_FOUND`, and no profile row is created. Any unexpected field is `400 VALIDATION_ERROR`.
 * **Request Body:**
   ```json
   {
@@ -908,8 +937,9 @@ The onboarding pipeline enforces sequential profile completion before granting a
     "longitude": 77.5946
   }
   ```
-* **Validation:** `city` (string, max 100), `latitude` (-90 to 90), `longitude` (-180 to 180).
-* **Success Response (`200 OK`):** Returns `{ "city": "Bengaluru", "updated": true }`. *Coordinates are never reflected.*
+* **Validation:** `city` is a string, trimmed, non-empty, and at most 100 characters. `latitude` is a finite number from -90 to 90. `longitude` is a finite number from -180 to 180. A later call replaces the stored city and point.
+* **Storage:** The profile row is updated to the trimmed city and a PostGIS `geography` Point, SRID 4326: `ST_SetSRID(ST_MakePoint(longitude, latitude), 4326)::geography`.
+* **Success Response (`200 OK`):** Message: `Location updated successfully`. `data` is only `{ "city": "Bengaluru", "updated": true }`. Latitude, longitude, and `location` are not returned. `GET /api/v1/profile` then returns the city and still omits coordinates.
 
 ---
 
@@ -918,7 +948,7 @@ The onboarding pipeline enforces sequential profile completion before granting a
 * **Method & Path:** `POST /api/v1/onboarding/complete`
 * **Prerequisites:** The route uses the same seven steps as section 12.1. All of them must be satisfied: `VERIFICATION` (`req.user.isVerified`; a verified email or a verified phone is enough), `BASIC_PROFILE` (a profile row), `PHOTOS` (1–5 active photos, including one primary; soft-deleted photos and upload reservations do not count), `INTERESTS` (3–10 of the caller's own `user_interests`), `RELATIONSHIP_INTENTIONS` (at least one of the caller's own `user_relationship_intentions`, not `user_dating_preference_intentions`), `DATING_PREFERENCES` (a `dating_preferences` row, including a row with empty junction lists), and `LOCATION` (a non-blank city and a non-null point).
 * **Incomplete (`400 PROFILE_INCOMPLETE`):** `details` lists every missing prerequisite step, in the section 12.1 order. Each item is `{ "field": "<STEP>", "message": "<STEP> is required" }`. Nothing is written. `profiles.is_profile_complete` stays unchanged.
-* **Success Response (`200 OK`):** Message: `Onboarding complete! Welcome to Love Bite.`. `data` is only `isProfileComplete` (`true`) and `status` (the caller's current `users.status`, which verification already sets). Coordinates and onboarding records are not returned.
+* **Success Response (`200 OK`):** Message: `Onboarding complete! Welcome to Love Bite.`. `data` is only `isProfileComplete` (`true`) and `status` (the caller's current `users.status`). `status` is account status. `isProfileComplete` is the stored profile flag. Coordinates, profile fields, photos, and onboarding steps are not returned.
   ```json
   {
     "success": true,
@@ -929,14 +959,14 @@ The onboarding pipeline enforces sequential profile completion before granting a
     "message": "Onboarding complete! Welcome to Love Bite."
   }
   ```
-* **Write:** The only change is `profiles.is_profile_complete` set to `true` for the caller. `users.status` and every other profile column stay as they are.
-* **Idempotent:** A caller whose stored flag is already `true` receives the same `200` success body. The route does not write again and does not return a conflict.
+* **Write:** The only change is `profiles.is_profile_complete` set to `true` for the caller. `users.status` and every other profile column stay as they are. The route does not issue a new access token or refresh cookie. A client that needs the JWT `isProfileComplete` claim to match the stored flag must log in again or call refresh. Later authenticated calls already load the stored flag.
+* **Idempotent:** A caller whose stored flag is already `true` receives the same `200` success body. The route does not write again and does not return `409`.
 
 ---
 
 ## 13. Profile APIs
 
-**Not implemented.** The routes in this section are the planned fuller profile contract, including photos, interests, and public profiles. They are not mounted. The live basic profile API is `GET`, `POST`, and `PATCH /api/v1/profile` in section 11.14.
+**Not implemented.** The routes in this section are the planned fuller profile contract, including a combined private profile and public profiles. They are not mounted. The live basic profile API is `GET`, `POST`, and `PATCH /api/v1/profile` in section 11.14. Live photo routes are section 14. Live interest and intention selection is section 11.15.
 
 ### 13.1 Get Current User Profile (Private View)
 * **Method & Path:** `GET /api/v1/profiles/me`
@@ -1074,7 +1104,7 @@ Photo objects returned after confirm, list, and patch are `{ "id", "url", "displ
   ```
 * **Rules:** `displayOrder` is 1–5. `isPrimary` is boolean. The client `storageKey` must exactly match the Redis reservation for that `photoId` and the authenticated user. MIME type, file size, filename, and the stored key come from the reservation. A missing or expired reservation, or another user's reservation, is `404 RESOURCE_NOT_FOUND`. A mismatched key is `400 INVALID_STORAGE_KEY`. The row is inserted only after those checks, inside a transaction. The reservation is deleted only after commit. A failed transaction leaves the reservation in place.
 * **Order collision:** If another active photo already uses `displayOrder`, that photo moves to the lowest unused order from 1 to 5. The new photo keeps the requested order.
-* **Primary:** `isPrimary: true` clears the current active primary, then inserts this photo as primary. `isPrimary: false` does not invent a primary.
+* **Primary:** The first confirmed photo becomes primary even when `isPrimary` is `false`. When other active photos already exist, `isPrimary: true` clears the current primary and inserts this photo as primary. `isPrimary: false` leaves the existing primary in place. Active photos keep exactly one primary.
 * **Limit:** The transaction rejects a sixth active photo with `409 PHOTO_LIMIT_REACHED`.
 * **Success Response (`201 Created`):** Message is `Photo confirmed successfully`. `data` is `{ "id", "url", "displayOrder", "isPrimary" }`.
 
@@ -1204,7 +1234,10 @@ Photo objects returned after confirm, list, and patch are `{ "id", "url", "displ
 
 ## 18. Location APIs
 
+**Not implemented.** `PUT /api/v1/location` is not mounted. The live location route is `PUT /api/v1/onboarding/location`. See section 12.6. That response does not include coordinates.
+
 ### 18.1 Update User Location
+* **Status:** Not implemented. Do not call this path.
 * **Method & Path:** `PUT /api/v1/location`
 * **Auth:** Authenticated
 * **Request Body:**
