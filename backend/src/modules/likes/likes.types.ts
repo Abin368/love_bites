@@ -31,6 +31,27 @@ export interface LikeProfileResponse {
   message: string;
 }
 
+export interface SuperLikeProfileInput {
+  callerId: string;
+  isVerified: boolean;
+  targetUserId: string;
+  idempotencyKey?: string;
+}
+
+export interface SuperLikeProfileData {
+  action: 'SUPER_LIKE';
+  targetUserId: string;
+  isMatch: boolean;
+  matchId: string | null;
+  remainingSuperLikeCredits: number;
+}
+
+export interface SuperLikeProfileResponse {
+  success: true;
+  data: SuperLikeProfileData;
+  message: string;
+}
+
 export interface PassTargetState {
   status: string;
   deleted: boolean;

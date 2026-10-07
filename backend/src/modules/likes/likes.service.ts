@@ -5,6 +5,7 @@ import { findViewerDiscoveryContext } from '../discovery/discovery.data-access';
 import { findUserById } from '../users/users.data-access';
 import { ConflictError, ForbiddenError, NotFoundError, RateLimitError, UnauthorizedError, ValidationError } from '../../utils/errors';
 import {
+  consumeSuperLikeCredit,
   findPassTarget,
   FREE_DAILY_LIKE_PASS_LIMIT,
   hasActivePremium,
@@ -14,16 +15,29 @@ import {
   insertActiveMatch,
   insertLike,
   insertPass,
+  insertSuperLike,
+  insertSuperLikeCreditTransaction,
   isActiveMatchConflict,
   isActivePairConflict,
   lockLikeUsers
 } from './likes.data-access';
-import type { LikeProfileInput, LikeProfileResponse, PassProfileInput, PassProfileResult, PassTargetState } from './likes.types';
+import type {
+  LikeProfileInput,
+  LikeProfileResponse,
+  PassProfileInput,
+  PassProfileResult,
+  PassTargetState,
+  SuperLikeProfileInput,
+  SuperLikeProfileResponse
+} from './likes.types';
 import { targetUserIdSchema } from './likes.validator';
 
 const DAILY_LIMIT_MESSAGE = 'You have reached your daily limit of 10 likes/passes.';
 const LIKE_MESSAGE = 'Profile liked.';
+const SUPER_LIKE_MESSAGE = 'Profile super liked.';
 const MATCH_MESSAGE = "It's a Match!";
+const PREMIUM_REQUIRED_MESSAGE = 'Feature requires an active Premium subscription.';
+const INSUFFICIENT_SUPER_LIKE_CREDITS_MESSAGE = 'You do not have any Super Like credits.';
 const IDEMPOTENCY_TTL_SECONDS = 120;
 const IDEMPOTENCY_PENDING = 'pending';
 
@@ -93,6 +107,10 @@ function idempotencyRedisKey(callerId: string, idempotencyKey: string): string {
   return `idempotency:${callerId}:${idempotencyKey}`;
 }
 
+function superLikeIdempotencyRedisKey(callerId: string, idempotencyKey: string): string {
+  return `idempotency:${callerId}:super-like:${idempotencyKey}`;
+}
+
 function parseIdempotencyKey(value: string | undefined): string | null {
   if (value === undefined) {
     return null;
@@ -128,6 +146,36 @@ async function readIdempotentLike(callerId: string, idempotencyKey: string): Pro
   }
 
   return readStoredLike(raw) ?? 'conflict';
+}
+
+function readStoredSuperLike(raw: string): SuperLikeProfileResponse | null {
+  try {
+    const parsed = JSON.parse(raw) as SuperLikeProfileResponse;
+    if (
+      parsed?.success === true &&
+      parsed.data?.action === 'SUPER_LIKE' &&
+      typeof parsed.data.remainingSuperLikeCredits === 'number' &&
+      typeof parsed.message === 'string'
+    ) {
+      return parsed;
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
+}
+
+async function readIdempotentSuperLike(
+  callerId: string,
+  idempotencyKey: string
+): Promise<SuperLikeProfileResponse | 'conflict' | null> {
+  const raw = await redis.get(superLikeIdempotencyRedisKey(callerId, idempotencyKey));
+  if (raw === null) {
+    return null;
+  }
+
+  return readStoredSuperLike(raw) ?? 'conflict';
 }
 
 function rethrowLikeConstraint(error: unknown): never {
@@ -251,6 +299,129 @@ export async function likeProfile(input: LikeProfileInput): Promise<LikeProfileR
   if (idempotencyKey) {
     await redis.set(
       idempotencyRedisKey(input.callerId, idempotencyKey),
+      JSON.stringify(response),
+      'EX',
+      IDEMPOTENCY_TTL_SECONDS
+    );
+  }
+
+  return response;
+}
+
+async function runSuperLikeTransaction(callerId: string, targetUserId: string): Promise<SuperLikeProfileResponse> {
+  try {
+    return await sequelize.transaction(async (transaction) => {
+      await lockLikeUsers(callerId, targetUserId, transaction);
+      const target = await findPassTarget(callerId, targetUserId, transaction);
+      assertTarget(target, 'This profile cannot be super liked.');
+
+      const premium = await hasActivePremium(callerId, transaction);
+      if (!premium) {
+        throw new ForbiddenError(PREMIUM_REQUIRED_MESSAGE, [], 'PREMIUM_REQUIRED');
+      }
+
+      const remainingSuperLikeCredits = await consumeSuperLikeCredit(callerId, transaction);
+      if (remainingSuperLikeCredits === null) {
+        throw new ConflictError(INSUFFICIENT_SUPER_LIKE_CREDITS_MESSAGE, [], 'INSUFFICIENT_SUPER_LIKE_CREDITS');
+      }
+
+      let likeId: string;
+      try {
+        likeId = await insertSuperLike(callerId, targetUserId, transaction);
+      } catch (error) {
+        rethrowLikeConstraint(error);
+      }
+
+      const reciprocal = await hasReciprocalLike(callerId, targetUserId, transaction);
+      let matchId: string | null = null;
+      if (reciprocal) {
+        try {
+          matchId = await insertActiveMatch(callerId, targetUserId, transaction);
+          await insertActiveConversation(matchId, transaction);
+        } catch (error) {
+          rethrowLikeConstraint(error);
+        }
+      }
+
+      await insertSuperLikeCreditTransaction(callerId, likeId, transaction);
+
+      return {
+        success: true,
+        data: {
+          action: 'SUPER_LIKE',
+          targetUserId,
+          isMatch: matchId !== null,
+          matchId,
+          remainingSuperLikeCredits
+        },
+        message: matchId !== null ? MATCH_MESSAGE : SUPER_LIKE_MESSAGE
+      };
+    });
+  } catch (error) {
+    rethrowLikeConstraint(error);
+  }
+}
+
+export async function superLikeProfile(input: SuperLikeProfileInput): Promise<SuperLikeProfileResponse> {
+  const idempotencyKey = parseIdempotencyKey(input.idempotencyKey);
+  if (idempotencyKey) {
+    const existing = await readIdempotentSuperLike(input.callerId, idempotencyKey);
+    if (existing === 'conflict') {
+      throw idempotencyConflict();
+    }
+    if (existing) {
+      return existing;
+    }
+  }
+
+  const targetUserId = parseTargetUserId(input.targetUserId);
+  if (targetUserId === input.callerId.toLowerCase()) {
+    throw new ValidationError('You cannot super like your own profile.', [], 'SELF_INTERACTION');
+  }
+
+  if (!input.isVerified) {
+    await rejectUnverified(input.callerId);
+  }
+
+  const context = await findViewerDiscoveryContext(input.callerId);
+  if (!context || !context.isProfileComplete || !context.hasLocation || !context.hasDatingPreferences) {
+    throw incomplete();
+  }
+
+  if (idempotencyKey) {
+    const locked = await redis.set(
+      superLikeIdempotencyRedisKey(input.callerId, idempotencyKey),
+      IDEMPOTENCY_PENDING,
+      'EX',
+      IDEMPOTENCY_TTL_SECONDS,
+      'NX'
+    );
+    if (locked !== 'OK') {
+      const existing = await readIdempotentSuperLike(input.callerId, idempotencyKey);
+      if (existing && existing !== 'conflict') {
+        return existing;
+      }
+      throw idempotencyConflict();
+    }
+  }
+
+  let response: SuperLikeProfileResponse;
+  try {
+    response = await runSuperLikeTransaction(input.callerId, targetUserId);
+  } catch (error) {
+    if (idempotencyKey) {
+      try {
+        await redis.del(superLikeIdempotencyRedisKey(input.callerId, idempotencyKey));
+      } catch {
+        // The original transaction error is the client response.
+      }
+    }
+    throw error;
+  }
+
+  if (idempotencyKey) {
+    await redis.set(
+      superLikeIdempotencyRedisKey(input.callerId, idempotencyKey),
       JSON.stringify(response),
       'EX',
       IDEMPOTENCY_TTL_SECONDS

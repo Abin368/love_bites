@@ -2,6 +2,7 @@ import { Op, QueryTypes, Transaction, UniqueConstraintError } from 'sequelize';
 import { sequelize } from '../../config/database';
 import '../../database/associations';
 import { Conversation } from '../../database/models/conversation.model';
+import { CreditTransaction } from '../../database/models/credit-transaction.model';
 import { Like } from '../../database/models/like.model';
 import { Match } from '../../database/models/match.model';
 import { Plan } from '../../database/models/plan.model';
@@ -26,6 +27,10 @@ interface PassTargetRow {
 
 interface UsageCountRow {
   usageCount: number | string;
+}
+
+interface CreditBalanceRow {
+  balance: number | string;
 }
 
 interface CanonicalPairRow {
@@ -56,6 +61,17 @@ DO UPDATE SET
   updated_at = CURRENT_TIMESTAMP
 WHERE usage_records.usage_count < :limit
 RETURNING usage_count AS "usageCount"
+`;
+
+const CONSUME_SUPER_LIKE_CREDIT_SQL = `
+UPDATE user_credit_balances
+SET
+  balance = balance - 1,
+  updated_at = CURRENT_TIMESTAMP
+WHERE user_id = CAST(:userId AS uuid)
+  AND credit_type = 'SUPER_LIKE'
+  AND balance >= 1
+RETURNING balance
 `;
 
 const PASS_TARGET_SQL = `
@@ -250,6 +266,59 @@ export async function hasReciprocalLike(
   );
 
   return rows.length > 0;
+}
+
+export async function consumeSuperLikeCredit(userId: string, transaction: Transaction): Promise<number | null> {
+  const rows = await sequelize.query<CreditBalanceRow>(CONSUME_SUPER_LIKE_CREDIT_SQL, {
+    replacements: { userId },
+    type: QueryTypes.SELECT,
+    transaction
+  });
+  const balance = rows[0]?.balance;
+  if (balance === undefined) {
+    return null;
+  }
+
+  return Number(balance);
+}
+
+export async function insertSuperLike(
+  fromUserId: string,
+  toUserId: string,
+  transaction: Transaction
+): Promise<string> {
+  const now = new Date();
+  const like = await Like.create(
+    {
+      fromUserId,
+      toUserId,
+      action: 'SUPER_LIKE',
+      isUndone: false,
+      createdAt: now,
+      updatedAt: now
+    },
+    { transaction }
+  );
+
+  return like.id;
+}
+
+export async function insertSuperLikeCreditTransaction(
+  userId: string,
+  likeId: string,
+  transaction: Transaction
+): Promise<void> {
+  await CreditTransaction.create(
+    {
+      userId,
+      creditType: 'SUPER_LIKE',
+      delta: -1,
+      reason: 'CONSUMPTION',
+      referenceId: likeId,
+      createdAt: new Date()
+    },
+    { transaction }
+  );
 }
 
 export async function insertLike(fromUserId: string, toUserId: string, transaction: Transaction): Promise<void> {

@@ -9,5 +9,6 @@ const router = Router();
 router.get('/', authenticate, requireRole('USER'), discoveryController.getNextCandidate);
 router.post('/:userId/like', authenticate, requireRole('USER'), likesController.likeProfile);
 router.post('/:userId/pass', authenticate, requireRole('USER'), likesController.passProfile);
+router.post('/:userId/super-like', authenticate, requireRole('USER'), likesController.superLikeProfile);
 
 export const discoveryRoutes = router;
