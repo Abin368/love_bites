@@ -22,8 +22,10 @@ import {
   lockLikeUsers,
   closeActiveConversation,
   findLatestUndoableAction,
+  findMatchById,
   markUndoableAction,
-  undoActiveMatch
+  undoActiveMatch,
+  unmatchActiveMatch
 } from './likes.data-access';
 import type {
   LikeProfileInput,
@@ -34,9 +36,11 @@ import type {
   SuperLikeProfileInput,
   SuperLikeProfileResponse,
   UndoProfileInput,
-  UndoProfileResult
+  UndoProfileResult,
+  UnmatchInput,
+  UnmatchResult
 } from './likes.types';
-import { targetUserIdSchema } from './likes.validator';
+import { matchIdSchema, targetUserIdSchema } from './likes.validator';
 
 const DAILY_LIMIT_MESSAGE = 'You have reached your daily limit of 10 likes/passes.';
 const LIKE_MESSAGE = 'Profile liked.';
@@ -46,8 +50,29 @@ const PREMIUM_REQUIRED_MESSAGE = 'Feature requires an active Premium subscriptio
 const NO_UNDOABLE_ACTION_MESSAGE = 'There is no action to undo.';
 const UNDO_WINDOW_EXPIRED_MESSAGE = 'The undo window for your last action has expired.';
 const INSUFFICIENT_SUPER_LIKE_CREDITS_MESSAGE = 'You do not have any Super Like credits.';
+const MATCH_NOT_FOUND_MESSAGE = 'Active match record does not exist.';
 const IDEMPOTENCY_TTL_SECONDS = 120;
 const IDEMPOTENCY_PENDING = 'pending';
+
+function parseMatchId(matchId: string): string {
+  const parsed = matchIdSchema.safeParse(matchId);
+  if (!parsed.success) {
+    throw new ValidationError('Validation failed', [
+      { field: 'matchId', message: 'Match id must be a valid UUID.' }
+    ]);
+  }
+
+  return parsed.data.toLowerCase();
+}
+
+function participates(userOneId: string, userTwoId: string, callerId: string): boolean {
+  const caller = callerId.toLowerCase();
+  return userOneId.toLowerCase() === caller || userTwoId.toLowerCase() === caller;
+}
+
+function matchNotFound(): NotFoundError {
+  return new NotFoundError(MATCH_NOT_FOUND_MESSAGE, [], 'MATCH_NOT_FOUND');
+}
 
 function parseTargetUserId(userId: string): string {
   const parsed = targetUserIdSchema.safeParse(userId);
@@ -552,5 +577,40 @@ export async function undoLastAction(input: UndoProfileInput): Promise<UndoProfi
       targetUserId: current.toUserId,
       revertedMatch
     };
+  });
+}
+
+export async function 
+unmatch(input: UnmatchInput): Promise<UnmatchResult> {
+  const matchId = parseMatchId(input.matchId);
+
+  if (!input.isVerified) {
+    await rejectUnverified(input.callerId);
+  }
+
+  const context = await findViewerDiscoveryContext(input.callerId);
+  if (!context || !context.isProfileComplete || !context.hasLocation || !context.hasDatingPreferences) {
+    throw incomplete();
+  }
+
+  return sequelize.transaction(async (transaction) => {
+    const loaded = await findMatchById(matchId, transaction);
+    if (!loaded || !participates(loaded.userOneId, loaded.userTwoId, input.callerId) || loaded.status !== 'ACTIVE') {
+      throw matchNotFound();
+    }
+
+    await lockLikeUsers(loaded.userOneId, loaded.userTwoId, transaction);
+    const locked = await findMatchById(matchId, transaction, true);
+    if (!locked || !participates(locked.userOneId, locked.userTwoId, input.callerId) || locked.status !== 'ACTIVE') {
+      throw matchNotFound();
+    }
+
+    const updatedId = await unmatchActiveMatch(matchId, input.callerId, transaction);
+    if (!updatedId) {
+      throw matchNotFound();
+    }
+
+    await closeActiveConversation(matchId, transaction);
+    return { unmatched: true };
   });
 }

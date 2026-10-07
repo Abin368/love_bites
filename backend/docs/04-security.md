@@ -71,7 +71,7 @@ Entitlement & Usage (Entitlements)
 * **Supported Identifiers:** Email Address OR E.164 Phone Number.
 * **Age Invariant:** Date of Birth must be verified server-side to guarantee $\text{Age} \ge 18$ at the exact time of registration:
   $$\text{Current Date} - \text{Date of Birth} \ge 18\text{ years}$$
-* **Verification Mandate:** `auth.middleware.ts` allows an unverified user to authenticate. Discovery, PASS, LIKE, SUPER LIKE, and UNDO then reject that caller in the service with `403 EMAIL_NOT_VERIFIED` or `403 PHONE_NOT_VERIFIED`. Profile, onboarding, and photo routes do not apply that check. Chat routes are not mounted. A verified email or a verified phone is enough. Verification is what sets `users.status` to `ACTIVE`. Onboarding completion does not change `users.status`.
+* **Verification Mandate:** `auth.middleware.ts` allows an unverified user to authenticate. Discovery, PASS, LIKE, SUPER LIKE, UNDO, and UNMATCH then reject that caller in the service with `403 EMAIL_NOT_VERIFIED` or `403 PHONE_NOT_VERIFIED`. Profile, onboarding, and photo routes do not apply that check. Chat routes are not mounted. A verified email or a verified phone is enough. Verification is what sets `users.status` to `ACTIVE`. Onboarding completion does not change `users.status`.
 
 ### 4.2 OTP & Email Verification Security
 1. **Entropy:** OTP codes are 6-digit numerical strings generated using cryptographically secure pseudorandom number generators (`crypto.randomInt(100000, 999999)`).
@@ -249,6 +249,13 @@ Rate limiting uses **Redis sliding-window counters** to isolate burst abuse whil
 * **Mutual preference enforcement:** Both distance radii (`ST_DWithin`, inclusive), both age ranges (completed years, inclusive), both gender lists, and both relationship-intention overlaps are required. An empty preferred-gender or preferred-intention list matches nobody.
 * **Other exclusions:** The candidate must be a different `ACTIVE` user, not soft-deleted, with a completed profile, a non-null location, and an active primary photo. An `ACTIVE` match and a block in either direction are excluded. `UNMATCHED` and `UNDONE` matches are not. Reports are not part of this query.
 * **Actions:** PASS, LIKE, SUPER LIKE, and UNDO require the same verified, complete caller. They reject a block, an active action, and an active match. LIKE and PASS enforce the free quota in PostgreSQL. SUPER LIKE and UNDO require a live Premium subscription (`PREMIUM_MONTHLY` or `PREMIUM_YEARLY`, status `ACTIVE`, `PAST_DUE`, or `GRACE_PERIOD`, with the period or grace end still in the future). The client cannot send an `isPremium` flag.
+
+### 12.3 Unmatch
+`DELETE /api/v1/matches/:matchId` is implemented. The route uses `authenticate` and `requireRole('USER')`. `requireVerified` is not on the route. The service requires a verified email or phone and a complete profile with location and dating preferences. Premium is not checked.
+
+The caller must be `user_one_id` or `user_two_id` on an `ACTIVE` match. A missing id, a match between two other users, `UNDONE`, already `UNMATCHED`, and a request that loses the race return `404 MATCH_NOT_FOUND` with message `Active match record does not exist.` The foreign-match response is 404 so the id's existence is not confirmed.
+
+The write is one PostgreSQL transaction. Both users are locked in canonical id order, then the match row is re-read with `FOR UPDATE`, and the status change is conditional on `ACTIVE`. The success body is only `{ "unmatched": true }`. It does not return the other user, timestamps, or conversation contents. There is no `Idempotency-Key` handling and no Redis call. Likes, quota, and credits are not changed.
 
 ### 12.2 Server-Side Liker Identity Protection ("Who Liked You")
 * **The Vulnerability:** Returning full admirer profiles with a frontend CSS/UI blur filter allows attackers to inspect HTTP responses and bypass monetization.
@@ -506,6 +513,7 @@ Before creating a Pull Request or deploying code, verify that all applicable ite
 * [ ] Authenticated endpoints enforce `auth.middleware.ts`.
 * [ ] Admin endpoints enforce `requireRole('ADMIN')`.
 * [ ] Resource ownership verified for all mutating operations (`resource.user_id === req.user.id`).
+* [x] UNMATCH (`DELETE /api/v1/matches/:matchId`) allows either participant of an `ACTIVE` match and returns `404 MATCH_NOT_FOUND` for every other match id. It does not use Redis.
 * [ ] Chat queries verify active match participation.
 
 ### Privacy & Data Protection

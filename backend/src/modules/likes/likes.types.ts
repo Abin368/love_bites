@@ -52,6 +52,16 @@ export interface SuperLikeProfileResponse {
   message: string;
 }
 
+export interface UnmatchInput {
+  callerId: string;
+  isVerified: boolean;
+  matchId: string;
+}
+
+export interface UnmatchResult {
+  unmatched: true;
+}
+
 export interface UndoProfileInput {
   callerId: string;
   isVerified: boolean;

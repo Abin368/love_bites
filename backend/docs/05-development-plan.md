@@ -308,7 +308,7 @@ Implement secure, dual-identifier registration (Email OR Phone), cryptographic p
 
 ## 7. Phase 3 — Profile and Onboarding
 
-**Phase 3 status (2026-10-05): complete.** Catalogs, basic profile HTTP, interests, relationship intentions, profile photos, dating preferences, location, onboarding status, and onboarding completion are implemented. **Phase 4 — Discovery is complete.** **Phase 5 slices for PASS, LIKE and match creation, SUPER LIKE, and UNDO are complete.** UNMATCH is not implemented. Production interests are not seeded. `PATCH /api/v1/onboarding/profile`, `PUT /api/v1/location`, `PUT /api/v1/me/interests`, `PUT /api/v1/me/relationship-intentions`, `GET /api/v1/dating-preferences`, and `PUT /api/v1/dating-preferences` are not mounted.
+**Phase 3 status (2026-10-05): complete.** Catalogs, basic profile HTTP, interests, relationship intentions, profile photos, dating preferences, location, onboarding status, and onboarding completion are implemented. **Phase 4 — Discovery is complete.** **Phase 5 slices for PASS, LIKE and match creation, SUPER LIKE, UNDO, and UNMATCH are complete.** `GET /api/v1/matches` and rematch are not implemented. Production interests are not seeded. `PATCH /api/v1/onboarding/profile`, `PUT /api/v1/location`, `PUT /api/v1/me/interests`, `PUT /api/v1/me/relationship-intentions`, `GET /api/v1/dating-preferences`, and `PUT /api/v1/dating-preferences` are not mounted.
 
 Implemented in Step 1:
 
@@ -400,7 +400,7 @@ Implement the linear onboarding sequence, demographic metadata management, S3 pr
 
 ## 8. Phase 4 — Discovery and Location
 
-**Phase 4 status (2026-10-05): complete.** The live read is `GET /api/v1/discovery`. The response contract is section 19 of `03-api-specification.md`. PASS, LIKE, SUPER LIKE, and UNDO are Phase 5 and are implemented. See section 9.
+**Phase 4 status (2026-10-05): complete.** The live read is `GET /api/v1/discovery`. The response contract is section 19 of `03-api-specification.md`. PASS, LIKE, SUPER LIKE, UNDO, and UNMATCH are Phase 5 and are implemented. See section 9.
 
 ### 8.1 Objectives
 Deliver one mutually eligible candidate card with PostGIS `ST_DWithin`, strict exclusion, mutual preference filtering, and boost ranking.
@@ -417,7 +417,7 @@ Deliver one mutually eligible candidate card with PostGIS `ST_DWithin`, strict e
 
 ## 9. Phase 5 — Likes, Passes and Matches
 
-**Partly complete (2026-10-07).** Slice 1 PASS, Slice 2 LIKE and match creation, Slice 3 SUPER LIKE, and Slice 4 UNDO are implemented. Slice 5 UNMATCH is not implemented. `GET /api/v1/matches`, notifications, and Socket.IO are not implemented. The live contract is sections 20 and 21 of `03-api-specification.md`.
+**Partly complete (2026-10-07).** Slice 1 PASS, Slice 2 LIKE and match creation, Slice 3 SUPER LIKE, Slice 4 UNDO, and Slice 5 UNMATCH are implemented. `GET /api/v1/matches`, rematch, notifications, and Socket.IO are not implemented. The live contract is sections 20, 21, and 22.2 of `03-api-specification.md`.
 
 ### 9.1 Objectives
 Implement swipe action mechanics (`LIKE`, `PASS`, `SUPER_LIKE`), daily action quota tracking for Free users, race-condition-free mutual matching, Premium Undo, and clean Unmatching/Re-matching lifecycles.
@@ -451,10 +451,17 @@ Implement swipe action mechanics (`LIKE`, `PASS`, `SUPER_LIKE`), daily action qu
 * A LIKE that owns the current `ACTIVE` match sets that match to `UNDONE` (`unmatched_at` and `unmatched_by_user_id` stay null) and closes the `ACTIVE` conversation. A PASS does not change matches. The other user's reciprocal action stays active.
 * Does not change `usage_records` and does not use Redis.
 
-#### 5. Unmatch Action (`DELETE /api/v1/matches/:matchId`) — **Not implemented. Next slice.**
-* Planned: transition `matches.status = 'UNMATCHED'`, set `unmatched_at` and `unmatched_by_user_id`, and close the conversation.
-* `uq_matches_single_active_pair` already allows a later `ACTIVE` match after `UNDONE` or `UNMATCHED`.
-* Do not treat UNDO as unmatch. Undo leaves `unmatched_at` null.
+#### 5. Unmatch Action (`DELETE /api/v1/matches/:matchId`) — **Implemented**
+* Authenticated `USER`. `requireVerified` is not on the route. The service checks verification and a complete profile with location and dating preferences.
+* Either participant of an `ACTIVE` match can unmatch. A missing id, a foreign match, `UNDONE`, already `UNMATCHED`, and a lost race return `404 MATCH_NOT_FOUND`. A foreign match is not `403`.
+* One transaction loads the match, locks both users with `lockLikeUsers` in canonical id order, re-reads the match `FOR UPDATE`, and updates only while `status = 'ACTIVE'` and the caller is still a participant.
+* Sets `status = 'UNMATCHED'`, `unmatched_at = CURRENT_TIMESTAMP`, `unmatched_by_user_id` to the caller, and `updated_at = CURRENT_TIMESTAMP`. `matched_at`, `created_at`, and the canonical user ids stay. The row is kept.
+* Closes the `ACTIVE` conversation with `closeActiveConversation`. `closed_at` is set. The conversation, `last_message_at`, and messages stay. A missing conversation does not fail the unmatch. An already closed conversation is unchanged.
+* Does not change `likes`, `is_undone`, `usage_records`, or Super Like credits. Does not use Redis or `Idempotency-Key`. A second `DELETE` is `404 MATCH_NOT_FOUND`.
+* Does not change discovery filtering. An active outgoing `LIKE` or `SUPER_LIKE` can still hide the other user.
+* `uq_matches_single_active_pair` already allows a later `ACTIVE` match after `UNDONE` or `UNMATCHED`. Rematch is not implemented. Do not revive the old row.
+* Do not treat UNDO as unmatch. Undo leaves `unmatched_at` null and sets `is_undone`.
+* No migration was added. `GET /api/v1/matches` remains unmounted. Notifications and Socket.IO `match:unmatch` are not emitted.
 
 ---
 
@@ -778,7 +785,7 @@ To maintain strict adherence to dependency constraints, development should follo
 | **Location** | Profile Module, PostGIS | `profiles` (PostGIS `location`) | `/location`, `/onboarding/location` | Integration (PostGIS Point Storage) |
 | **Discovery** | Profiles, Preferences, Location, Blocks, Passes | `profiles`, `dating_preferences`, `likes`, `matches`, `blocks`, `boost_sessions` | `GET /discovery` (implemented) | Integration (PostGIS `ST_DWithin`, mutual filters, exclusions, boost ranking) |
 | **Likes, Passes, Super Like** | Discovery, subscriptions for Premium | `likes`, `usage_records`, `matches`, `conversations`, `user_credit_balances`, `credit_transactions` | `POST /discovery/:userId/pass`, `POST /discovery/:userId/like`, `POST /discovery/:userId/super-like` | PostgreSQL integration: pass 11, like 20, super like 22 |
-| **Matches list and unmatch** | Likes Module | `matches`, `conversations` | `GET /matches`, `DELETE /matches/:matchId` | Not implemented. Match rows are created by LIKE and SUPER LIKE. |
+| **Unmatch** | Likes Module | `matches`, `conversations` | `DELETE /matches/:matchId` | Implemented. PostgreSQL integration: 13 passed. No Redis, quota, or credit change. `GET /matches` is not implemented. |
 | **Premium Undo** | Likes, Matches, Premium subscription | `likes`, `matches`, `conversations`, `subscriptions`, `plans` | `POST /discovery/undo` | PostgreSQL integration: 14 passed. No Redis idempotency. |
 | **Chat & Messaging**| Matches Module, S3, Socket.IO | `conversations`, `messages`, `usage_records` | `/conversations/*`, `/messages/*`, Socket.IO events | Integration + E2E (6-Step Auth, Quotas) |
 | **Blocks & Safety** | Users, Matches, Chat | `blocks` | `/blocks`, `/blocks/:userId` | Integration (Bidirectional Isolation) |

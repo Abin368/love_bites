@@ -466,6 +466,65 @@ export async function undoActiveMatch(
   return rows[0]?.id ?? null;
 }
 
+export interface MatchLookup {
+  id: string;
+  userOneId: string;
+  userTwoId: string;
+  status: string;
+}
+
+const FIND_MATCH_SQL = `
+SELECT
+  id,
+  user_one_id AS "userOneId",
+  user_two_id AS "userTwoId",
+  status
+FROM matches
+WHERE id = CAST(:matchId AS uuid)
+`;
+
+const UNMATCH_ACTIVE_MATCH_SQL = `
+UPDATE matches
+SET
+  status = 'UNMATCHED',
+  unmatched_at = CURRENT_TIMESTAMP,
+  unmatched_by_user_id = CAST(:callerId AS uuid),
+  updated_at = CURRENT_TIMESTAMP
+WHERE id = CAST(:matchId AS uuid)
+  AND status = 'ACTIVE'
+  AND (
+    user_one_id = CAST(:callerId AS uuid)
+    OR user_two_id = CAST(:callerId AS uuid)
+  )
+RETURNING id
+`;
+
+export async function findMatchById(
+  matchId: string,
+  transaction: Transaction,
+  lock = false
+): Promise<MatchLookup | null> {
+  const rows = await sequelize.query<MatchLookup>(lock ? `${FIND_MATCH_SQL} FOR UPDATE` : FIND_MATCH_SQL, {
+    replacements: { matchId },
+    type: QueryTypes.SELECT,
+    transaction
+  });
+  return rows[0] ?? null;
+}
+
+export async function unmatchActiveMatch(
+  matchId: string,
+  callerId: string,
+  transaction: Transaction
+): Promise<string | null> {
+  const rows = await sequelize.query<{ id: string }>(UNMATCH_ACTIVE_MATCH_SQL, {
+    replacements: { matchId, callerId },
+    type: QueryTypes.SELECT,
+    transaction
+  });
+  return rows[0]?.id ?? null;
+}
+
 export async function closeActiveConversation(matchId: string, transaction: Transaction): Promise<void> {
   await Conversation.update(
     { status: 'CLOSED', closedAt: new Date() },

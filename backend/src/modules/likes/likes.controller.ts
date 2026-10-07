@@ -25,6 +25,15 @@ export const likeProfile = asyncHandler(async (req, res) => {
   res.status(200).json(body);
 });
 
+export const unmatch = asyncHandler(async (req, res) => {
+  const data = await likesService.unmatch({
+    callerId: req.user!.id,
+    isVerified: req.user!.isVerified,
+    matchId: req.params.matchId
+  });
+  send(res, data, 'Unmatched successfully.');
+});
+
 export const undoLastAction = asyncHandler(async (req, res) => {
   const data = await likesService.undoLastAction({
     callerId: req.user!.id,

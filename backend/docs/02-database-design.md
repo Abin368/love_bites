@@ -634,10 +634,10 @@ Records established mutual matches between pairs of users. To eliminate duplicat
 | `id` | `UUID` | `NO` | `gen_random_uuid()` | Primary key. |
 | `user_one_id` | `UUID` | `NO` | — | Canonical lower user UUID (`user_one_id < user_two_id`). |
 | `user_two_id` | `UUID` | `NO` | — | Canonical higher user UUID. |
-| `status` | `VARCHAR(20)` | `NO` | `'ACTIVE'` | `ACTIVE`: the current mutual match. `UNDONE`: a LIKE that created this match was undone; `unmatched_at` and `unmatched_by_user_id` stay null. `UNMATCHED`: reserved for a later unmatch action that records who ended the match. The UNMATCH API is not implemented. |
+| `status` | `VARCHAR(20)` | `NO` | `'ACTIVE'` | `ACTIVE`: the current mutual match. `UNDONE`: a LIKE that created this match was undone; `unmatched_at` and `unmatched_by_user_id` stay null. `UNMATCHED`: `DELETE /api/v1/matches/:matchId` set this status, with `unmatched_at` and `unmatched_by_user_id`. The row is kept. Likes are not deleted. |
 | `matched_at` | `TIMESTAMPTZ` | `NO` | `CURRENT_TIMESTAMP` | Timestamp when mutual match occurred. |
-| `unmatched_at` | `TIMESTAMPTZ` | `YES` | `NULL` | Timestamp when unmatch occurred. |
-| `unmatched_by_user_id`| `UUID` | `YES` | `NULL` | User ID who initiated the unmatch. |
+| `unmatched_at` | `TIMESTAMPTZ` | `YES` | `NULL` | Timestamp when unmatch occurred. UNMATCH sets `CURRENT_TIMESTAMP`. UNDO leaves this null. |
+| `unmatched_by_user_id`| `UUID` | `YES` | `NULL` | User ID who initiated the unmatch. UNMATCH sets the caller. UNDO leaves this null. |
 | `created_at` | `TIMESTAMPTZ` | `NO` | `CURRENT_TIMESTAMP` | Creation timestamp. |
 | `updated_at` | `TIMESTAMPTZ` | `NO` | `CURRENT_TIMESTAMP` | Modification timestamp. |
 
@@ -655,7 +655,7 @@ Records established mutual matches between pairs of users. To eliminate duplicat
 
 #### Indexes
 * `CREATE UNIQUE INDEX uq_matches_single_active_pair ON matches (user_one_id, user_two_id) WHERE status = 'ACTIVE';`  
-  *Crucial Index:* Enforces that at most **one ACTIVE match** exists between a pair, while allowing multiple historical rows (`UNMATCHED`) to support legitimate future re-matching without constraint violations.
+  *Crucial Index:* Enforces that at most **one ACTIVE match** exists between a pair, while allowing multiple historical rows (`UNMATCHED`, `UNDONE`) so a later new `ACTIVE` row can be inserted. UNMATCH does not revive an old row, and rematch is not implemented. The match row, its conversation, and that conversation's messages are not deleted. `updated_at` is set when the status becomes `UNMATCHED`. No new migration was added for UNMATCH.
 * `CREATE INDEX idx_matches_user_one ON matches (user_one_id, status);`
 * `CREATE INDEX idx_matches_user_two ON matches (user_two_id, status);`
 
@@ -666,7 +666,7 @@ Records established mutual matches between pairs of users. To eliminate duplicat
 ### 11.1 `conversations`
 
 #### Purpose
-Represents the chat channel established for a specific match. `uq_conversations_match` enforces one conversation per match. LIKE and SUPER LIKE create the row with `status = 'ACTIVE'` when they create the match. When Undo moves that match to `UNDONE`, the `ACTIVE` conversation becomes `CLOSED` and `closed_at` is set. There is no chat HTTP API. UNMATCH is not implemented.
+Represents the chat channel established for a specific match. `uq_conversations_match` enforces one conversation per match. LIKE and SUPER LIKE create the row with `status = 'ACTIVE'` when they create the match. When Undo moves that match to `UNDONE`, the `ACTIVE` conversation becomes `CLOSED` and `closed_at` is set. When UNMATCH moves that match to `UNMATCHED`, the same close happens. The conversation row and its messages stay. `last_message_at` is not changed. There is no chat HTTP API.
 
 #### Columns
 | Column | Type | Nullable | Default | Description |

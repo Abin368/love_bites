@@ -501,9 +501,11 @@ The live LIKE and SUPER LIKE transaction locks both users in canonical id order,
 
 * **`ACTIVE`:** the current mutual match. LIKE and SUPER LIKE insert this row, with `user_one_id < user_two_id`, plus one `ACTIVE` conversation.
 * **`UNDONE`:** Undo of the LIKE that created the current active match sets this status. `unmatched_at` and `unmatched_by_user_id` stay null. The `ACTIVE` conversation becomes `CLOSED` and `closed_at` is set.
-* **`UNMATCHED`:** reserved for a later unmatch that records who ended the match. `DELETE /api/v1/matches/:matchId` is not implemented.
+* **`UNMATCHED`:** `DELETE /api/v1/matches/:matchId` sets this status for an `ACTIVE` match. `unmatched_at` is `CURRENT_TIMESTAMP` and `unmatched_by_user_id` is the caller. `updated_at` changes. The `ACTIVE` conversation becomes `CLOSED` and `closed_at` is set. Likes stay unchanged.
 
-Historical `UNDONE` and `UNMATCHED` rows stay in place. `uq_matches_single_active_pair` allows a later `ACTIVE` row for the same pair. There is no match list API and no chat API. The match diagram's notification and Socket.IO steps are not implemented.
+The live route is `matches.routes` → `likes.controller.unmatch` → `likes.service.unmatch` → `likes.data-access` → one PostgreSQL transaction. The service reuses `lockLikeUsers` and `closeActiveConversation`. There is no repository layer.
+
+Historical `UNDONE` and `UNMATCHED` rows stay in place. `uq_matches_single_active_pair` allows a later `ACTIVE` row for the same pair. Rematch is not implemented and does not revive the old row. There is no match list API and no chat API. The match diagram's notification and Socket.IO steps are not implemented. `match:unmatch` is future scope.
 
 ---
 
@@ -681,7 +683,7 @@ Redis is ephemeral. It is not the store for users, matches, messages, payments, 
 * Optional SUPER LIKE idempotency (`idempotency:<callerId>:super-like:<uuid>`, 120 seconds).
 
 ### Not implemented
-Sessions, discovery caching, daily LIKE/PASS counters (those are `usage_records`), Socket.IO presence or adapters, chat queues, notifications, and Undo idempotency. Undo does not call Redis.
+Sessions, discovery caching, daily LIKE/PASS counters (those are `usage_records`), Socket.IO presence or adapters, chat queues, notifications, Undo idempotency, and Unmatch idempotency. Undo and UNMATCH do not call Redis.
 
 ```
 +-----------------------------------------------------------------------------------+
@@ -690,6 +692,7 @@ Sessions, discovery caching, daily LIKE/PASS counters (those are `usage_records`
 |  OTP, password reset, rate limits, health, photo reservation   | Implemented      |
 |  LIKE and SUPER LIKE Idempotency-Key (120s)                    | Implemented      |
 |  Undo idempotency                                              | Not used         |
+|  Unmatch idempotency                                           | Not used         |
 |  Socket.IO adapter, presence, chat queues, discovery cache     | Planned          |
 +-----------------------------------------------------------------------------------+
 ```
@@ -719,7 +722,7 @@ All database schema updates are executed using Sequelize migration scripts. Manu
 Database transactions (`sequelize.transaction()`) are mandatory for multi-step data mutations to ensure consistency:
 1. **Match Creation:** Inserting the like or super like, inserting an `ACTIVE` match and `ACTIVE` conversation when a reciprocal `LIKE` or `SUPER_LIKE` exists, and incrementing the free LIKE/PASS quota. The reciprocal row is not rewritten.
 2. **Undo:** Setting `likes.is_undone`, and, for a LIKE that owns the current active match, setting that match to `UNDONE` and closing its conversation.
-3. **Unmatching:** Not implemented. The planned action updates match status, records who unmatched, and closes the conversation.
+3. **Unmatching:** Implemented. `DELETE /api/v1/matches/:matchId` locks both users in canonical id order, re-reads the match `FOR UPDATE`, sets `UNMATCHED` with `unmatched_at` and `unmatched_by_user_id`, and closes the `ACTIVE` conversation. Likes, quota, credits, and Redis are not touched.
 4. **Payment & Subscription Sync:** Planned. Recording payment logs, updating subscription statuses, and granting entitlements.
 5. **Account Deletion / Anonymization:** Planned. Cleaning up profile data across tables.
 

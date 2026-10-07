@@ -206,13 +206,14 @@ The platform relies on a local radius discovery model:
 ## 7. Discovery Engine & Matching Mechanics
 
 ### 7.1 Single-Card Discovery Stack
-The live Discovery API returns one candidate card at a time. Pass, like, super like, and undo are implemented.
+The live Discovery API returns one candidate card at a time. Pass, like, super like, undo, and unmatch are implemented.
 * Users view candidate profiles **one at a time**.
 * **Implemented actions:**
   * **Pass:** `POST /api/v1/discovery/:userId/pass`.
   * **Like:** `POST /api/v1/discovery/:userId/like`.
   * **Super Like:** `POST /api/v1/discovery/:userId/super-like`. Premium only, and it spends a Super Like credit.
   * **Undo:** `POST /api/v1/discovery/undo`. Premium only, latest outgoing Like or Pass, five-minute window.
+  * **Unmatch:** `DELETE /api/v1/matches/:matchId`. Free. Either participant of an `ACTIVE` match can end it.
 
 ### 7.2 Candidate Exclusion Criteria
 `GET /api/v1/discovery` filters out candidate profile B for viewing user A if any of the following are true:
@@ -246,7 +247,13 @@ Reports are not a Discovery exclusion. Browsing candidate cards does not consume
 * Premium only. It spends one `SUPER_LIKE` credit and writes a consumption ledger row. It does not use the daily Like/Pass quota. It can create the same kind of match as a like.
 
 #### Unmatching Mechanics
-* **Not implemented.** The schema can store `status = 'UNMATCHED'` with `unmatched_at` and `unmatched_by_user_id`. No unmatch route is mounted. Undo of a like is a different state: `UNDONE`, with those two columns left null.
+* **Implemented.** `DELETE /api/v1/matches/:matchId`. Free for a verified user with a complete profile, location, and dating preferences. Premium is not required.
+* **Who:** either participant of an `ACTIVE` match. A third user receives `404 MATCH_NOT_FOUND` and the match stays `ACTIVE`.
+* **Match:** `ACTIVE` becomes `UNMATCHED`. `unmatched_at` and `unmatched_by_user_id` record when and who. The row is kept. `UNDONE` and already `UNMATCHED` rows are not changed.
+* **Conversation:** the `ACTIVE` conversation becomes `CLOSED` and `closed_at` is set. The conversation and its messages are kept. They are not deleted.
+* **Likes:** existing `LIKE` and `SUPER_LIKE` rows stay, including the reciprocal row. `is_undone` is not changed. UNMATCH does not remove those actions, so discovery can still hide the other user because of an active outgoing like. UNMATCH does not by itself put the pair back into discovery.
+* **Undo is different:** Undo sets `likes.is_undone = true` and, for the LIKE that owns the current match, sets that match to `UNDONE` with `unmatched_at` and `unmatched_by_user_id` left null.
+* **Rematch:** not implemented. A later match would be a new `ACTIVE` row. This action does not revive the old row.
 
 #### Undo Action Rules (Premium Only)
 * **Access:** An active Premium subscription. Free users receive `403 PREMIUM_REQUIRED`.
@@ -278,7 +285,7 @@ Reports are not a Discovery exclusion. Browsing candidate cards does not consume
 ### 8.3 Messaging Quotas & Lifecycle
 * **Free Tier Daily Quota:** 20 sent text messages per 24-hour rolling window (or calendar day, defined by business rules).
 * **Incoming Messages:** Received messages do **not** consume the receiver's daily sent quota.
-* **Unmatch Impact:** When a match is dissolved, the conversation becomes inactive immediately; sending further messages is blocked.
+* **Unmatch Impact:** When a match is unmatched, the conversation becomes `CLOSED` immediately and further messages are blocked once chat exists. The conversation and its messages stay in PostgreSQL. Unmatch does not delete likes.
 
 ---
 
@@ -293,6 +300,7 @@ Reports are not a Discovery exclusion. Browsing candidate cards does not consume
 | **Daily Sent Text Messages** | 20 messages / day | Unlimited |
 | **Chat Media (Photo, Video, Voice)**| Disabled | Enabled |
 | **Undo Last Action** | Disabled | Enabled |
+| **Unmatch** | Enabled | Enabled |
 | **Who Liked You Unlocking** | Blurred Count Only | Full Profile Unlocked |
 | **Discovery Filters** | Basic (Age, Distance, Gender, Intentions) | Advanced (Education, Occupation, Interests, Lifestyle) |
 | **Boost Credits** | None | Configurable Monthly Allowance + Purchases |
@@ -473,4 +481,4 @@ The following parameter values are designated as **TBD** and must be populated v
 ## Document Status
 * **Status:** DRAFT
 * **Version:** 1.0
-* **Last Updated:** 7 October 2026. Discovery, pass, like, super like, and undo descriptions match the implemented API. Chat, unmatch, who-liked-you, and payments remain product scope that is not yet implemented.
+* **Last Updated:** 7 October 2026. Discovery, pass, like, super like, undo, and unmatch descriptions match the implemented API. Chat, rematch, who-liked-you, the match list, and payments remain product scope that is not yet implemented.
