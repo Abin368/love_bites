@@ -1,4 +1,6 @@
+import { z } from 'zod';
 import { sequelize } from '../../config/database';
+import { redis } from '../../config/redis';
 import { findViewerDiscoveryContext } from '../discovery/discovery.data-access';
 import { findUserById } from '../users/users.data-access';
 import { ConflictError, ForbiddenError, NotFoundError, RateLimitError, UnauthorizedError, ValidationError } from '../../utils/errors';
@@ -6,14 +8,24 @@ import {
   findPassTarget,
   FREE_DAILY_LIKE_PASS_LIMIT,
   hasActivePremium,
+  hasReciprocalLike,
   incrementDailyLikePass,
+  insertActiveConversation,
+  insertActiveMatch,
+  insertLike,
   insertPass,
-  isActivePairConflict
+  isActiveMatchConflict,
+  isActivePairConflict,
+  lockLikeUsers
 } from './likes.data-access';
-import type { PassProfileInput, PassProfileResult, PassTargetState } from './likes.types';
+import type { LikeProfileInput, LikeProfileResponse, PassProfileInput, PassProfileResult, PassTargetState } from './likes.types';
 import { targetUserIdSchema } from './likes.validator';
 
 const DAILY_LIMIT_MESSAGE = 'You have reached your daily limit of 10 likes/passes.';
+const LIKE_MESSAGE = 'Profile liked.';
+const MATCH_MESSAGE = "It's a Match!";
+const IDEMPOTENCY_TTL_SECONDS = 120;
+const IDEMPOTENCY_PENDING = 'pending';
 
 function parseTargetUserId(userId: string): string {
   const parsed = targetUserIdSchema.safeParse(userId);
@@ -43,13 +55,13 @@ function incomplete(): ValidationError {
   return new ValidationError('Onboarding is incomplete.', [], 'PROFILE_INCOMPLETE');
 }
 
-function assertTarget(target: PassTargetState | null): void {
+function assertTarget(target: PassTargetState | null, invalidTargetMessage = 'This profile cannot be passed.'): void {
   if (!target || target.deleted) {
     throw new NotFoundError('Target user profile not found.', [], 'USER_NOT_FOUND');
   }
 
   if (target.status !== 'ACTIVE' || !target.profileComplete || !target.hasPrimaryPhoto) {
-    throw new NotFoundError('This profile cannot be passed.', [], 'INVALID_TARGET');
+    throw new NotFoundError(invalidTargetMessage, [], 'INVALID_TARGET');
   }
 
   if (target.blocked) {
@@ -67,6 +79,185 @@ function assertTarget(target: PassTargetState | null): void {
 
 function alreadySwiped(): ConflictError {
   return new ConflictError('Target user has already been liked or permanently passed.', [], 'ALREADY_SWIPED');
+}
+
+function activeMatchExists(): ConflictError {
+  return new ConflictError('Users are already in an active mutual match.', [], 'ACTIVE_MATCH_EXISTS');
+}
+
+function idempotencyConflict(): ConflictError {
+  return new ConflictError('A request with this Idempotency-Key is already in progress.', [], 'IDEMPOTENCY_CONFLICT');
+}
+
+function idempotencyRedisKey(callerId: string, idempotencyKey: string): string {
+  return `idempotency:${callerId}:${idempotencyKey}`;
+}
+
+function parseIdempotencyKey(value: string | undefined): string | null {
+  if (value === undefined) {
+    return null;
+  }
+
+  const parsed = z.string().uuid().safeParse(value);
+  if (!parsed.success) {
+    throw new ValidationError('Validation failed', [
+      { field: 'Idempotency-Key', message: 'Idempotency-Key must be a valid UUID.' }
+    ]);
+  }
+
+  return parsed.data.toLowerCase();
+}
+
+function readStoredLike(raw: string): LikeProfileResponse | null {
+  try {
+    const parsed = JSON.parse(raw) as LikeProfileResponse;
+    if (parsed?.success === true && parsed.data?.action === 'LIKE' && typeof parsed.message === 'string') {
+      return parsed;
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
+}
+
+async function readIdempotentLike(callerId: string, idempotencyKey: string): Promise<LikeProfileResponse | 'conflict' | null> {
+  const raw = await redis.get(idempotencyRedisKey(callerId, idempotencyKey));
+  if (raw === null) {
+    return null;
+  }
+
+  return readStoredLike(raw) ?? 'conflict';
+}
+
+function rethrowLikeConstraint(error: unknown): never {
+  if (isActiveMatchConflict(error)) {
+    throw activeMatchExists();
+  }
+  if (isActivePairConflict(error)) {
+    throw alreadySwiped();
+  }
+  throw error;
+}
+
+async function runLikeTransaction(callerId: string, targetUserId: string): Promise<LikeProfileResponse> {
+  try {
+    return await sequelize.transaction(async (transaction) => {
+      await lockLikeUsers(callerId, targetUserId, transaction);
+      const target = await findPassTarget(callerId, targetUserId, transaction);
+      assertTarget(target, 'This profile cannot be liked.');
+
+      const reciprocal = await hasReciprocalLike(callerId, targetUserId, transaction);
+      try {
+        await insertLike(callerId, targetUserId, transaction);
+      } catch (error) {
+        rethrowLikeConstraint(error);
+      }
+
+      let matchId: string | null = null;
+      if (reciprocal) {
+        try {
+          matchId = await insertActiveMatch(callerId, targetUserId, transaction);
+          await insertActiveConversation(matchId, transaction);
+        } catch (error) {
+          rethrowLikeConstraint(error);
+        }
+      }
+
+      const premium = await hasActivePremium(callerId, transaction);
+      let remainingDailyActions: number | null = null;
+      if (!premium) {
+        const usageCount = await incrementDailyLikePass(callerId, transaction);
+        if (usageCount === null) {
+          throw new RateLimitError(DAILY_LIMIT_MESSAGE, [], 'DAILY_LIMIT_REACHED');
+        }
+        remainingDailyActions = FREE_DAILY_LIKE_PASS_LIMIT - usageCount;
+      }
+
+      return {
+        success: true,
+        data: {
+          action: 'LIKE',
+          targetUserId,
+          isMatch: matchId !== null,
+          matchId,
+          remainingDailyActions
+        },
+        message: matchId !== null ? MATCH_MESSAGE : LIKE_MESSAGE
+      };
+    });
+  } catch (error) {
+    rethrowLikeConstraint(error);
+  }
+}
+
+export async function likeProfile(input: LikeProfileInput): Promise<LikeProfileResponse> {
+  const idempotencyKey = parseIdempotencyKey(input.idempotencyKey);
+  if (idempotencyKey) {
+    const existing = await readIdempotentLike(input.callerId, idempotencyKey);
+    if (existing === 'conflict') {
+      throw idempotencyConflict();
+    }
+    if (existing) {
+      return existing;
+    }
+  }
+
+  const targetUserId = parseTargetUserId(input.targetUserId);
+  if (targetUserId === input.callerId.toLowerCase()) {
+    throw new ValidationError('You cannot like your own profile.', [], 'SELF_INTERACTION');
+  }
+
+  if (!input.isVerified) {
+    await rejectUnverified(input.callerId);
+  }
+
+  const context = await findViewerDiscoveryContext(input.callerId);
+  if (!context || !context.isProfileComplete || !context.hasLocation || !context.hasDatingPreferences) {
+    throw incomplete();
+  }
+
+  if (idempotencyKey) {
+    const locked = await redis.set(
+      idempotencyRedisKey(input.callerId, idempotencyKey),
+      IDEMPOTENCY_PENDING,
+      'EX',
+      IDEMPOTENCY_TTL_SECONDS,
+      'NX'
+    );
+    if (locked !== 'OK') {
+      const existing = await readIdempotentLike(input.callerId, idempotencyKey);
+      if (existing && existing !== 'conflict') {
+        return existing;
+      }
+      throw idempotencyConflict();
+    }
+  }
+
+  let response: LikeProfileResponse;
+  try {
+    response = await runLikeTransaction(input.callerId, targetUserId);
+  } catch (error) {
+    if (idempotencyKey) {
+      try {
+        await redis.del(idempotencyRedisKey(input.callerId, idempotencyKey));
+      } catch {
+        // The original transaction error is the client response.
+      }
+    }
+    throw error;
+  }
+
+  if (idempotencyKey) {
+    await redis.set(
+      idempotencyRedisKey(input.callerId, idempotencyKey),
+      JSON.stringify(response),
+      'EX',
+      IDEMPOTENCY_TTL_SECONDS
+    );
+  }
+
+  return response;
 }
 
 export async function passProfile(input: PassProfileInput): Promise<PassProfileResult> {

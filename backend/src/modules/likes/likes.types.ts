@@ -10,6 +10,27 @@ export interface PassProfileResult {
   remainingDailyActions: number | null;
 }
 
+export interface LikeProfileInput {
+  callerId: string;
+  isVerified: boolean;
+  targetUserId: string;
+  idempotencyKey?: string;
+}
+
+export interface LikeProfileData {
+  action: 'LIKE';
+  targetUserId: string;
+  isMatch: boolean;
+  matchId: string | null;
+  remainingDailyActions: number | null;
+}
+
+export interface LikeProfileResponse {
+  success: true;
+  data: LikeProfileData;
+  message: string;
+}
+
 export interface PassTargetState {
   status: string;
   deleted: boolean;

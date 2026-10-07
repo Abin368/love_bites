@@ -1,7 +1,9 @@
 import { Op, QueryTypes, Transaction, UniqueConstraintError } from 'sequelize';
 import { sequelize } from '../../config/database';
 import '../../database/associations';
+import { Conversation } from '../../database/models/conversation.model';
 import { Like } from '../../database/models/like.model';
+import { Match } from '../../database/models/match.model';
 import { Plan } from '../../database/models/plan.model';
 import { Subscription } from '../../database/models/subscription.model';
 import type { PassTargetState, UtcDayWindow } from './likes.types';
@@ -24,6 +26,11 @@ interface PassTargetRow {
 
 interface UsageCountRow {
   usageCount: number | string;
+}
+
+interface CanonicalPairRow {
+  userOneId: string;
+  userTwoId: string;
 }
 
 const INCREMENT_DAILY_LIKE_PASS_SQL = `
@@ -108,6 +115,19 @@ export function isActivePairConflict(error: unknown): boolean {
   return parent?.constraint === undefined || parent.constraint === 'uq_likes_active_pair';
 }
 
+export function isActiveMatchConflict(error: unknown): boolean {
+  if (!(error instanceof UniqueConstraintError)) {
+    return false;
+  }
+
+  const parent = error.parent as { constraint?: string; detail?: string } | undefined;
+  if (parent?.constraint === 'uq_matches_single_active_pair') {
+    return true;
+  }
+
+  return `${parent?.detail ?? ''} ${error.message}`.includes('uq_matches_single_active_pair');
+}
+
 export async function findPassTarget(
   callerId: string,
   targetUserId: string,
@@ -187,6 +207,111 @@ export async function insertPass(fromUserId: string, toUserId: string, transacti
       toUserId,
       action: 'PASS',
       isUndone: false,
+      createdAt: now,
+      updatedAt: now
+    },
+    { transaction }
+  );
+}
+
+export async function lockLikeUsers(callerId: string, targetUserId: string, transaction: Transaction): Promise<void> {
+  await sequelize.query(
+    `SELECT id
+     FROM users
+     WHERE id IN (CAST(:callerId AS uuid), CAST(:targetUserId AS uuid))
+     ORDER BY id
+     FOR UPDATE`,
+    {
+      replacements: { callerId, targetUserId },
+      type: QueryTypes.SELECT,
+      transaction
+    }
+  );
+}
+
+export async function hasReciprocalLike(
+  callerId: string,
+  targetUserId: string,
+  transaction: Transaction
+): Promise<boolean> {
+  const rows = await sequelize.query(
+    `SELECT 1 AS "found"
+     FROM likes
+     WHERE from_user_id = CAST(:targetUserId AS uuid)
+       AND to_user_id = CAST(:callerId AS uuid)
+       AND is_undone = FALSE
+       AND action IN ('LIKE', 'SUPER_LIKE')
+     LIMIT 1`,
+    {
+      replacements: { callerId, targetUserId },
+      type: QueryTypes.SELECT,
+      transaction
+    }
+  );
+
+  return rows.length > 0;
+}
+
+export async function insertLike(fromUserId: string, toUserId: string, transaction: Transaction): Promise<void> {
+  const now = new Date();
+  await Like.create(
+    {
+      fromUserId,
+      toUserId,
+      action: 'LIKE',
+      isUndone: false,
+      createdAt: now,
+      updatedAt: now
+    },
+    { transaction }
+  );
+}
+
+export async function insertActiveMatch(
+  callerId: string,
+  targetUserId: string,
+  transaction: Transaction
+): Promise<string> {
+  const rows = await sequelize.query<CanonicalPairRow>(
+    `SELECT
+       LEAST(CAST(:callerId AS uuid), CAST(:targetUserId AS uuid)) AS "userOneId",
+       GREATEST(CAST(:callerId AS uuid), CAST(:targetUserId AS uuid)) AS "userTwoId"`,
+    {
+      replacements: { callerId, targetUserId },
+      type: QueryTypes.SELECT,
+      transaction
+    }
+  );
+  const pair = rows[0];
+  if (!pair) {
+    throw new Error('Canonical match pair could not be resolved.');
+  }
+  const now = new Date();
+  const match = await Match.create(
+    {
+      userOneId: pair.userOneId,
+      userTwoId: pair.userTwoId,
+      status: 'ACTIVE',
+      matchedAt: now,
+      unmatchedAt: null,
+      unmatchedByUserId: null,
+      createdAt: now,
+      updatedAt: now
+    },
+    { transaction }
+  );
+
+  return match.id;
+}
+
+export async function insertActiveConversation(matchId: string, transaction: Transaction): Promise<void> {
+  const now = new Date();
+  await Conversation.create(
+    {
+      matchId,
+      status: 'ACTIVE',
+      lastMessageAt: null,
+      closedAt: null,
       createdAt: now,
       updatedAt: now
     },
