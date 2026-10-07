@@ -19,7 +19,11 @@ import {
   insertSuperLikeCreditTransaction,
   isActiveMatchConflict,
   isActivePairConflict,
-  lockLikeUsers
+  lockLikeUsers,
+  closeActiveConversation,
+  findLatestUndoableAction,
+  markUndoableAction,
+  undoActiveMatch
 } from './likes.data-access';
 import type {
   LikeProfileInput,
@@ -28,7 +32,9 @@ import type {
   PassProfileResult,
   PassTargetState,
   SuperLikeProfileInput,
-  SuperLikeProfileResponse
+  SuperLikeProfileResponse,
+  UndoProfileInput,
+  UndoProfileResult
 } from './likes.types';
 import { targetUserIdSchema } from './likes.validator';
 
@@ -37,6 +43,8 @@ const LIKE_MESSAGE = 'Profile liked.';
 const SUPER_LIKE_MESSAGE = 'Profile super liked.';
 const MATCH_MESSAGE = "It's a Match!";
 const PREMIUM_REQUIRED_MESSAGE = 'Feature requires an active Premium subscription.';
+const NO_UNDOABLE_ACTION_MESSAGE = 'There is no action to undo.';
+const UNDO_WINDOW_EXPIRED_MESSAGE = 'The undo window for your last action has expired.';
 const INSUFFICIENT_SUPER_LIKE_CREDITS_MESSAGE = 'You do not have any Super Like credits.';
 const IDEMPOTENCY_TTL_SECONDS = 120;
 const IDEMPOTENCY_PENDING = 'pending';
@@ -482,4 +490,67 @@ export async function passProfile(input: PassProfileInput): Promise<PassProfileR
     }
     throw error;
   }
+}
+
+function noUndoableAction(): ValidationError {
+  return new ValidationError(NO_UNDOABLE_ACTION_MESSAGE, [], 'NO_UNDOABLE_ACTION');
+}
+
+function undoWindowExpired(): ValidationError {
+  return new ValidationError(UNDO_WINDOW_EXPIRED_MESSAGE, [], 'UNDO_WINDOW_EXPIRED');
+}
+
+export async function undoLastAction(input: UndoProfileInput): Promise<UndoProfileResult> {
+  if (!input.isVerified) {
+    await rejectUnverified(input.callerId);
+  }
+
+  const context = await findViewerDiscoveryContext(input.callerId);
+  if (!context || !context.isProfileComplete || !context.hasLocation || !context.hasDatingPreferences) {
+    throw incomplete();
+  }
+
+  return sequelize.transaction(async (transaction) => {
+    const premium = await hasActivePremium(input.callerId, transaction);
+    if (!premium) {
+      throw new ForbiddenError(PREMIUM_REQUIRED_MESSAGE, [], 'PREMIUM_REQUIRED');
+    }
+
+    const selected = await findLatestUndoableAction(input.callerId, transaction);
+    if (!selected) {
+      throw noUndoableAction();
+    }
+    if (!selected.withinWindow) {
+      throw undoWindowExpired();
+    }
+
+    await lockLikeUsers(input.callerId, selected.toUserId, transaction);
+    const current = await findLatestUndoableAction(input.callerId, transaction, true);
+    if (!current || current.id !== selected.id) {
+      throw noUndoableAction();
+    }
+    if (!current.withinWindow) {
+      throw undoWindowExpired();
+    }
+
+    const marked = await markUndoableAction(current.id, transaction);
+    if (!marked) {
+      throw noUndoableAction();
+    }
+
+    let revertedMatch = false;
+    if (current.action === 'LIKE') {
+      const matchId = await undoActiveMatch(input.callerId, current.toUserId, transaction);
+      if (matchId) {
+        await closeActiveConversation(matchId, transaction);
+        revertedMatch = true;
+      }
+    }
+
+    return {
+      undoneAction: current.action,
+      targetUserId: current.toUserId,
+      revertedMatch
+    };
+  });
 }

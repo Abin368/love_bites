@@ -25,6 +25,14 @@ export const likeProfile = asyncHandler(async (req, res) => {
   res.status(200).json(body);
 });
 
+export const undoLastAction = asyncHandler(async (req, res) => {
+  const data = await likesService.undoLastAction({
+    callerId: req.user!.id,
+    isVerified: req.user!.isVerified
+  });
+  send(res, data, 'Previous action undone.');
+});
+
 export const superLikeProfile = asyncHandler(async (req, res) => {
   const body = await likesService.superLikeProfile({
     callerId: req.user!.id,

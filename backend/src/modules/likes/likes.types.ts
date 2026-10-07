@@ -52,6 +52,17 @@ export interface SuperLikeProfileResponse {
   message: string;
 }
 
+export interface UndoProfileInput {
+  callerId: string;
+  isVerified: boolean;
+}
+
+export interface UndoProfileResult {
+  undoneAction: 'LIKE' | 'PASS';
+  targetUserId: string;
+  revertedMatch: boolean;
+}
+
 export interface PassTargetState {
   status: string;
   deleted: boolean;

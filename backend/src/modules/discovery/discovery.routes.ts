@@ -7,6 +7,7 @@ import * as likesController from '../likes/likes.controller';
 const router = Router();
 
 router.get('/', authenticate, requireRole('USER'), discoveryController.getNextCandidate);
+router.post('/undo', authenticate, requireRole('USER'), likesController.undoLastAction);
 router.post('/:userId/like', authenticate, requireRole('USER'), likesController.likeProfile);
 router.post('/:userId/pass', authenticate, requireRole('USER'), likesController.passProfile);
 router.post('/:userId/super-like', authenticate, requireRole('USER'), likesController.superLikeProfile);

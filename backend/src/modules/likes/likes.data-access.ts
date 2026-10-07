@@ -373,6 +373,109 @@ export async function insertActiveMatch(
   return match.id;
 }
 
+interface UndoableActionRow {
+  id: string;
+  toUserId: string;
+  action: string;
+  withinWindow: boolean | string;
+}
+
+export interface UndoableAction {
+  id: string;
+  toUserId: string;
+  action: 'LIKE' | 'PASS';
+  withinWindow: boolean;
+}
+
+interface UndoMatchRow {
+  id: string;
+}
+
+const LATEST_UNDOABLE_ACTION_SQL = `
+SELECT
+  id,
+  to_user_id AS "toUserId",
+  action,
+  (created_at >= CURRENT_TIMESTAMP - INTERVAL '5 minutes') AS "withinWindow"
+FROM likes
+WHERE from_user_id = CAST(:callerId AS uuid)
+  AND is_undone = FALSE
+  AND action IN ('LIKE', 'PASS')
+ORDER BY created_at DESC
+LIMIT 1
+`;
+
+const UNDO_ACTIVE_MATCH_SQL = `
+UPDATE matches
+SET
+  status = 'UNDONE',
+  updated_at = CURRENT_TIMESTAMP
+WHERE status = 'ACTIVE'
+  AND user_one_id = LEAST(CAST(:callerId AS uuid), CAST(:targetUserId AS uuid))
+  AND user_two_id = GREATEST(CAST(:callerId AS uuid), CAST(:targetUserId AS uuid))
+RETURNING id
+`;
+
+export async function findLatestUndoableAction(
+  callerId: string,
+  transaction: Transaction,
+  lock = false
+): Promise<UndoableAction | null> {
+  const rows = await sequelize.query<UndoableActionRow>(
+    lock ? `${LATEST_UNDOABLE_ACTION_SQL} FOR UPDATE` : LATEST_UNDOABLE_ACTION_SQL,
+    {
+      replacements: { callerId },
+      type: QueryTypes.SELECT,
+      transaction
+    }
+  );
+  const row = rows[0];
+  if (!row || (row.action !== 'LIKE' && row.action !== 'PASS')) {
+    return null;
+  }
+
+  return {
+    id: row.id,
+    toUserId: row.toUserId,
+    action: row.action,
+    withinWindow: flag(row.withinWindow)
+  };
+}
+
+export async function markUndoableAction(likeId: string, transaction: Transaction): Promise<boolean> {
+  const [count] = await Like.update(
+    { isUndone: true },
+    {
+      where: { id: likeId, isUndone: false },
+      transaction
+    }
+  );
+  return count === 1;
+}
+
+export async function undoActiveMatch(
+  callerId: string,
+  targetUserId: string,
+  transaction: Transaction
+): Promise<string | null> {
+  const rows = await sequelize.query<UndoMatchRow>(UNDO_ACTIVE_MATCH_SQL, {
+    replacements: { callerId, targetUserId },
+    type: QueryTypes.SELECT,
+    transaction
+  });
+  return rows[0]?.id ?? null;
+}
+
+export async function closeActiveConversation(matchId: string, transaction: Transaction): Promise<void> {
+  await Conversation.update(
+    { status: 'CLOSED', closedAt: new Date() },
+    {
+      where: { matchId, status: 'ACTIVE' },
+      transaction
+    }
+  );
+}
+
 export async function insertActiveConversation(matchId: string, transaction: Transaction): Promise<void> {
   const now = new Date();
   await Conversation.create(
