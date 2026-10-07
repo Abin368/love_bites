@@ -136,7 +136,7 @@ The system architecture is structured so that upstream modules provide stable de
 ### Key Domain Dependency Rules:
 1. **Chat depends on Matches:** Conversations can only exist when backed by an active mutual match.
 2. **Discovery depends on Profiles, Preferences, Location, Blocks, and Passes:** A candidate cannot be discovered without completing onboarding, satisfying mutual spatial and demographic preferences, and clearing historical pass/block exclusions.
-3. **Premium Features depend on Centralized Entitlements:** Capabilities like Undo, Who Liked You, Chat Media, and Unlimited Swipes depend directly on the subscription and entitlement engine.
+3. **Premium Features depend on Centralized Entitlements:** Who Liked You, chat media, and the entitlement HTTP API still depend on the subscription and entitlement engine, which is not implemented. Live unlimited LIKE/PASS, SUPER LIKE, and UNDO already check an active Premium subscription row directly.
 4. **Payments depend on Subscription & Plan Taxonomy:** Razorpay checkout and webhook handlers mutate subscription states and refresh user entitlements.
 5. **Admin Moderation depends on Users and Reports:** Administrative user actions (suspend, ban) cascade to active sessions, socket connections, and discovery indexing.
 
@@ -308,7 +308,7 @@ Implement secure, dual-identifier registration (Email OR Phone), cryptographic p
 
 ## 7. Phase 3 — Profile and Onboarding
 
-**Phase 3 status (2026-10-05): complete.** Catalogs, basic profile HTTP, interests, relationship intentions, profile photos, dating preferences, location, onboarding status, and onboarding completion are implemented. **Phase 4 — Discovery is complete.** `GET /api/v1/discovery` is implemented. **Phase 5 — Likes, Passes and Matches is next and is not implemented.** Production interests are not seeded. `PATCH /api/v1/onboarding/profile`, `PUT /api/v1/location`, `PUT /api/v1/me/interests`, `PUT /api/v1/me/relationship-intentions`, `GET /api/v1/dating-preferences`, and `PUT /api/v1/dating-preferences` are not mounted.
+**Phase 3 status (2026-10-05): complete.** Catalogs, basic profile HTTP, interests, relationship intentions, profile photos, dating preferences, location, onboarding status, and onboarding completion are implemented. **Phase 4 — Discovery is complete.** **Phase 5 slices for PASS, LIKE and match creation, SUPER LIKE, and UNDO are complete.** UNMATCH is not implemented. Production interests are not seeded. `PATCH /api/v1/onboarding/profile`, `PUT /api/v1/location`, `PUT /api/v1/me/interests`, `PUT /api/v1/me/relationship-intentions`, `GET /api/v1/dating-preferences`, and `PUT /api/v1/dating-preferences` are not mounted.
 
 Implemented in Step 1:
 
@@ -345,7 +345,7 @@ Implemented for dating preferences:
 * The response returns the stored age range, distance, and catalog objects `{ "id", "code", "name" }`. This route does not write `user_relationship_intentions` or `profiles.is_profile_complete`.
 * `GET /api/v1/dating-preferences` and `PUT /api/v1/dating-preferences` are not implemented.
 
-Not implemented in this phase: public profile views, `PATCH /api/v1/onboarding/profile`, `PUT /api/v1/location`, `GET /api/v1/dating-preferences`, and `PUT /api/v1/dating-preferences`. Discovery, likes, matches, and chat remain later phases. Profile photos, location, onboarding status, and onboarding completion are implemented. Plans, features, and usage limits are still unseeded. Production interests are not seeded.
+Not implemented in this phase: public profile views, `PATCH /api/v1/onboarding/profile`, `PUT /api/v1/location`, `GET /api/v1/dating-preferences`, and `PUT /api/v1/dating-preferences`. Profile photos, location, onboarding status, and onboarding completion are implemented. Plans, features, and usage limits are still unseeded. Production interests are not seeded. Discovery and the Phase 5 action routes are later phases and are now implemented outside this section.
 
 ### 7.1 Objectives
 Implement the linear onboarding sequence, demographic metadata management, S3 presigned photo upload pipeline, dating preferences, and profile completion validation.
@@ -400,7 +400,7 @@ Implement the linear onboarding sequence, demographic metadata management, S3 pr
 
 ## 8. Phase 4 — Discovery and Location
 
-**Phase 4 status (2026-10-05): complete.** The live route is `GET /api/v1/discovery`. The response contract is section 19 of `03-api-specification.md`. Like, pass, super-like, undo, and match creation are Phase 5 and are not implemented.
+**Phase 4 status (2026-10-05): complete.** The live read is `GET /api/v1/discovery`. The response contract is section 19 of `03-api-specification.md`. PASS, LIKE, SUPER LIKE, and UNDO are Phase 5 and are implemented. See section 9.
 
 ### 8.1 Objectives
 Deliver one mutually eligible candidate card with PostGIS `ST_DWithin`, strict exclusion, mutual preference filtering, and boost ranking.
@@ -417,51 +417,44 @@ Deliver one mutually eligible candidate card with PostGIS `ST_DWithin`, strict e
 
 ## 9. Phase 5 — Likes, Passes and Matches
 
-**Next phase. Not implemented.** Do not treat the steps below as a built API.
+**Partly complete (2026-10-07).** Slice 1 PASS, Slice 2 LIKE and match creation, Slice 3 SUPER LIKE, and Slice 4 UNDO are implemented. Slice 5 UNMATCH is not implemented. `GET /api/v1/matches`, notifications, and Socket.IO are not implemented. The live contract is sections 20 and 21 of `03-api-specification.md`.
 
 ### 9.1 Objectives
-Implement swipe action mechanics (`LIKE`, `PASS`, `SUPER_LIKE`), daily action quota tracking for Free users, race-condition-free mutual matching, single-level Premium Undo, and clean Unmatching/Re-matching lifecycles.
+Implement swipe action mechanics (`LIKE`, `PASS`, `SUPER_LIKE`), daily action quota tracking for Free users, race-condition-free mutual matching, Premium Undo, and clean Unmatching/Re-matching lifecycles.
 
 ### 9.2 Implementation Details
 
-#### 1. Like Action (`POST /api/v1/discovery/:userId/like`)
-* **Eligibility & Quota:**
-  * Free users: Verifies and atomically increments daily combined Like/Pass quota via `usage_records` (`limit: 10`). Throws `429 DAILY_LIMIT_REACHED` when exhausted.
-  * Premium users: Unlimited actions.
-* **Concurrency-Safe Mutual Match Transaction:**
-  ```text
-  [BEGIN TRANSACTION]
-    1. Lock reciprocal like:
-       SELECT * FROM likes WHERE from_user_id = targetUserId AND to_user_id = currentUserId AND is_undone = FALSE FOR UPDATE;
-    2. Insert current like:
-       INSERT INTO likes (from_user_id, to_user_id, action = 'LIKE');
-    3. IF Reciprocal Like EXISTS ('LIKE' or 'SUPER_LIKE'):
-         - Canonical IDs: lowId = LEAST(A, B), highId = GREATEST(A, B)
-         - INSERT INTO matches (user_one_id = lowId, user_two_id = highId, status = 'ACTIVE');
-         - INSERT INTO conversations (match_id, status = 'ACTIVE');
-         - Trigger "NEW_MATCH" notification & Socket.IO event to both users.
-       ELSE:
-         - Trigger "NEW_LIKE" notification to target user (masked/censored if target is Free).
-  [COMMIT TRANSACTION]
-  ```
+#### 1. Pass Action (`POST /api/v1/discovery/:userId/pass`) — **Implemented**
+* Authenticated `USER`. Verification and a complete profile with location and dating preferences are checked in the service.
+* Free users consume one combined LIKE+PASS action for the current UTC day, limit 10, in `usage_records`. Premium does not consume it. `remainingDailyActions` is `null` for Premium.
+* Inserts `likes.action = 'PASS'`, `is_undone = false`. No match, no conversation, no notification.
+* Does not read `Idempotency-Key`.
 
-#### 2. Pass Action (`POST /api/v1/discovery/:userId/pass`)
-* Consumes 1 from combined 10 daily quota for Free users.
-* Records permanent pass in `likes (from_user_id, to_user_id, action = 'PASS')`. Excludes candidate permanently from future discovery.
+#### 2. Like Action (`POST /api/v1/discovery/:userId/like`) — **Implemented**
+* Same caller and target rules as pass, including blocks, active actions, and active matches.
+* Optional `Idempotency-Key` UUID in Redis for 120 seconds. Key `idempotency:<callerId>:<key>`.
+* Free quota is the same combined daily limit. The increment is inside the like transaction.
+* If the target has an active `LIKE` or `SUPER_LIKE` toward the caller, the transaction inserts an `ACTIVE` match in canonical order and an `ACTIVE` conversation. A reciprocal `PASS` does not match. The reciprocal row stays active. No notification and no Socket.IO event are written.
+* Concurrent reciprocal likes lock both users in canonical id order. The partial unique indexes reject a second active action or a second active match.
 
-#### 3. Premium Undo Action (`POST /api/v1/discovery/undo`)
-* **Entitlement Check:** Requires active `UNDO_ACTION` entitlement (Free users receive `403 PREMIUM_REQUIRED`).
-* **Execution Boundary:** Reverses the **immediately preceding** Like or Pass action performed within a 5-minute window.
-* **Transaction Rollback:**
-  * Sets `likes.is_undone = TRUE` on the target record.
-  * If the action triggered an active match: updates `matches.status = 'UNDONE'`, closes the conversation (`conversations.status = 'CLOSED'`), and invalidates active match notifications.
-  * Undo does not consume daily swipe quotas.
+#### 3. Super Like (`POST /api/v1/discovery/:userId/super-like`) — **Implemented**
+* Premium subscription required. Separate from the daily LIKE/PASS quota.
+* Decrements `user_credit_balances` for `SUPER_LIKE` and inserts `credit_transactions` with `delta = -1` and `reason = 'CONSUMPTION'`.
+* Optional idempotency key `idempotency:<callerId>:super-like:<key>`.
+* Matching follows the same reciprocal `LIKE` or `SUPER_LIKE` rule. The response includes `remainingSuperLikeCredits`.
 
-#### 4. Unmatch Action (`DELETE /api/v1/matches/:matchId`)
-* Transitions `matches.status = 'UNMATCHED'`, records `unmatched_at = CURRENT_TIMESTAMP` and `unmatched_by_user_id = req.user.id`.
-* Closes conversation (`conversations.status = 'CLOSED'`).
-* Preserves message history in PostgreSQL for safety/audit compliance.
-* **Re-matching Support:** The unique index `uq_matches_single_active_pair` permits a pair to match again in the future without database constraint collisions.
+#### 4. Premium Undo (`POST /api/v1/discovery/undo`) — **Implemented**
+* Premium only. `403 PREMIUM_REQUIRED` otherwise.
+* Latest active outgoing `LIKE` or `PASS` only. `SUPER_LIKE` is never selected.
+* Window: `created_at >= CURRENT_TIMESTAMP - INTERVAL '5 minutes'`. An expired latest action returns `400 UNDO_WINDOW_EXPIRED` and is not replaced by an older row. No eligible row returns `400 NO_UNDOABLE_ACTION`.
+* Sets `is_undone = true`. Does not delete the row.
+* A LIKE that owns the current `ACTIVE` match sets that match to `UNDONE` (`unmatched_at` and `unmatched_by_user_id` stay null) and closes the `ACTIVE` conversation. A PASS does not change matches. The other user's reciprocal action stays active.
+* Does not change `usage_records` and does not use Redis.
+
+#### 5. Unmatch Action (`DELETE /api/v1/matches/:matchId`) — **Not implemented. Next slice.**
+* Planned: transition `matches.status = 'UNMATCHED'`, set `unmatched_at` and `unmatched_by_user_id`, and close the conversation.
+* `uq_matches_single_active_pair` already allows a later `ACTIVE` match after `UNDONE` or `UNMATCHED`.
+* Do not treat UNDO as unmatch. Undo leaves `unmatched_at` null.
 
 ---
 
@@ -750,11 +743,11 @@ To maintain strict adherence to dependency constraints, development should follo
 12. Location Services & Coordinate Obfuscation Pipeline
 13. Spatial Discovery Engine (PostGIS ST_DWithin Query, Exclusion Filters)
 14. Likes & Passes Schema (Likes Table, Check Constraints, Partial Indexes)
-15. Swiping Service & Free Daily Quota Tracking (10 Actions/Day)
-16. Matches & Canonical Pair Architecture (Matches Table, Canonical ID Sorting)
-17. Mutual Matching Transaction Pipeline (Reciprocal Check, Match Creation)
-18. Premium Undo Service (Single-Level Stack, Match Reversion)
-19. Unmatch & Rematch Lifecycle Management
+15. Swiping Service & Free Daily Quota Tracking (10 Actions/Day) — done
+16. Matches & Canonical Pair Architecture (Matches Table, Canonical ID Sorting) — schema done; match rows created by LIKE and SUPER LIKE
+17. Mutual Matching Transaction Pipeline (Reciprocal Check, Match Creation) — done
+18. Premium Undo Service (latest LIKE or PASS, five-minute window, match reversion) — done
+19. Unmatch & Rematch Lifecycle Management — next. Not implemented.
 20. Conversations & Messages Schema (Conversations, Messages Tables)
 21. Chat Service & 6-Step Message Authorization Engine
 22. Socket.IO Realtime Engine (Redis Adapter, Handshake Auth, Rooms)
@@ -784,9 +777,9 @@ To maintain strict adherence to dependency constraints, development should follo
 | **Photos (S3)** | Profile Module, AWS S3 | `profile_photos` | `/profile-photos/upload-url`, `/profile-photos/confirm`, `/profile-photos/:photoId` | Unit (S3 Mock) + Integration (Limits) |
 | **Location** | Profile Module, PostGIS | `profiles` (PostGIS `location`) | `/location`, `/onboarding/location` | Integration (PostGIS Point Storage) |
 | **Discovery** | Profiles, Preferences, Location, Blocks, Passes | `profiles`, `dating_preferences`, `likes`, `matches`, `blocks`, `boost_sessions` | `GET /discovery` (implemented) | Integration (PostGIS `ST_DWithin`, mutual filters, exclusions, boost ranking) |
-| **Likes & Passes** | Discovery, Entitlements | `likes`, `usage_records` | `POST /discovery/:userId/like`, `POST /discovery/:userId/pass` | Integration (Quotas, Duplicate Swipes) |
-| **Matches** | Likes Module | `matches`, `conversations`, `notifications` | `GET /matches`, `DELETE /matches/:matchId` | Integration (Concurrency, Rematching) |
-| **Premium Undo** | Likes, Matches, Entitlements | `likes`, `matches`, `conversations` | `POST /discovery/undo` | Integration (Match Reversion, Rollback) |
+| **Likes, Passes, Super Like** | Discovery, subscriptions for Premium | `likes`, `usage_records`, `matches`, `conversations`, `user_credit_balances`, `credit_transactions` | `POST /discovery/:userId/pass`, `POST /discovery/:userId/like`, `POST /discovery/:userId/super-like` | PostgreSQL integration: pass 11, like 20, super like 22 |
+| **Matches list and unmatch** | Likes Module | `matches`, `conversations` | `GET /matches`, `DELETE /matches/:matchId` | Not implemented. Match rows are created by LIKE and SUPER LIKE. |
+| **Premium Undo** | Likes, Matches, Premium subscription | `likes`, `matches`, `conversations`, `subscriptions`, `plans` | `POST /discovery/undo` | PostgreSQL integration: 14 passed. No Redis idempotency. |
 | **Chat & Messaging**| Matches Module, S3, Socket.IO | `conversations`, `messages`, `usage_records` | `/conversations/*`, `/messages/*`, Socket.IO events | Integration + E2E (6-Step Auth, Quotas) |
 | **Blocks & Safety** | Users, Matches, Chat | `blocks` | `/blocks`, `/blocks/:userId` | Integration (Bidirectional Isolation) |
 | **Reports** | Users, Safety | `reports` | `/reports` | Integration (Report Submission) |

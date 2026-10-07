@@ -587,7 +587,7 @@ A candidate user $B$ is eligible for viewer user $A$ if and only if all of the f
 ### 9.1 `likes`
 
 #### Purpose
-Stores all swipe interactions (`LIKE`, `PASS`, `SUPER_LIKE`) between users. A `PASS` action is permanent in Phase 1. When a user activates Premium Undo, the interaction's `is_undone` flag is updated to preserve audit history while removing the candidate from exclusion rules.
+Stores all swipe interactions (`LIKE`, `PASS`, `SUPER_LIKE`) between users. An active row (`is_undone = FALSE`) excludes that target from the actor's Discovery stack. Premium Undo sets `is_undone = TRUE` on the latest active outgoing `LIKE` or `PASS`. The row is kept. `SUPER_LIKE` is never undone. A later action toward the same target is allowed because the partial unique index applies only while `is_undone = FALSE`.
 
 #### Columns
 | Column | Type | Nullable | Default | Description |
@@ -634,7 +634,7 @@ Records established mutual matches between pairs of users. To eliminate duplicat
 | `id` | `UUID` | `NO` | `gen_random_uuid()` | Primary key. |
 | `user_one_id` | `UUID` | `NO` | — | Canonical lower user UUID (`user_one_id < user_two_id`). |
 | `user_two_id` | `UUID` | `NO` | — | Canonical higher user UUID. |
-| `status` | `VARCHAR(20)` | `NO` | `'ACTIVE'` | Match lifecycle state: `'ACTIVE'`, `'UNMATCHED'`, `'UNDONE'`. |
+| `status` | `VARCHAR(20)` | `NO` | `'ACTIVE'` | `ACTIVE`: the current mutual match. `UNDONE`: a LIKE that created this match was undone; `unmatched_at` and `unmatched_by_user_id` stay null. `UNMATCHED`: reserved for a later unmatch action that records who ended the match. The UNMATCH API is not implemented. |
 | `matched_at` | `TIMESTAMPTZ` | `NO` | `CURRENT_TIMESTAMP` | Timestamp when mutual match occurred. |
 | `unmatched_at` | `TIMESTAMPTZ` | `YES` | `NULL` | Timestamp when unmatch occurred. |
 | `unmatched_by_user_id`| `UUID` | `YES` | `NULL` | User ID who initiated the unmatch. |
@@ -666,7 +666,7 @@ Records established mutual matches between pairs of users. To eliminate duplicat
 ### 11.1 `conversations`
 
 #### Purpose
-Represents the chat channel established for a specific match. Maintains a strict 1:1 relationship with `matches`. When users unmatch, the conversation status transitions to `CLOSED`.
+Represents the chat channel established for a specific match. `uq_conversations_match` enforces one conversation per match. LIKE and SUPER LIKE create the row with `status = 'ACTIVE'` when they create the match. When Undo moves that match to `UNDONE`, the `ACTIVE` conversation becomes `CLOSED` and `closed_at` is set. There is no chat HTTP API. UNMATCH is not implemented.
 
 #### Columns
 | Column | Type | Nullable | Default | Description |
@@ -1007,7 +1007,7 @@ Configures quantitative operational limits per plan tier (e.g., Free users get 1
 ### 17.2 `usage_records`
 
 #### Purpose
-Persistent ledger recording usage consumption per user and metric across rolling time windows.
+Persistent ledger recording usage consumption per user and metric. The live free LIKE and PASS quota uses metric key `DAILY_LIKE_PASS`, a limit of 10, and a UTC calendar day: `period_start` is UTC midnight and `period_end` is 24 hours later. The increment is `INSERT ... ON CONFLICT (user_id, metric_key, period_start) DO UPDATE ... WHERE usage_count < 10`. Premium LIKE and PASS do not write this row. SUPER LIKE and UNDO do not change it. Undo does not restore a consumed count. Message quotas are not implemented.
 
 #### Columns
 | Column | Type | Nullable | Default | Description |
@@ -1039,7 +1039,7 @@ Persistent ledger recording usage consumption per user and metric across rolling
 ### 17.3 `user_credit_balances`
 
 #### Purpose
-Tracks consumable à la carte or subscription-granted balances for Boost and Super Like capabilities.
+Tracks consumable balances. The live SUPER LIKE path decrements the row where `credit_type = 'SUPER_LIKE'` and `balance >= 1`, then inserts a `credit_transactions` row with `delta = -1`, `reason = 'CONSUMPTION'`, and `reference_id` equal to the new like id. Granting and purchasing credits are not implemented. Boost consumption is not implemented.
 
 #### Columns
 | Column | Type | Nullable | Default | Description |
@@ -1345,7 +1345,7 @@ CREATE INDEX idx_processed_webhooks_provider_type ON processed_webhooks (provide
 | Interaction Scenario | Race Condition Risk | Database Defense Mechanism |
 | :--- | :--- | :--- |
 | **Simultaneous Mutual Likes** | Both users swipe Right at the same millisecond; two parallel transactions try to create duplicate match rows. | **Canonical user ordering + `SELECT FOR UPDATE` + Partial Unique Index (`uq_matches_single_active_pair`).** The transaction sorting user IDs ensures lock acquisition order is consistent, preventing deadlocks. |
-| **Simultaneous Swipe & Undo** | User rapidly submits Like and Undo across parallel HTTP requests. | Serialized row-level transaction with optimistic locking on `likes.is_undone`. |
+| **Simultaneous Swipe & Undo** | User rapidly submits Like and Undo across parallel HTTP requests. | Both run in a database transaction. Undo locks the two users in canonical id order, re-reads the latest undoable row, and sets `is_undone = TRUE` only when it is still false. The like row is not deleted. |
 | **Simultaneous Unmatch & Message Send** | User A unmatches User B while User B's pending message is in flight. | Transaction verifies `conversations.status = 'ACTIVE'` inside transaction before inserting message. |
 | **Daily Quota Limit Bypassing** | Free user fires 10 parallel Like requests to bypass the daily 10-swipe limit. | **Atomic database increment:** `INSERT ... ON CONFLICT DO UPDATE SET usage_count = usage_count + 1 WHERE usage_count < limit RETURNING usage_count`. If 0 rows updated, request fails immediately. |
 | **Duplicate Payment Webhooks** | Razorpay delivers the same webhook event multiple times within seconds. | **Atomic Webhook Deduplication:** Insert into `processed_webhooks (event_id)` inside transaction. Duplicate insert throws primary key violation `23505` and returns `200 OK` instantly. |
@@ -1357,22 +1357,19 @@ User A Likes User B
         ▼
 [BEGIN TRANSACTION]
         │
-        ├─► Acquire Row Lock on Reciprocal Like:
-        │   SELECT * FROM likes 
-        │   WHERE from_user_id = B AND to_user_id = A AND is_undone = FALSE 
-        │   FOR UPDATE;
+        ├─► Lock both user rows in canonical id order.
         │
-        ├─► INSERT INTO likes (from_user_id, to_user_id, action = 'LIKE');
+        ├─► INSERT INTO likes (from_user_id, to_user_id, action = 'LIKE', is_undone = FALSE);
         │
-        ├─► IF Reciprocal Like EXISTS ('LIKE' or 'SUPER_LIKE'):
+        ├─► IF the other user has an active LIKE or SUPER_LIKE toward A:
         │     │
-        │     ├─► Let user_low = LEAST(A, B), user_high = GREATEST(A, B)
-        │     ├─► INSERT INTO matches (user_one_id, user_two_id, status = 'ACTIVE');
-        │     ├─► INSERT INTO conversations (match_id, status = 'ACTIVE');
-        │     └─► Enqueue "NEW_MATCH" notifications for A and B.
+        │     ├─► user_one_id = LEAST(A, B), user_two_id = GREATEST(A, B)
+        │     ├─► INSERT INTO matches (status = 'ACTIVE');
+        │     └─► INSERT INTO conversations (match_id, status = 'ACTIVE');
         │
-        ├─► ELSE:
-        │     └─► Enqueue "NEW_LIKE" notification for B (Censored payload if B is Free).
+        ├─► The reciprocal like row is left active. No notification row is written.
+        │
+        └─► Free users then increment usage_records for DAILY_LIKE_PASS.
         │
         ▼
 [COMMIT TRANSACTION]
@@ -1435,8 +1432,8 @@ User A Likes User B
 3. **PostGIS Geography Representation:**
    ```typescript
    location: {
-     type: DataTypes.GEOMETRY('POINT', 4326),
-     allowNull: false,
+     type: DataTypes.GEOGRAPHY('POINT', 4326),
+     allowNull: true,
    }
    ```
 4. **Timestamps & Paranoid Mode:**
@@ -1571,6 +1568,6 @@ User A Likes User B
 | Item ID | Topic | Description & Analysis | Current Stance / Recommendation | Status |
 | :--- | :--- | :--- | :--- | :--- |
 | **ODB-01** | Multi-City / Roaming Profile Coordinates | When a user travels to another city, should historical interactions (Likes/Passes) remain bound globally or re-evaluated per geographic locality? | In Phase 1, interactions are stored globally (`from_user_id, to_user_id`). Moving cities updates `profiles.location` and `profiles.city`, but previous permanent passes remain active to avoid re-swiping previously rejected profiles. | Approved Phase 1 Behavior |
-| **ODB-02** | Ephemeral Undo Stack Depth | Product specifications currently support single-level Undo (reversing the immediately preceding action). | Schema uses `likes.is_undone` and ordered `created_at` timestamps. This cleanly supports single-action rewinds and is forward-compatible if multi-step undo history is introduced in Phase 2. | Ready for Implementation |
+| **ODB-02** | Ephemeral Undo Stack Depth | Premium Undo reverses the latest active outgoing `LIKE` or `PASS` when `created_at >= CURRENT_TIMESTAMP - INTERVAL '5 minutes'`. | The row stays in `likes` with `is_undone = TRUE`. `SUPER_LIKE` is excluded. An expired latest action returns `UNDO_WINDOW_EXPIRED` and is not replaced by an older row. A later undo can select the next active `LIKE` or `PASS`. | Implemented |
 | **ODB-03** | Chat Message Soft-Delete Sync | If a user deletes a message for themselves vs. deleting for both conversation participants. | The `messages.deleted_at` field implements standard soft delete (hidden from the conversation thread). Granular per-user "delete for me" state can be added via a message status junction if requested in Phase 1.5. | Default Standard Soft Delete |
 | **ODB-04** | Discovery Feed Shuffling & Randomization | Ensuring candidate pagination does not return identical ordering on rapid pagination requests while respecting Boost multipliers. | Handled at the service/query layer by combining Boost ranking weights with deterministic seed hashing (e.g., `ORDER BY boost_multiplier DESC, MD5(p.id::text || :sessionSeed)`). | Database Compatible |

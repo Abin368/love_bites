@@ -15,7 +15,9 @@ This document defines the comprehensive **Backend Architecture Specification** f
 
 ## 2. Architecture Goals
 
-1. **Strict Separation of Concerns:** Adhere strictly to a 3-layer architecture (Controller $ightarrow$ Service $ightarrow$ Data Access) mapped into domain-driven feature modules.
+1. **Strict Separation of Concerns:** Adhere strictly to a 3-layer architecture (Controller $
+ightarrow$ Service $
+ightarrow$ Data Access) mapped into domain-driven feature modules.
 2. **Centralized Entitlements & Usage Enforcement:** Enforce feature availability, quotas, and limits via a unified Entitlement and Usage system rather than scattered boolean logic.
 3. **Data Integrity & Safety:** Guarantee atomicity across concurrent user interactions (e.g., simultaneous likes, payment webhooks, unmatch operations) using database constraints, row-level locks, and managed transactions.
 4. **Privacy & Security by Design:** Protect user identity and exact location coordinates server-side. Enforce server-driven content censorship (e.g., hiding liker identities for non-paying users at the API level).
@@ -267,6 +269,8 @@ modules/likes/
 ```
 *Note: Optional files (e.g., `*.constants.ts`) should only be created when explicitly needed.*
 
+Implemented modules today are `auth`, `users`, `profiles`, `profile-photos`, `genders`, `interests`, `relationship-intentions`, `onboarding`, `discovery`, and `likes`. Discovery routes mount the like, pass, super-like, and undo handlers. There is no `passes` table and no separate `likes.routes.ts`. Chat, notifications, safety, subscriptions, payments, entitlements, matches, and admin modules are not implemented as HTTP modules. Their tables exist from Phase 1.
+
 ---
 
 ## 8. Authentication Architecture
@@ -459,25 +463,24 @@ The Discovery engine delivers one candidate profile at a time based on algorithm
 ```
 
 ### Query Execution Strategy
-* **Database Filtering:** Distance (`ST_DWithin`), age boundaries, pass history, and blocks are calculated directly in the SQL query using `NOT EXISTS` clauses.
-* **Avoiding N+1 Queries:** Profile metadata, primary photos, and attributes are retrieved using unified `JOIN` operations.
+`GET /api/v1/discovery` is implemented. The SQL candidate query applies distance (`ST_DWithin` on both radii), completed-year age ranges, mutual gender lists, and mutual relationship-intention overlap. It excludes the caller, non-`ACTIVE` and soft-deleted users, incomplete profiles, missing locations, missing primary photos, the viewer's active `LIKE`/`PASS`/`SUPER_LIKE` (`is_undone = false`), `ACTIVE` matches, and blocks in either direction. An undone action, an incoming `PASS`, and an `UNMATCHED` or `UNDONE` match stay eligible. Reports are not a filter. Ranking is the highest active boost multiplier, then `profiles.created_at DESC`, limit 1. A candidate with no active boost uses multiplier `1.0`. Photos, interests, and intentions are loaded for that one user and photo URLs are signed for 3600 seconds. The route returns one card or `candidate: null`. It does not paginate and does not consume a quota.
 
 ---
 
 ## 14. Like / Pass Architecture
 
 ### Daily Counter Rule
-Free users have a **shared daily quota of 10 actions** covering both Likes and Passes combined.
+Free users have a **shared quota of 10 LIKE and PASS actions per UTC calendar day**. The count lives in `usage_records` with metric `DAILY_LIKE_PASS`. Premium subscribers with plan `PREMIUM_MONTHLY` or `PREMIUM_YEARLY` and a current `ACTIVE`, `PAST_DUE`, or `GRACE_PERIOD` period do not consume that quota. SUPER LIKE uses `user_credit_balances` where `credit_type = 'SUPER_LIKE'` and does not increment `DAILY_LIKE_PASS`. UNDO does not change `usage_records`.
 
-$$	ext{Daily Total} = 	ext{Likes Count} + 	ext{Passes Count} \le 10$$
-
-*Example:* A Free user recording 6 Likes and 4 Passes reaches their maximum daily limit of 10 actions.
+*Example:* A Free user recording 6 Likes and 4 Passes reaches the daily limit of 10. A Super Like is not one of those 10.
 
 ### Stored Action Mechanics
-* **Pass Action:** Permanent in Phase 1. Stored in `passes` table (`user_id`, `target_user_id`, `created_at`). Excludes candidate from future discovery.
-* **Like Action:** Stored in `likes` table. Checks if a reciprocal like exists from `target_user_id`.
-  * If reciprocal like exists $ightarrow$ Trigger Match Creation flow inside a managed database transaction.
-  * If no reciprocal like exists $ightarrow$ Store like, dispatch "New Like" notification to target user.
+Implemented routes are `POST /api/v1/discovery/:userId/pass`, `POST /api/v1/discovery/:userId/like`, and `POST /api/v1/discovery/:userId/super-like`. There is no `passes` table.
+
+* **Pass:** Inserts `likes.action = 'PASS'`. While `is_undone = false`, Discovery excludes that target. Undo can mark the row undone. The row is not deleted. A pass does not create a match or a conversation.
+* **Like:** Inserts `likes.action = 'LIKE'`. If the target has an active `LIKE` or `SUPER_LIKE` toward the caller, the same transaction creates an `ACTIVE` match and an `ACTIVE` conversation. A reciprocal `PASS` does not match. The reciprocal row stays active. No notification is written.
+* **Super Like:** Premium only. Consumes one `SUPER_LIKE` credit and writes a `credit_transactions` row with `reason = 'CONSUMPTION'`. Matching follows the same reciprocal `LIKE` or `SUPER_LIKE` rule.
+* **Idempotency:** Optional `Idempotency-Key` on LIKE and SUPER LIKE only, stored in Redis for 120 seconds. PASS does not use it.
 
 ---
 
@@ -491,38 +494,22 @@ To eliminate duplicate records and prevent deadlocks, user pairs are ordered usi
 $$	ext{user\_low\_id} = \min(	ext{user}_A, 	ext{user}_B)$$
 $$	ext{user\_high\_id} = \max(	ext{user}_A, 	ext{user}_B)$$
 
-```
-                       +-------------------------------+
-                       | User A Likes User B           |
-                       +---------------+---------------+
-                                       |
-                                       v
-                       +-------------------------------+
-                       | Lock Reciprocal Like Check    |
-                       | (SELECT FOR UPDATE)           |
-                       +---------------+---------------+
-                                       |
-                        /-------------?\-------------
-                       / Is Reciprocal Like Present?                       +-------------------------------+
-                               /                                          YES              NO
-                             /                                             v                   v
-             +----------------------------+  +----------------------------+
-             | Start DB Transaction       |  | Create Single Like Record  |
-             | - Insert into Matches      |  | Dispatch Non-revealing     |
-             |   (status='active')        |  | Notification (if Free)     |
-             | - Create Chat Conversation |  +----------------------------+
-             | - Emit Realtime Match Event|
-             +----------------------------+
-```
+The live LIKE and SUPER LIKE transaction locks both users in canonical id order, inserts the action, and, when the other user has an active `LIKE` or `SUPER_LIKE`, inserts `matches.status = 'ACTIVE'` and `conversations.status = 'ACTIVE'`. It does not emit a notification or a Socket.IO event. A reciprocal `PASS` does not create a match.
 
-### Unmatching & Re-matching
-* **Unmatching Process:** Sets the current match record status to `unmatched` and updates `unmatched_at`. Closes the conversation for messaging.
-* **Historical Data Retention:** Message history remains safely archived in PostgreSQL for safety and compliance.
-* **Re-Match Compatibility:** The unique constraint on the `matches` table is set on `(user_low_id, user_high_id, status)` where `status = 'active'`. This allows a pair to rematch later without constraint violations.
+### Status values
+`chk_matches_status` allows `ACTIVE`, `UNDONE`, and `UNMATCHED`.
+
+* **`ACTIVE`:** the current mutual match. LIKE and SUPER LIKE insert this row, with `user_one_id < user_two_id`, plus one `ACTIVE` conversation.
+* **`UNDONE`:** Undo of the LIKE that created the current active match sets this status. `unmatched_at` and `unmatched_by_user_id` stay null. The `ACTIVE` conversation becomes `CLOSED` and `closed_at` is set.
+* **`UNMATCHED`:** reserved for a later unmatch that records who ended the match. `DELETE /api/v1/matches/:matchId` is not implemented.
+
+Historical `UNDONE` and `UNMATCHED` rows stay in place. `uq_matches_single_active_pair` allows a later `ACTIVE` row for the same pair. There is no match list API and no chat API. The match diagram's notification and Socket.IO steps are not implemented.
 
 ---
 
 ## 16. Chat & Realtime Architecture
+
+**Not implemented as an API.** LIKE and SUPER LIKE create an `ACTIVE` conversation row. Undo of that LIKE sets the conversation to `CLOSED`. No message routes and no Socket.IO server exist. The rules below are the planned chat contract.
 
 ### Messaging Rules
 * Unrestricted messaging: Either participant in an active match can send the first message.
@@ -550,12 +537,14 @@ Client A                  Server Node                 PostgreSQL               C
 
 ## 17. Undo Architecture
 
-* **Eligibility:** Premium Users only. Free users attempting an undo receive an entitlement error.
-* **Scope:** Reverts the **last action only** (single-level stack).
-* **Execution & Race Condition Safety:**
-  * Runs inside a serializable database transaction.
-  * Identifies the most recent record from `likes` or `passes` created by the user within a 5-minute threshold.
-  * If the action triggered an active match, the system reverts the match status, closes the conversation, and deletes the like/pass record safely.
+`POST /api/v1/discovery/undo` is implemented.
+
+* **Eligibility:** Authenticated `USER`, verified in the service, with a completed profile, location, and dating preferences. Premium subscription required. Anyone else receives `403 PREMIUM_REQUIRED`.
+* **Scope:** The latest active outgoing `LIKE` or `PASS` only (`is_undone = false`). `SUPER_LIKE` is never undoable. Incoming actions are ignored. Already undone rows are ignored.
+* **Window:** `created_at >= CURRENT_TIMESTAMP - INTERVAL '5 minutes'`. Exactly five minutes is valid. If that latest row is older, the response is `400 UNDO_WINDOW_EXPIRED` and an older row is not selected. No active `LIKE` or `PASS` returns `400 NO_UNDOABLE_ACTION`.
+* **Persistence:** Sets `is_undone = true`. The row is not deleted. A later undo can take the next active `LIKE` or `PASS`, one at a time, when that row is still inside the window.
+* **Match:** A `LIKE` that owns the current `ACTIVE` match moves that match to `UNDONE` and closes its `ACTIVE` conversation. `unmatched_at` and `unmatched_by_user_id` stay null. A `PASS` does not change matches. The other user's reciprocal `LIKE` or `SUPER_LIKE` stays active.
+* **Quota and Redis:** Undo does not change `usage_records` and does not use an idempotency key.
 
 ---
 
@@ -564,7 +553,8 @@ Client A                  Server Node                 PostgreSQL               C
 Safety features operate independently from matching and communication modules.
 
 ### Blocking Logic
-* **Bidirectional Isolation:** Blocking user $A ightarrow B$ creates a permanent isolation barrier. Neither user can discover, like, message, or view the other.
+* **Bidirectional Isolation:** Blocking user $A 
+ightarrow B$ creates a permanent isolation barrier. Neither user can discover, like, message, or view the other.
 * **Execution:** Executing a block immediately terminates active matches between the pair, closes open conversations, and invalidates active Socket.IO room subscriptions.
 
 ### Report Handling
@@ -575,7 +565,9 @@ Safety features operate independently from matching and communication modules.
 
 ## 19. Notification Architecture
 
-Notifications are created and stored in PostgreSQL, then delivered in real-time via WebSockets or push notifications.
+**Not implemented.** LIKE, PASS, SUPER LIKE, and UNDO do not insert `notifications` rows. The notes below are the planned contract.
+
+Notifications are planned to be stored in PostgreSQL, then delivered in real-time via WebSockets or push notifications.
 
 ### Likers Identity Concealment Guardrail
 To safeguard Premium monetization rules, **liker identities are filtered server-side** for Free users.
@@ -602,7 +594,9 @@ function formatNotificationForUser(notification, userEntitlements) {
 
 ## 20. Subscription & Entitlement Architecture
 
-Entitlements manage feature availability and usage enforcement across the application.
+**The entitlement service is not implemented.** Live PASS, LIKE, SUPER LIKE, and UNDO read `subscriptions` and `plans` directly. Free LIKE and PASS usage is `usage_records`. Super Like usage is `user_credit_balances`. The pattern below is the planned central engine.
+
+Entitlements are planned to manage feature availability and usage enforcement across the application.
 
 ### Entitlement Architecture Pattern
 Feature logic delegates subscription status checks to a centralized Entitlement Service.
@@ -675,17 +669,28 @@ Webhooks are the definitive source of truth for payment status and subscription 
 
 ## 22. Redis Architecture
 
-Redis is utilized strictly as an ephemeral storage, state caching, and pub/sub transport layer.
+Redis is ephemeral. It is not the store for users, matches, messages, payments, subscriptions, or the LIKE/PASS quota.
+
+### Implemented now
+* OTP codes and attempt counters (`auth:otp:email:` and `auth:otp:phone:`).
+* Password-reset tokens (`auth:password-reset:`), SHA-256 key, 15-minute TTL.
+* Sliding-window rate limits for register, login, forgot-password, OTP resend, and the public catalog reads.
+* Health check ping.
+* Profile-photo upload reservations until confirm.
+* Optional LIKE idempotency (`idempotency:<callerId>:<uuid>`, 120 seconds).
+* Optional SUPER LIKE idempotency (`idempotency:<callerId>:super-like:<uuid>`, 120 seconds).
+
+### Not implemented
+Sessions, discovery caching, daily LIKE/PASS counters (those are `usage_records`), Socket.IO presence or adapters, chat queues, notifications, and Undo idempotency. Undo does not call Redis.
 
 ```
 +-----------------------------------------------------------------------------------+
-|                                   REDIS USAGE                                     |
+|                         REDIS — IMPLEMENTED VS PLANNED                            |
 +-----------------------------------------------------------------------------------+
-|  1. Socket.IO Adapter   | Distributed WebSocket event broadcasting                 |
-|  2. Daily Counters      | Ultra-fast usage limit tracking (Likes, Chat messages)   |
-|  3. Rate Limiting       | IP and User API endpoint request throttling               |
-|  4. Ephemeral State     | OTP codes, temporary authentication tokens               |
-|  5. User Presence       | Real-time online / offline status monitoring              |
+|  OTP, password reset, rate limits, health, photo reservation   | Implemented      |
+|  LIKE and SUPER LIKE Idempotency-Key (120s)                    | Implemented      |
+|  Undo idempotency                                              | Not used         |
+|  Socket.IO adapter, presence, chat queues, discovery cache     | Planned          |
 +-----------------------------------------------------------------------------------+
 ```
 
@@ -694,6 +699,8 @@ Redis is utilized strictly as an ephemeral storage, state caching, and pub/sub t
 ---
 
 ## 23. Realtime Architecture
+
+**Not implemented.** No Socket.IO server is mounted. The notes below are the planned contract.
 
 * Framework: Socket.IO initialized over Express HTTP server.
 * Cluster Distribution: Redis Adapter for Socket.IO enables horizontal scaling across multiple application nodes.
@@ -710,10 +717,11 @@ All database schema updates are executed using Sequelize migration scripts. Manu
 
 ### Transaction Mandates
 Database transactions (`sequelize.transaction()`) are mandatory for multi-step data mutations to ensure consistency:
-1. **Match Creation:** Writing match records, updating reciprocal like states, and initializing conversation threads.
-2. **Unmatching:** Updating match statuses, closing conversations, and invalidating access tokens.
-3. **Payment & Subscription Sync:** Recording payment logs, updating subscription statuses, and granting entitlements.
-4. **Account Deletion / Anonymization:** Cleaning up profile data across tables.
+1. **Match Creation:** Inserting the like or super like, inserting an `ACTIVE` match and `ACTIVE` conversation when a reciprocal `LIKE` or `SUPER_LIKE` exists, and incrementing the free LIKE/PASS quota. The reciprocal row is not rewritten.
+2. **Undo:** Setting `likes.is_undone`, and, for a LIKE that owns the current active match, setting that match to `UNDONE` and closing its conversation.
+3. **Unmatching:** Not implemented. The planned action updates match status, records who unmatched, and closes the conversation.
+4. **Payment & Subscription Sync:** Planned. Recording payment logs, updating subscription statuses, and granting entitlements.
+5. **Account Deletion / Anonymization:** Planned. Cleaning up profile data across tables.
 
 ---
 
@@ -750,7 +758,7 @@ A centralized Express error middleware captures thrown application errors and fo
 {
   "success": false,
   "error": {
-    "code": "EXCEEDED_DAILY_LIKE_LIMIT",
+    "code": "DAILY_LIMIT_REACHED",
     "message": "You have reached your daily limit of 10 likes/passes.",
     "details": [],
     "timestamp": "2026-09-07T18:39:16.000Z",
@@ -805,7 +813,7 @@ export const validate = (schema: AnyZodObject) =>
 * API Version Prefix: `/api/v1/`
 * Routing Convention: Plural nouns (e.g., `/api/v1/users`, `/api/v1/matches`).
 * Pagination Strategy:
-  * **Cursor-based Pagination:** Used for infinite feeds (Discovery, Chat Messages) for low latency and consistent results.
+  * **Cursor-based Pagination:** Planned for chat and match lists. Live Discovery returns one card and does not paginate.
   * **Offset-based Pagination:** Used in Admin Panel management tables.
 
 ---
@@ -895,7 +903,9 @@ To maintain architecture quality during AI-assisted development, follow these op
 
 ### Workflow Process
 1. **Pre-Implementation:** Review `docs/01-product-requirements.md` and this document. Formulate an implementation plan covering affected modules, schema updates, API endpoints, and required tests.
-2. **Implementation:** Make minimal, targeted changes. Adhere to layer boundaries (Controller $ightarrow$ Service $ightarrow$ Data Access). Add corresponding Sequelize migrations for schema updates.
+2. **Implementation:** Make minimal, targeted changes. Adhere to layer boundaries (Controller $
+ightarrow$ Service $
+ightarrow$ Data Access). Add corresponding Sequelize migrations for schema updates.
 3. **Post-Implementation:** Execute unit/integration test suites, perform type-checking (`tsc`), and verify safety/entitlement rules.
 
 ---
