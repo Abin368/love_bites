@@ -1559,7 +1559,7 @@ Photo objects returned after confirm, list, and patch are `{ "id", "url", "displ
 ---
 
 ### 24.2 Send a Message
-**Implemented (Phase 6 Slice 2).** TEXT only. Free and Premium callers use the same path. Daily text quota, media types, Socket.IO delivery, and `remainingDailyMessages` are not implemented in this slice.
+**Implemented (Phase 6 Slice 2 TEXT persistence + Slice 3 free text quota).** TEXT only. Media types, Socket.IO delivery, history, and read receipts are not implemented in this slice.
 
 * **Method & Path:** `POST /api/v1/conversations/:conversationId/messages`
 * **Auth:** `Authorization: Bearer <accessToken>` and role `USER`. Middleware is `authenticate` and `requireRole('USER')`. `requireVerified` is not on the route. The service checks verification and returns `403 EMAIL_NOT_VERIFIED` or `403 PHONE_NOT_VERIFIED`. A non-`USER` role is `403 FORBIDDEN`.
@@ -1571,9 +1571,12 @@ Photo objects returned after confirm, list, and patch are `{ "id", "url", "displ
 * **Closed conversation:** when the caller is a participant and `conversations.status = 'CLOSED'`, `404 CONVERSATION_CLOSED`. Message: `Conversation is closed due to unmatch or safety block.`
 * **Inactive match with active conversation:** `404 RESOURCE_NOT_FOUND` so the inconsistent state is not exposed.
 * **Block:** either direction returns `409 BLOCKED_USER`. Message: `Interaction prohibited due to an active safety block.`
-* **Transaction:** one Sequelize transaction. Non-locking conversation/match load, then `lockLikeUsers` in canonical id order, then lock the match and conversation rows, re-read state, validate, insert the message, and set `last_message_at` to the message `created_at` while `status = 'ACTIVE'`. Concurrent UNMATCH and UNDO share the same user locks.
+* **Transaction:** one Sequelize transaction. Non-locking conversation/match load, then `lockLikeUsers` in canonical id order, then lock the match and conversation rows, re-read state, validate authorization, then evaluate Premium / free text quota, then insert the message, and set `last_message_at` to the message `created_at` while `status = 'ACTIVE'`. Concurrent UNMATCH and UNDO share the same user locks. Quota is never consumed for authorization failures.
 * **Persistence:** inserts `messages.message_type = 'TEXT'` with null media columns and null `read_at`. Updates only `conversations.last_message_at`. Does not change match status, conversation status, or `closed_at`.
-* **Quota and realtime:** no `usage_records` write, no Premium check, no Redis idempotency, and no Socket.IO event.
+* **Free text quota:** metric `DAILY_TEXT_MESSAGES` in `usage_records`. The window is the current UTC calendar day (`period_start` at UTC midnight, `period_end` 24 hours later). The increment is atomic (`INSERT ... ON CONFLICT ... DO UPDATE ... WHERE usage_count < 20 RETURNING`) and stops at 20. `remainingDailyMessages` is `20 - usage_count`. Authorization failures do not write usage. A failed message insert rolls the quota increment back with the rest of the transaction. PostgreSQL is the source of truth. Redis is not used for this product quota.
+* **Premium:** callers with an active Premium subscription (`hasActivePremium` inside the same transaction) do not write `usage_records` for this metric and return `remainingDailyMessages: null`.
+* **Exhausted free quota:** `429 DAILY_LIMIT_REACHED`. Message: `You have reached your daily limit of 20 text messages.` No `Retry-After`. The error envelope does not include `remainingDailyMessages`.
+* **Realtime:** no Redis idempotency and no Socket.IO event in this slice.
 * **Success Response (`201 Created`):** Message: `Message sent.`
   ```json
   {
@@ -1586,12 +1589,13 @@ Photo objects returned after confirm, list, and patch are `{ "id", "url", "displ
       "content": "Hey Jordan! Doing great, looking forward to the weekend.",
       "mediaUrl": null,
       "readAt": null,
-      "createdAt": "2026-09-15T08:42:00.000Z"
+      "createdAt": "2026-09-15T08:42:00.000Z",
+      "remainingDailyMessages": 19
     },
     "message": "Message sent."
   }
   ```
-  The body does not include `remainingDailyMessages`.
+  Free success always includes `remainingDailyMessages` as a number. Premium success uses `"remainingDailyMessages": null`.
 
 ---
 

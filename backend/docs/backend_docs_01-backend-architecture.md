@@ -511,28 +511,30 @@ Historical `UNDONE` and `UNMATCHED` rows stay in place. `uq_matches_single_activ
 
 ## 16. Chat & Realtime Architecture
 
-**Phase 6 Slice 2 implements TEXT send over HTTP.** LIKE and SUPER LIKE create an `ACTIVE` conversation row. Undo or UNMATCH closes it. `POST /api/v1/conversations/:conversationId/messages` authorizes the participant, persists a `TEXT` message, and updates `last_message_at`. Socket.IO foundation from Slice 1 remains available for later realtime delivery. Quotas, media, history, conversation rooms, and chat events are not implemented.
+**Phase 6 Slices 2–3 implement TEXT send over HTTP with free daily quota.** LIKE and SUPER LIKE create an `ACTIVE` conversation row. Undo or UNMATCH closes it. `POST /api/v1/conversations/:conversationId/messages` authorizes the participant, enforces Free `DAILY_TEXT_MESSAGES` (20 / UTC day) or Premium unlimited, persists a `TEXT` message, and updates `last_message_at`. Socket.IO foundation from Slice 1 remains available for later realtime delivery. Media, history, conversation rooms, and chat events are not implemented.
 
-### Messaging Rules (live Slice 2)
+### Messaging Rules (live Slices 2–3)
 * Either participant of an `ACTIVE` match with an `ACTIVE` conversation can send TEXT.
 * Empty and whitespace-only content are accepted and stored as submitted.
-* Free and Premium callers are treated the same. No daily text quota and no Premium read.
+* Free tier: Max 20 sent TEXT messages per UTC calendar day. Attachments prohibited. Exhausted quota is `429 DAILY_LIMIT_REACHED`.
+* Premium tier: Unlimited TEXT. No `DAILY_TEXT_MESSAGES` usage write. `remainingDailyMessages` is `null`.
 * Bidirectional blocks reject send with `409 BLOCKED_USER`.
 * Closed conversations reject send with `404 CONVERSATION_CLOSED`.
+* Product quota source of truth is PostgreSQL `usage_records`. Redis is not used for message quota.
 
 ### Planned later
-* Free tier: Max 20 text messages/day. Attachments prohibited.
-* Premium tier: Unlimited text and media.
+* Premium media attachments.
 * Socket.IO `chat:message:new` after HTTP persistence.
 
 ### Hybrid Persistence Flow
-HTTP is the write path for Slice 2. Later slices will broadcast through Socket.IO. **Redis does NOT store permanent messages.**
+HTTP is the write path for Slices 2–3. Later slices will broadcast through Socket.IO. **Redis does NOT store permanent messages or the free text quota.**
 
 ```
 Client A                  Server Node                 PostgreSQL
    |                           |                           |
    |--- POST /messages ------->|                           |
    |                           |-- Authorize + lock users ->|
+   |                           |-- Premium / quota upsert ->|
    |                           |-- INSERT Message Record ->|
    |                           |-- UPDATE last_message_at ->|
    |<-- 201 Created -----------|                           |

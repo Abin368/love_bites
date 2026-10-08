@@ -311,7 +311,7 @@ To prevent accidental data leakage, domain services must use explicit **Response
 
 ## 16. Chat and Messaging Security
 
-### 16.1 Message Send Authorization (Phase 6 Slice 2)
+### 16.1 Message Send Authorization (Phase 6 Slice 2 + Slice 3 quota)
 `POST /api/v1/conversations/:conversationId/messages` is implemented. The route uses `authenticate` and `requireRole('USER')`. `requireVerified` is not on the route. The service requires a verified email or phone and a complete profile with location and dating preferences.
 
 Before insert, `chat.service.ts` runs one PostgreSQL transaction:
@@ -332,10 +332,13 @@ Incoming TEXT payload
 [Step 4] No bidirectional block between participants
          │
          ▼
+[Step 5] Free daily TEXT quota (DAILY_TEXT_MESSAGES, 20 / UTC day)
+         │         Premium callers skip this step via hasActivePremium
+         ▼
 [Persist TEXT in PostgreSQL and update last_message_at]
 ```
 
-Steps 5 and 6 from the full chat plan (media entitlement and daily quota) are not in Slice 2. Free and Premium callers are treated the same. No Socket.IO event is emitted. User locks reuse `lockLikeUsers` so send coordinates with UNMATCH and UNDO.
+Media entitlement (attachments) is not in this slice. Free callers consume `DAILY_TEXT_MESSAGES` after authorization succeeds; exhausted free quota is `429 DAILY_LIMIT_REACHED` with message `You have reached your daily limit of 20 text messages.` Premium callers do not write `usage_records` and return `remainingDailyMessages: null`. Quota and message write share one transaction. No Socket.IO event is emitted. User locks reuse `lockLikeUsers` so send coordinates with UNMATCH and UNDO.
 
 ---
 
@@ -505,7 +508,7 @@ Before creating a Pull Request or deploying code, verify that all applicable ite
 
 ### Monetization & Payments
 * [ ] Entitlements are evaluated dynamically from server-side subscriptions.
-* [x] Free LIKE and PASS quota (10 per UTC day) is enforced atomically in `usage_records`. Message quotas are not implemented. Slice 2 send message does not write `usage_records` or read Premium.
+* [x] Free LIKE and PASS quota (10 per UTC day) is enforced atomically in `usage_records`. Free TEXT message quota (20 per UTC day, metric `DAILY_TEXT_MESSAGES`) is enforced atomically in the same ledger after authorization. Premium callers bypass both quotas and do not write usage for those metrics. Redis is not used for product quotas.
 * [ ] Plan pricing is resolved server-side; client prices are ignored.
 * [ ] Razorpay webhook HMAC signatures are verified before processing.
 * [ ] Webhook processing is idempotent via `processed_webhooks`.

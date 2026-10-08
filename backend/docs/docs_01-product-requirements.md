@@ -284,7 +284,7 @@ Reports are not a Discovery exclusion. Browsing candidate cards does not consume
 
 ### 8.3 Messaging Quotas & Lifecycle
 * **Live send path:** Either participant may send TEXT on an `ACTIVE` match with an `ACTIVE` conversation. Empty and whitespace-only content are accepted. Bidirectional blocks reject send. Closed conversations reject send.
-* **Free Tier Daily Quota:** Planned at 20 sent text messages per day. Not enforced yet; Free and Premium callers currently send TEXT without a usage counter.
+* **Free Tier Daily Quota:** Enforced at 20 sent text messages per UTC calendar day (`usage_records` metric `DAILY_TEXT_MESSAGES`). Premium callers have unlimited TEXT and do not consume that counter.
 * **Incoming Messages:** Received messages do **not** consume the receiver's daily sent quota.
 * **Unmatch Impact:** When a match is unmatched, the conversation becomes `CLOSED` immediately and further messages are blocked. The conversation and its messages stay in PostgreSQL. Unmatch does not delete likes.
 

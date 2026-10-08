@@ -467,7 +467,7 @@ Implement swipe action mechanics (`LIKE`, `PASS`, `SUPER_LIKE`), daily action qu
 
 ## 10. Phase 6 — Chat and Realtime Messaging
 
-**Partly complete (2026-10-08).** Slice 1 Socket.IO foundation and Slice 2 TEXT message persistence are implemented. Quotas, conversation rooms, chat events, history, read receipts, and media are not.
+**Partly complete (2026-10-08).** Slice 1 Socket.IO foundation, Slice 2 TEXT message persistence, and Slice 3 free text-message quota are implemented. Conversation rooms, chat events, history, read receipts, and media are not.
 
 ### 10.1 Objectives
 Build real-time messaging using Socket.IO backed by PostgreSQL persistence, enforce message authorization, manage unread counters, support tiered media attachments, and provide cursor-based history pagination.
@@ -482,11 +482,16 @@ Build real-time messaging using Socket.IO backed by PostgreSQL persistence, enfo
    * **Route:** `POST /api/v1/conversations/:conversationId/messages` with `authenticate` and `requireRole('USER')`.
    * **Steps 1–4:** authentication, participant check, active match and active conversation, bidirectional block check.
    * **Persistence:** insert `messages.message_type = 'TEXT'`, set `conversations.last_message_at` to the message `created_at` inside one transaction with `lockLikeUsers`.
-   * **Not in Slice 2:** daily text quota, Premium/media entitlement, Socket.IO broadcast, history, or read receipts.
-3. **Message Persistence & Realtime Broadcast — Partially implemented:**
-   * Persist TEXT messages in PostgreSQL. Update `conversations.last_message_at`.
+3. **Free Text Message Quota — Implemented (Slice 3):**
+   * Free callers consume metric `DAILY_TEXT_MESSAGES` (limit 20 per UTC calendar day) via atomic `usage_records` upsert after authorization and inside the same transaction as the message write.
+   * Premium callers use `hasActivePremium` in that transaction, skip usage writes, and return `remainingDailyMessages: null`.
+   * Exhausted free quota is `429 DAILY_LIMIT_REACHED` with message `You have reached your daily limit of 20 text messages.`
+   * PostgreSQL is the quota source of truth. Redis is not used for this product quota. No migration.
+   * **Not in Slice 3:** media entitlement, Socket.IO broadcast, history, or read receipts.
+4. **Message Persistence & Realtime Broadcast — Partially implemented:**
+   * Persist TEXT messages in PostgreSQL. Update `conversations.last_message_at`. Free text quota is enforced.
    * Broadcast `chat:message:new` to conversation rooms remains later work.
-4. **Message History & Read Receipts — Not implemented:**
+5. **Message History & Read Receipts — Not implemented:**
    * `GET /api/v1/conversations/:conversationId/messages`: Cursor-paginated history sorted by `created_at DESC`.
    * `PATCH /api/v1/conversations/:conversationId/read`: Updates `read_at = CURRENT_TIMESTAMP` for unread messages and emits `chat:message:read` Socket.IO event.
 
@@ -787,7 +792,7 @@ To maintain strict adherence to dependency constraints, development should follo
 | **Likes, Passes, Super Like** | Discovery, subscriptions for Premium | `likes`, `usage_records`, `matches`, `conversations`, `user_credit_balances`, `credit_transactions` | `POST /discovery/:userId/pass`, `POST /discovery/:userId/like`, `POST /discovery/:userId/super-like` | PostgreSQL integration: pass 11, like 20, super like 22 |
 | **Unmatch** | Likes Module | `matches`, `conversations` | `DELETE /matches/:matchId` | Implemented. PostgreSQL integration: 13 passed. No Redis, quota, or credit change. `GET /matches` is not implemented. |
 | **Premium Undo** | Likes, Matches, Premium subscription | `likes`, `matches`, `conversations`, `subscriptions`, `plans` | `POST /discovery/undo` | PostgreSQL integration: 14 passed. No Redis idempotency. |
-| **Chat & Messaging**| Matches Module, S3, Socket.IO | `conversations`, `messages`, `usage_records` | `POST /conversations/:conversationId/messages`, later history/Socket.IO | Slice 2 TEXT send implemented. Quotas, media, history, and Socket events remain. |
+| **Chat & Messaging**| Matches Module, S3, Socket.IO | `conversations`, `messages`, `usage_records` | `POST /conversations/:conversationId/messages`, later history/Socket.IO | Slices 2–3: TEXT send + free `DAILY_TEXT_MESSAGES` quota (20/UTC day). Media, history, and Socket events remain. |
 | **Blocks & Safety** | Users, Matches, Chat | `blocks` | `/blocks`, `/blocks/:userId` | Integration (Bidirectional Isolation) |
 | **Reports** | Users, Safety | `reports` | `/reports` | Integration (Report Submission) |
 | **Notifications** | Matches, Chat, Likes | `notifications` | `GET /notifications`, Socket.IO events | Integration (Event Delivery) |

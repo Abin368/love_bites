@@ -8,7 +8,7 @@ This is the frontend integration guide for Love Bite. It tells a frontend develo
 
 ## 1. Purpose
 
-Use this document to wire registration, verification, login, refresh, logout, password reset, the Phase 3 onboarding contract, and Phase 4 Discovery: public catalogs, the basic profile, photos, interests, relationship intentions, dating preferences, location, onboarding status, onboarding completion, and `GET /api/v1/discovery`. Phase 5 likes/matches and Phase 6 chat HTTP wiring are outside this guide’s current frontend scope. The backend supports `POST /api/v1/conversations/:conversationId/messages` for TEXT only; Socket.IO foundation exists (handshake `auth.token`, user room only). Chat message events, history, inbox, and quotas are not available yet.
+Use this document to wire registration, verification, login, refresh, logout, password reset, the Phase 3 onboarding contract, and Phase 4 Discovery: public catalogs, the basic profile, photos, interests, relationship intentions, dating preferences, location, onboarding status, onboarding completion, and `GET /api/v1/discovery`. Phase 5 likes/matches and Phase 6 chat HTTP wiring are outside this guide’s current frontend scope. The backend supports `POST /api/v1/conversations/:conversationId/messages` for TEXT only with Free daily quota / Premium unlimited (`remainingDailyMessages`); Socket.IO foundation exists (handshake `auth.token`, user room only). Chat message events, history, and inbox are not available yet.
 
 ---
 
@@ -777,7 +777,7 @@ Phase 2 authentication is implemented. Phase 3 onboarding is implemented: catalo
 
 `GET /api/v1/dating-preferences` and `PUT /api/v1/dating-preferences` are not mounted. `PUT /api/v1/me/interests` and `PUT /api/v1/me/relationship-intentions` are not mounted. `PUT /api/v1/location` and `PATCH /api/v1/onboarding/profile` are not mounted. Registration still does not write `profiles.date_of_birth`. `POST /api/v1/profile` does.
 
-Phase 4 — Discovery is complete. Call `GET /api/v1/discovery` as described in section 27. Phase 5 likes/matches and Phase 6 Slice 2 TEXT send exist on the backend but are outside this guide’s current frontend wiring scope. Socket.IO foundation exists for `auth.token` handshake and `user:{userId}` only. Do not call chat message events yet. Do not expect `remainingDailyMessages`, media types, inbox, or history from the live send endpoint.
+Phase 4 — Discovery is complete. Call `GET /api/v1/discovery` as described in section 27. Phase 5 likes/matches and Phase 6 TEXT send (with Free daily quota / Premium unlimited) exist on the backend but are outside this guide’s current frontend wiring scope. Successful TEXT send returns `remainingDailyMessages` (`number` for Free, `null` for Premium). Free exhaustion is `429 DAILY_LIMIT_REACHED`. Socket.IO foundation exists for `auth.token` handshake and `user:{userId}` only. Do not call chat message events yet. Do not expect media types, inbox, or history from the live send endpoint.
 
 ---
 

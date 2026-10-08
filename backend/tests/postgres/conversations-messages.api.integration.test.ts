@@ -15,6 +15,10 @@ import { ProfilePhoto } from '../../src/database/models/profile-photo.model';
 import { Subscription } from '../../src/database/models/subscription.model';
 import { UsageRecord } from '../../src/database/models/usage-record.model';
 import { User, UserStatus } from '../../src/database/models/user.model';
+import {
+  currentUtcDayWindow,
+  DAILY_TEXT_MESSAGES_METRIC
+} from '../../src/modules/likes/likes.data-access';
 import { signAccessToken } from '../../src/utils/jwt';
 
 const mockPhotoStorage = {
@@ -33,7 +37,7 @@ import { app } from '../../src/app';
 
 const PASSWORD_HASH = '$argon2id$v=19$m=65536,t=3,p=4$integration-test-hash';
 const ORIGIN = { latitude: 12.9716, longitude: 77.5946 };
-const DAILY_TEXT_MESSAGES = 'DAILY_TEXT_MESSAGES';
+const DAILY_TEXT_LIMIT_MESSAGE = 'You have reached your daily limit of 20 text messages.';
 
 interface Point {
   latitude: number;
@@ -210,16 +214,19 @@ function sendMessage(callerId: string, conversationId: string, body: unknown = {
 }
 
 async function grantPremium(userId: string): Promise<void> {
-  const plan = await Plan.create({
-    code: 'PREMIUM_MONTHLY',
-    name: 'Love Bite Premium (Monthly)',
-    billingInterval: 'MONTH',
-    priceInCents: 49900,
-    currency: 'INR',
-    isActive: true,
-    displayOrder: 1,
-    ...timestamps()
-  });
+  let plan = await Plan.findOne({ where: { code: 'PREMIUM_MONTHLY' } });
+  if (!plan) {
+    plan = await Plan.create({
+      code: 'PREMIUM_MONTHLY',
+      name: 'Love Bite Premium (Monthly)',
+      billingInterval: 'MONTH',
+      priceInCents: 49900,
+      currency: 'INR',
+      isActive: true,
+      displayOrder: 1,
+      ...timestamps()
+    });
+  }
   const now = new Date();
   await Subscription.create({
     userId,
@@ -231,8 +238,28 @@ async function grantPremium(userId: string): Promise<void> {
   });
 }
 
-async function textMessageUsageCount(): Promise<number> {
-  return UsageRecord.count({ where: { metricKey: DAILY_TEXT_MESSAGES } });
+async function textMessageUsageCount(userId: string): Promise<number> {
+  const { periodStart } = currentUtcDayWindow();
+  const row = await UsageRecord.findOne({
+    where: { userId, metricKey: DAILY_TEXT_MESSAGES_METRIC, periodStart }
+  });
+  return row?.usageCount ?? 0;
+}
+
+async function seedTextUsage(userId: string, count: number, period?: { periodStart: Date; periodEnd: Date }): Promise<void> {
+  const window = period ?? currentUtcDayWindow();
+  await UsageRecord.create({
+    userId,
+    metricKey: DAILY_TEXT_MESSAGES_METRIC,
+    periodStart: window.periodStart,
+    periodEnd: window.periodEnd,
+    usageCount: count,
+    ...timestamps()
+  });
+}
+
+async function textMessageUsageRowCount(): Promise<number> {
+  return UsageRecord.count({ where: { metricKey: DAILY_TEXT_MESSAGES_METRIC } });
 }
 
 describe('POST /api/v1/conversations/:conversationId/messages', () => {
@@ -254,9 +281,10 @@ describe('POST /api/v1/conversations/:conversationId/messages', () => {
       content: 'Hello from caller',
       mediaUrl: null,
       readAt: null,
-      createdAt: first.body.data.createdAt
+      createdAt: first.body.data.createdAt,
+      remainingDailyMessages: 19
     });
-    expect(first.body.data).not.toHaveProperty('remainingDailyMessages');
+    expect(await textMessageUsageCount(caller.id)).toBe(1);
 
     const stored = await Message.findByPk(first.body.data.id);
     expect(stored).not.toBeNull();
@@ -274,7 +302,6 @@ describe('POST /api/v1/conversations/:conversationId/messages', () => {
     expect(conversation.lastMessageAt?.toISOString()).toBe(stored?.createdAt.toISOString());
     expect(conversation.status).toBe('ACTIVE');
     expect(conversation.closedAt).toBeNull();
-    expect(await textMessageUsageCount()).toBe(0);
 
     const second = await sendMessage(target.id, conversation.id, {
       messageType: 'TEXT',
@@ -283,6 +310,9 @@ describe('POST /api/v1/conversations/:conversationId/messages', () => {
     expect(second.status).toBe(201);
     expect(second.body.data.senderId).toBe(target.id);
     expect(second.body.data.content).toBe('Hello back');
+    expect(second.body.data.remainingDailyMessages).toBe(19);
+    expect(await textMessageUsageCount(target.id)).toBe(1);
+    expect(await textMessageUsageCount(caller.id)).toBe(1);
     expect(await Message.count()).toBe(2);
   });
 
@@ -292,6 +322,7 @@ describe('POST /api/v1/conversations/:conversationId/messages', () => {
     const empty = await sendMessage(caller.id, conversation.id, { messageType: 'TEXT', content: '' });
     expect(empty.status).toBe(201);
     expect(empty.body.data.content).toBe('');
+    expect(empty.body.data.remainingDailyMessages).toBe(19);
     const emptyRow = await Message.findByPk(empty.body.data.id);
     expect(emptyRow?.content).toBe('');
 
@@ -301,6 +332,7 @@ describe('POST /api/v1/conversations/:conversationId/messages', () => {
     });
     expect(whitespace.status).toBe(201);
     expect(whitespace.body.data.content).toBe('  hello  ');
+    expect(whitespace.body.data.remainingDailyMessages).toBe(18);
     const whitespaceRow = await Message.findByPk(whitespace.body.data.id);
     expect(whitespaceRow?.content).toBe('  hello  ');
 
@@ -310,6 +342,8 @@ describe('POST /api/v1/conversations/:conversationId/messages', () => {
     });
     expect(spacesOnly.status).toBe(201);
     expect(spacesOnly.body.data.content).toBe('   ');
+    expect(spacesOnly.body.data.remainingDailyMessages).toBe(17);
+    expect(await textMessageUsageCount(caller.id)).toBe(3);
   });
 
   it('rejects a missing token, an invalid token, a deleted account, an admin, a suspended user, and a banned user', async () => {
@@ -384,6 +418,7 @@ describe('POST /api/v1/conversations/:conversationId/messages', () => {
     expect(await Message.count()).toBe(0);
     await conversation.reload();
     expect(conversation.lastMessageAt).toBeNull();
+    expect(await textMessageUsageRowCount()).toBe(0);
   });
 
   it('rejects an unverified email caller and an unverified phone caller', async () => {
@@ -396,6 +431,7 @@ describe('POST /api/v1/conversations/:conversationId/messages', () => {
     expect(emailResponse.status).toBe(403);
     expect(emailResponse.body.error.code).toBe('EMAIL_NOT_VERIFIED');
     expect(emailResponse.body.error.message).toBe('Email verification is required.');
+    expect(await textMessageUsageCount(emailCaller.id)).toBe(0);
 
     const phoneCaller = await buildUser({ genderId: catalogGender.id, phoneOnly: true, emailVerified: false });
     const phoneMatch = await insertMatch(phoneCaller.id, target.id, 'ACTIVE');
@@ -405,6 +441,7 @@ describe('POST /api/v1/conversations/:conversationId/messages', () => {
     expect(phoneResponse.body.error.code).toBe('PHONE_NOT_VERIFIED');
     expect(phoneResponse.body.error.message).toBe('Phone verification is required.');
     expect(await Message.count()).toBe(0);
+    expect(await textMessageUsageCount(phoneCaller.id)).toBe(0);
   });
 
   it('rejects an incomplete caller profile, missing preferences, and a missing location', async () => {
@@ -418,6 +455,7 @@ describe('POST /api/v1/conversations/:conversationId/messages', () => {
     expect(incompleteResponse.status).toBe(400);
     expect(incompleteResponse.body.error.code).toBe('PROFILE_INCOMPLETE');
     expect(incompleteResponse.body.error.message).toBe('Onboarding is incomplete.');
+    expect(await textMessageUsageCount(incomplete.id)).toBe(0);
 
     const missingPreferences = await buildUser({ genderId: catalogGender.id, preferences: false });
     const preferencesMatch = await insertMatch(missingPreferences.id, target.id, 'ACTIVE');
@@ -425,6 +463,7 @@ describe('POST /api/v1/conversations/:conversationId/messages', () => {
     const preferencesResponse = await sendMessage(missingPreferences.id, preferencesConversation.id);
     expect(preferencesResponse.status).toBe(400);
     expect(preferencesResponse.body.error.code).toBe('PROFILE_INCOMPLETE');
+    expect(await textMessageUsageCount(missingPreferences.id)).toBe(0);
 
     const missingLocation = await buildUser({ genderId: catalogGender.id, point: null });
     const locationMatch = await insertMatch(missingLocation.id, target.id, 'ACTIVE');
@@ -433,6 +472,7 @@ describe('POST /api/v1/conversations/:conversationId/messages', () => {
     expect(locationResponse.status).toBe(400);
     expect(locationResponse.body.error.code).toBe('PROFILE_INCOMPLETE');
     expect(await Message.count()).toBe(0);
+    expect(await textMessageUsageCount(missingLocation.id)).toBe(0);
   });
 
   it('rejects an invalid conversation id and an unknown conversation with the same not-found response', async () => {
@@ -451,6 +491,7 @@ describe('POST /api/v1/conversations/:conversationId/messages', () => {
     expect(missing.body.error.code).toBe('RESOURCE_NOT_FOUND');
     expect(missing.body.error.message).toBe('Resource not found');
     expect(await Message.count()).toBe(0);
+    expect(await textMessageUsageCount(caller.id)).toBe(0);
   });
 
   it('rejects a non-participant without revealing the conversation exists', async () => {
@@ -462,6 +503,7 @@ describe('POST /api/v1/conversations/:conversationId/messages', () => {
     expect(response.body.error.code).toBe('RESOURCE_NOT_FOUND');
     expect(response.body.error.message).toBe('Resource not found');
     expect(await Message.count()).toBe(0);
+    expect(await textMessageUsageCount(outsider.id)).toBe(0);
     await conversation.reload();
     expect(conversation.lastMessageAt).toBeNull();
     expect(conversation.status).toBe('ACTIVE');
@@ -482,6 +524,7 @@ describe('POST /api/v1/conversations/:conversationId/messages', () => {
     expect(afterUnmatch.body.error.code).toBe('CONVERSATION_CLOSED');
     expect(afterUnmatch.body.error.message).toBe('Conversation is closed due to unmatch or safety block.');
     expect(await Message.count()).toBe(0);
+    expect(await textMessageUsageCount(caller.id)).toBe(0);
 
     const second = await pair();
     await grantPremium(second.caller.id);
@@ -511,6 +554,7 @@ describe('POST /api/v1/conversations/:conversationId/messages', () => {
     expect(afterUndo.body.error.code).toBe('CONVERSATION_CLOSED');
     expect(afterUndo.body.error.message).toBe('Conversation is closed due to unmatch or safety block.');
     expect(await Message.count()).toBe(0);
+    expect(await textMessageUsageCount(second.caller.id)).toBe(0);
     void target;
   });
 
@@ -524,6 +568,7 @@ describe('POST /api/v1/conversations/:conversationId/messages', () => {
     expect(response.body.error.code).toBe('RESOURCE_NOT_FOUND');
     expect(response.body.error.message).toBe('Resource not found');
     expect(await Message.count()).toBe(0);
+    expect(await textMessageUsageCount(caller.id)).toBe(0);
   });
 
   it('rejects blocks in either direction', async () => {
@@ -538,6 +583,7 @@ describe('POST /api/v1/conversations/:conversationId/messages', () => {
     expect(callerBlocked.status).toBe(409);
     expect(callerBlocked.body.error.code).toBe('BLOCKED_USER');
     expect(callerBlocked.body.error.message).toBe('Interaction prohibited due to an active safety block.');
+    expect(await textMessageUsageCount(first.caller.id)).toBe(0);
 
     const second = await activeThread();
     await Block.create({
@@ -551,6 +597,7 @@ describe('POST /api/v1/conversations/:conversationId/messages', () => {
     expect(recipientBlocked.body.error.code).toBe('BLOCKED_USER');
     expect(recipientBlocked.body.error.message).toBe('Interaction prohibited due to an active safety block.');
     expect(await Message.count()).toBe(0);
+    expect(await textMessageUsageCount(second.caller.id)).toBe(0);
   });
 
   it('rejects invalid bodies and malformed JSON without writing messages', async () => {
@@ -606,6 +653,7 @@ describe('POST /api/v1/conversations/:conversationId/messages', () => {
     expect(await Message.count()).toBe(0);
     await conversation.reload();
     expect(conversation.lastMessageAt).toEqual(priorLastMessageAt);
+    expect(await textMessageUsageCount(caller.id)).toBe(0);
   });
 
   it('lets one concurrent send and unmatch race settle without inserting after close', async () => {
@@ -689,6 +737,153 @@ describe('POST /api/v1/conversations/:conversationId/messages', () => {
 
     const contents = [first.body.data.content, second.body.data.content].sort();
     expect(contents).toEqual(['One', 'Two']);
-    expect(await textMessageUsageCount()).toBe(0);
+    expect(first.body.data.remainingDailyMessages).toBe(19);
+    expect(second.body.data.remainingDailyMessages).toBe(19);
+    expect(await textMessageUsageCount(caller.id)).toBe(1);
+    expect(await textMessageUsageCount(target.id)).toBe(1);
+  });
+
+  it('decrements remainingDailyMessages across multiple free sends', async () => {
+    const { caller, conversation } = await activeThread();
+
+    const first = await sendMessage(caller.id, conversation.id, { messageType: 'TEXT', content: 'one' });
+    expect(first.status).toBe(201);
+    expect(first.body.data.remainingDailyMessages).toBe(19);
+    expect(await textMessageUsageCount(caller.id)).toBe(1);
+
+    const second = await sendMessage(caller.id, conversation.id, { messageType: 'TEXT', content: 'two' });
+    expect(second.status).toBe(201);
+    expect(second.body.data.remainingDailyMessages).toBe(18);
+
+    const third = await sendMessage(caller.id, conversation.id, { messageType: 'TEXT', content: 'three' });
+    expect(third.status).toBe(201);
+    expect(third.body.data.remainingDailyMessages).toBe(17);
+    expect(await textMessageUsageCount(caller.id)).toBe(3);
+    expect(await Message.count()).toBe(3);
+  });
+
+  it('allows the 20th free message and rejects the 21st without writing', async () => {
+    const { caller, conversation } = await activeThread();
+    await seedTextUsage(caller.id, 19);
+
+    const twentieth = await sendMessage(caller.id, conversation.id, {
+      messageType: 'TEXT',
+      content: 'twentieth'
+    });
+    expect(twentieth.status).toBe(201);
+    expect(twentieth.body.data.remainingDailyMessages).toBe(0);
+    expect(await textMessageUsageCount(caller.id)).toBe(20);
+
+    await conversation.reload();
+    const lastMessageAt = conversation.lastMessageAt;
+    const beforeCount = await Message.count();
+
+    const twentyFirst = await sendMessage(caller.id, conversation.id, {
+      messageType: 'TEXT',
+      content: 'twenty-first'
+    });
+    expect(twentyFirst.status).toBe(429);
+    expect(twentyFirst.body.error.code).toBe('DAILY_LIMIT_REACHED');
+    expect(twentyFirst.body.error.message).toBe(DAILY_TEXT_LIMIT_MESSAGE);
+    expect(twentyFirst.body.error).not.toHaveProperty('remainingDailyMessages');
+    expect(twentyFirst.body.data).toBeUndefined();
+    expect(await Message.count()).toBe(beforeCount);
+    expect(await textMessageUsageCount(caller.id)).toBe(20);
+    await conversation.reload();
+    expect(conversation.lastMessageAt?.toISOString()).toBe(lastMessageAt?.toISOString());
+  });
+
+  it('lets premium callers bypass the free text quota and leave remainingDailyMessages null', async () => {
+    const { caller, conversation } = await activeThread();
+    await grantPremium(caller.id);
+    await seedTextUsage(caller.id, 20);
+
+    const response = await sendMessage(caller.id, conversation.id, {
+      messageType: 'TEXT',
+      content: 'premium hello'
+    });
+    expect(response.status).toBe(201);
+    expect(response.body.data.remainingDailyMessages).toBeNull();
+    expect(response.body.data.content).toBe('premium hello');
+    expect(await textMessageUsageCount(caller.id)).toBe(20);
+    expect(await Message.count()).toBe(1);
+
+    const second = await activeThread();
+    await grantPremium(second.caller.id);
+    const withoutUsage = await sendMessage(second.caller.id, second.conversation.id, {
+      messageType: 'TEXT',
+      content: 'no usage row'
+    });
+    expect(withoutUsage.status).toBe(201);
+    expect(withoutUsage.body.data.remainingDailyMessages).toBeNull();
+    expect(await textMessageUsageCount(second.caller.id)).toBe(0);
+  });
+
+  it('rolls back quota when message insert fails after consumption', async () => {
+    const { caller, conversation } = await activeThread();
+    Message.addHook('beforeCreate', 'force-text-message-failure', () => {
+      throw new Error('forced message failure');
+    });
+
+    try {
+      const response = await sendMessage(caller.id, conversation.id, {
+        messageType: 'TEXT',
+        content: 'should roll back'
+      });
+      expect(response.status).toBe(500);
+    } finally {
+      Message.removeHook('beforeCreate', 'force-text-message-failure');
+    }
+
+    expect(await Message.count()).toBe(0);
+    expect(await textMessageUsageCount(caller.id)).toBe(0);
+    await conversation.reload();
+    expect(conversation.lastMessageAt).toBeNull();
+  });
+
+  it('ignores a previous UTC day usage row for the current free quota', async () => {
+    const { caller, conversation } = await activeThread();
+    const today = currentUtcDayWindow();
+    const previousStart = new Date(today.periodStart.getTime() - 24 * 60 * 60 * 1000);
+    const previousEnd = new Date(today.periodStart.getTime());
+    await seedTextUsage(caller.id, 20, { periodStart: previousStart, periodEnd: previousEnd });
+
+    const response = await sendMessage(caller.id, conversation.id, {
+      messageType: 'TEXT',
+      content: 'new day'
+    });
+    expect(response.status).toBe(201);
+    expect(response.body.data.remainingDailyMessages).toBe(19);
+    expect(await textMessageUsageCount(caller.id)).toBe(1);
+
+    const rows = await UsageRecord.findAll({
+      where: { userId: caller.id, metricKey: DAILY_TEXT_MESSAGES_METRIC },
+      order: [['periodStart', 'ASC']]
+    });
+    expect(rows).toHaveLength(2);
+    expect(rows[0].usageCount).toBe(20);
+    expect(rows[1].usageCount).toBe(1);
+    expect(rows[1].periodStart.toISOString()).toBe(today.periodStart.toISOString());
+  });
+
+  it('allows only one of two concurrent free sends once nineteen messages are already used', async () => {
+    const { caller, conversation } = await activeThread();
+    await seedTextUsage(caller.id, 19);
+
+    const [first, second] = await Promise.all([
+      sendMessage(caller.id, conversation.id, { messageType: 'TEXT', content: 'slot-a' }),
+      sendMessage(caller.id, conversation.id, { messageType: 'TEXT', content: 'slot-b' })
+    ]);
+
+    const statuses = [first.status, second.status].sort((left, right) => left - right);
+    expect(statuses).toEqual([201, 429]);
+    expect(await textMessageUsageCount(caller.id)).toBe(20);
+    expect(await Message.count()).toBe(1);
+
+    const success = first.status === 201 ? first : second;
+    const failure = first.status === 429 ? first : second;
+    expect(success.body.data.remainingDailyMessages).toBe(0);
+    expect(failure.body.error.code).toBe('DAILY_LIMIT_REACHED');
+    expect(failure.body.error.message).toBe(DAILY_TEXT_LIMIT_MESSAGE);
   });
 });

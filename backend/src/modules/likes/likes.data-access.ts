@@ -11,6 +11,8 @@ import type { PassTargetState, UtcDayWindow } from './likes.types';
 
 export const DAILY_LIKE_PASS_METRIC = 'DAILY_LIKE_PASS';
 export const FREE_DAILY_LIKE_PASS_LIMIT = 10;
+export const DAILY_TEXT_MESSAGES_METRIC = 'DAILY_TEXT_MESSAGES';
+export const FREE_DAILY_TEXT_MESSAGES_LIMIT = 20;
 
 const PREMIUM_PLAN_CODES = ['PREMIUM_MONTHLY', 'PREMIUM_YEARLY'] as const;
 const PREMIUM_STATUSES = ['ACTIVE', 'PAST_DUE', 'GRACE_PERIOD'] as const;
@@ -38,7 +40,7 @@ interface CanonicalPairRow {
   userTwoId: string;
 }
 
-const INCREMENT_DAILY_LIKE_PASS_SQL = `
+const INCREMENT_DAILY_USAGE_SQL = `
 INSERT INTO usage_records (
   id,
   user_id,
@@ -194,15 +196,20 @@ export async function hasActivePremium(userId: string, transaction: Transaction)
   return subscription !== null;
 }
 
-export async function incrementDailyLikePass(userId: string, transaction: Transaction): Promise<number | null> {
+async function incrementDailyUsage(
+  userId: string,
+  metricKey: string,
+  limit: number,
+  transaction: Transaction
+): Promise<number | null> {
   const { periodStart, periodEnd } = currentUtcDayWindow();
-  const rows = await sequelize.query<UsageCountRow>(INCREMENT_DAILY_LIKE_PASS_SQL, {
+  const rows = await sequelize.query<UsageCountRow>(INCREMENT_DAILY_USAGE_SQL, {
     replacements: {
       userId,
-      metricKey: DAILY_LIKE_PASS_METRIC,
+      metricKey,
       periodStart,
       periodEnd,
-      limit: FREE_DAILY_LIKE_PASS_LIMIT
+      limit
     },
     type: QueryTypes.SELECT,
     transaction
@@ -213,6 +220,14 @@ export async function incrementDailyLikePass(userId: string, transaction: Transa
   }
 
   return Number(usageCount);
+}
+
+export async function incrementDailyLikePass(userId: string, transaction: Transaction): Promise<number | null> {
+  return incrementDailyUsage(userId, DAILY_LIKE_PASS_METRIC, FREE_DAILY_LIKE_PASS_LIMIT, transaction);
+}
+
+export async function incrementDailyTextMessages(userId: string, transaction: Transaction): Promise<number | null> {
+  return incrementDailyUsage(userId, DAILY_TEXT_MESSAGES_METRIC, FREE_DAILY_TEXT_MESSAGES_LIMIT, transaction);
 }
 
 export async function insertPass(fromUserId: string, toUserId: string, transaction: Transaction): Promise<void> {

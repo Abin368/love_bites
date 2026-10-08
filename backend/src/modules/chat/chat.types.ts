@@ -15,6 +15,7 @@ export interface SendTextMessageResult {
   mediaUrl: null;
   readAt: null;
   createdAt: Date;
+  remainingDailyMessages: number | null;
 }
 
 export interface ConversationMatchLookup {

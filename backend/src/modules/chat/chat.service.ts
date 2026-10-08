@@ -1,7 +1,19 @@
 import { sequelize } from '../../config/database';
-import { ConflictError, ForbiddenError, NotFoundError, UnauthorizedError, ValidationError } from '../../utils/errors';
+import {
+  ConflictError,
+  ForbiddenError,
+  NotFoundError,
+  RateLimitError,
+  UnauthorizedError,
+  ValidationError
+} from '../../utils/errors';
 import { findViewerDiscoveryContext } from '../discovery/discovery.data-access';
-import { lockLikeUsers } from '../likes/likes.data-access';
+import {
+  FREE_DAILY_TEXT_MESSAGES_LIMIT,
+  hasActivePremium,
+  incrementDailyTextMessages,
+  lockLikeUsers
+} from '../likes/likes.data-access';
 import { findUserById } from '../users/users.data-access';
 import {
   findConversationWithMatch,
@@ -17,6 +29,7 @@ import { conversationIdSchema } from './chat.validator';
 const RESOURCE_NOT_FOUND_MESSAGE = 'Resource not found';
 const CONVERSATION_CLOSED_MESSAGE = 'Conversation is closed due to unmatch or safety block.';
 const BLOCKED_USER_MESSAGE = 'Interaction prohibited due to an active safety block.';
+const DAILY_TEXT_LIMIT_MESSAGE = 'You have reached your daily limit of 20 text messages.';
 
 function parseConversationId(conversationId: string): string {
   const parsed = conversationIdSchema.safeParse(conversationId);
@@ -103,6 +116,16 @@ export async function sendTextMessage(input: SendTextMessageInput): Promise<Send
       throw new ConflictError(BLOCKED_USER_MESSAGE, [], 'BLOCKED_USER');
     }
 
+    const premium = await hasActivePremium(input.callerId, transaction);
+    let remainingDailyMessages: number | null = null;
+    if (!premium) {
+      const usageCount = await incrementDailyTextMessages(input.callerId, transaction);
+      if (usageCount === null) {
+        throw new RateLimitError(DAILY_TEXT_LIMIT_MESSAGE, [], 'DAILY_LIMIT_REACHED');
+      }
+      remainingDailyMessages = FREE_DAILY_TEXT_MESSAGES_LIMIT - usageCount;
+    }
+
     const message = await insertTextMessage(conversationId, input.callerId, input.content, transaction);
     const updated = await updateConversationLastMessageAt(conversationId, message.createdAt, transaction);
     if (!updated) {
@@ -117,7 +140,8 @@ export async function sendTextMessage(input: SendTextMessageInput): Promise<Send
       content: message.content ?? input.content,
       mediaUrl: null,
       readAt: null,
-      createdAt: message.createdAt
+      createdAt: message.createdAt,
+      remainingDailyMessages
     };
   });
 }

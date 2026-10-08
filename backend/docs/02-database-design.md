@@ -1007,7 +1007,7 @@ Configures quantitative operational limits per plan tier (e.g., Free users get 1
 ### 17.2 `usage_records`
 
 #### Purpose
-Persistent ledger recording usage consumption per user and metric. The live free LIKE and PASS quota uses metric key `DAILY_LIKE_PASS`, a limit of 10, and a UTC calendar day: `period_start` is UTC midnight and `period_end` is 24 hours later. The increment is `INSERT ... ON CONFLICT (user_id, metric_key, period_start) DO UPDATE ... WHERE usage_count < 10`. Premium LIKE and PASS do not write this row. SUPER LIKE and UNDO do not change it. Undo does not restore a consumed count. Message quotas are not implemented.
+Persistent ledger recording usage consumption per user and metric. The live free LIKE and PASS quota uses metric key `DAILY_LIKE_PASS`, a limit of 10, and a UTC calendar day: `period_start` is UTC midnight and `period_end` is 24 hours later. The increment is `INSERT ... ON CONFLICT (user_id, metric_key, period_start) DO UPDATE ... WHERE usage_count < 10`. Premium LIKE and PASS do not write this row. SUPER LIKE and UNDO do not change it. Undo does not restore a consumed count. The live free TEXT message quota uses metric key `DAILY_TEXT_MESSAGES`, a limit of 20, the same UTC calendar day window, and the same atomic upsert pattern with `WHERE usage_count < 20`. Premium TEXT send does not write this row. Redis is not used for either product quota.
 
 #### Columns
 | Column | Type | Nullable | Default | Description |
