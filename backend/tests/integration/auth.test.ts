@@ -72,6 +72,16 @@ jest.mock('../../src/modules/likes/likes.data-access', () => ({
   incrementDailyLikePass: async () => null,
   insertPass: async () => undefined
 }));
+jest.mock('../../src/modules/chat/chat.data-access', () => ({
+  findConversationWithMatch: async () => null,
+  lockMatchById: async () => undefined,
+  lockConversationById: async () => undefined,
+  hasBidirectionalBlock: async () => false,
+  insertTextMessage: async () => {
+    throw new Error('chat data access is not used by authentication tests');
+  },
+  updateConversationLastMessageAt: async () => false
+}));
 
 import { app } from '../../src/app';
 

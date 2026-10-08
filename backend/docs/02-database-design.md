@@ -666,7 +666,7 @@ Records established mutual matches between pairs of users. To eliminate duplicat
 ### 11.1 `conversations`
 
 #### Purpose
-Represents the chat channel established for a specific match. `uq_conversations_match` enforces one conversation per match. LIKE and SUPER LIKE create the row with `status = 'ACTIVE'` when they create the match. When Undo moves that match to `UNDONE`, the `ACTIVE` conversation becomes `CLOSED` and `closed_at` is set. When UNMATCH moves that match to `UNMATCHED`, the same close happens. The conversation row and its messages stay. `last_message_at` is not changed. There is no chat HTTP API.
+Represents the chat channel established for a specific match. `uq_conversations_match` enforces one conversation per match. LIKE and SUPER LIKE create the row with `status = 'ACTIVE'` when they create the match. When Undo moves that match to `UNDONE`, the `ACTIVE` conversation becomes `CLOSED` and `closed_at` is set. When UNMATCH moves that match to `UNMATCHED`, the same close happens. The conversation row and its messages stay. UNMATCH and UNDO do not change `last_message_at`. `POST /api/v1/conversations/:conversationId/messages` sets `last_message_at` to the new message `created_at` when a TEXT message is persisted. Inbox list and message history APIs are not implemented.
 
 #### Columns
 | Column | Type | Nullable | Default | Description |

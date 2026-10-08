@@ -111,8 +111,9 @@ Live routes that require `Authorization: Bearer <accessToken>`:
 * `POST /api/v1/profile-photos/upload-url`, `POST /api/v1/profile-photos/confirm`, `GET /api/v1/profile-photos`, `PATCH /api/v1/profile-photos/:photoId`, and `DELETE /api/v1/profile-photos/:photoId`.
 * `GET /api/v1/discovery`, `POST /api/v1/discovery/:userId/pass`, `POST /api/v1/discovery/:userId/like`, `POST /api/v1/discovery/:userId/super-like`, and `POST /api/v1/discovery/undo`.
 * `DELETE /api/v1/matches/:matchId`.
+* `POST /api/v1/conversations/:conversationId/messages`.
 
-Those profile, onboarding, photo, discovery, and unmatch routes also require role `USER`. `requireVerified` is not applied on the route. An unverified `USER` may call profile, onboarding, and photo routes. Discovery, PASS, LIKE, SUPER LIKE, UNDO, and UNMATCH check verification in the service and return `403 EMAIL_NOT_VERIFIED` or `403 PHONE_NOT_VERIFIED`. Any other role, including `ADMIN`, receives `403 FORBIDDEN`. Suspended and banned accounts are rejected with `403` by the authentication middleware.
+Those profile, onboarding, photo, discovery, unmatch, and send-message routes also require role `USER`. `requireVerified` is not applied on the route. An unverified `USER` may call profile, onboarding, and photo routes. Discovery, PASS, LIKE, SUPER LIKE, UNDO, UNMATCH, and send message check verification in the service and return `403 EMAIL_NOT_VERIFIED` or `403 PHONE_NOT_VERIFIED`. Any other role, including `ADMIN`, receives `403 FORBIDDEN`. Suspended and banned accounts are rejected with `403` by the authentication middleware.
 
 There is no live admin API yet. `requireRole('ADMIN')` exists for later routes.
 
@@ -208,7 +209,7 @@ All failed HTTP requests return a standardized, machine-parseable JSON error env
 | `PROFILE_ALREADY_EXISTS` | 409 | The authenticated user already has a profile. |
 | `INVALID_GENDER` | 400 | `genderId` is missing, unknown, or not an active gender. |
 | `MATCH_NOT_FOUND` | 404 | Active match record does not exist. UNMATCH uses this for a missing id, a match the caller does not belong to, a non-`ACTIVE` row, an already `UNMATCHED` row, an `UNDONE` row, and a concurrent request that already changed the row. Message: `Active match record does not exist.` |
-| `CONVERSATION_CLOSED` | 404 | Conversation is closed due to unmatch or safety block. |
+| `CONVERSATION_CLOSED` | 404 | Conversation is closed due to unmatch or safety block. Message: `Conversation is closed due to unmatch or safety block.` Used when a participant sends to a `CLOSED` conversation. A missing or foreign conversation uses `RESOURCE_NOT_FOUND` instead. |
 | `DUPLICATE_IDENTIFIER` | 409 | Email or phone is already registered to an active account. |
 | `SELF_INTERACTION` | 400 | The caller targeted their own user id. |
 | `INVALID_TARGET` | 404 | The target exists but is not an active, complete profile with a primary photo. |
@@ -1558,19 +1559,22 @@ Photo objects returned after confirm, list, and patch are `{ "id", "url", "displ
 ---
 
 ### 24.2 Send a Message
+**Implemented (Phase 6 Slice 2).** TEXT only. Free and Premium callers use the same path. Daily text quota, media types, Socket.IO delivery, and `remainingDailyMessages` are not implemented in this slice.
+
 * **Method & Path:** `POST /api/v1/conversations/:conversationId/messages`
-* **Auth:** Authenticated
-* **Quota & Entitlement Rules:**
-  * Free tier: Max 20 text messages/day. Attachments (`IMAGE`, `VIDEO`, `VOICE`, `GIF`) strictly prohibited (throws `403 PREMIUM_REQUIRED`).
-  * Premium tier: Unlimited text messages + full media attachment permissions.
-* **Request Body:**
-  ```json
-  {
-    "messageType": "TEXT",
-    "content": "Hey Jordan! Doing great, looking forward to the weekend."
-  }
-  ```
-* **Success Response (`201 Created`):**
+* **Auth:** `Authorization: Bearer <accessToken>` and role `USER`. Middleware is `authenticate` and `requireRole('USER')`. `requireVerified` is not on the route. The service checks verification and returns `403 EMAIL_NOT_VERIFIED` or `403 PHONE_NOT_VERIFIED`. A non-`USER` role is `403 FORBIDDEN`.
+* **Incomplete caller:** `400 PROFILE_INCOMPLETE`, same discovery rule as PASS, LIKE, UNDO, and UNMATCH. Message: `Onboarding is incomplete.`
+* **Path `conversationId`:** required UUID. A bad value is `400 VALIDATION_ERROR`. Message: `Validation failed`. `details` is `[{ "field": "conversationId", "message": "Conversation id must be a valid UUID." }]`.
+* **Body validation:** strict Zod. `messageType` must be exactly `"TEXT"`. `content` must be a string. Empty string and whitespace-only content are accepted and stored as submitted. No trim, no minimum length, no maximum length beyond the global JSON body limit. Extra fields are rejected. Non-`TEXT` types, including media types, are `400 VALIDATION_ERROR` in this slice.
+* **Who can send:** either `user_one_id` or `user_two_id` on the match that backs the conversation. The client does not send `senderId`, `recipientId`, or `matchId`. Sender is the authenticated caller.
+* **Not found:** `404 RESOURCE_NOT_FOUND`. Message: `Resource not found`. Covers a missing conversation id and a conversation whose match the caller does not belong to. The response does not reveal whether the id exists.
+* **Closed conversation:** when the caller is a participant and `conversations.status = 'CLOSED'`, `404 CONVERSATION_CLOSED`. Message: `Conversation is closed due to unmatch or safety block.`
+* **Inactive match with active conversation:** `404 RESOURCE_NOT_FOUND` so the inconsistent state is not exposed.
+* **Block:** either direction returns `409 BLOCKED_USER`. Message: `Interaction prohibited due to an active safety block.`
+* **Transaction:** one Sequelize transaction. Non-locking conversation/match load, then `lockLikeUsers` in canonical id order, then lock the match and conversation rows, re-read state, validate, insert the message, and set `last_message_at` to the message `created_at` while `status = 'ACTIVE'`. Concurrent UNMATCH and UNDO share the same user locks.
+* **Persistence:** inserts `messages.message_type = 'TEXT'` with null media columns and null `read_at`. Updates only `conversations.last_message_at`. Does not change match status, conversation status, or `closed_at`.
+* **Quota and realtime:** no `usage_records` write, no Premium check, no Redis idempotency, and no Socket.IO event.
+* **Success Response (`201 Created`):** Message: `Message sent.`
   ```json
   {
     "success": true,
@@ -1582,11 +1586,12 @@ Photo objects returned after confirm, list, and patch are `{ "id", "url", "displ
       "content": "Hey Jordan! Doing great, looking forward to the weekend.",
       "mediaUrl": null,
       "readAt": null,
-      "createdAt": "2026-09-15T08:42:00.000Z",
-      "remainingDailyMessages": 19
-    }
+      "createdAt": "2026-09-15T08:42:00.000Z"
+    },
+    "message": "Message sent."
   }
   ```
+  The body does not include `remainingDailyMessages`.
 
 ---
 

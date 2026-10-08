@@ -9,8 +9,8 @@
 
 ## 1. Current Project Status
 
-* **Overall Backend Implementation Status:** **Phase 0 complete. Phase 1 database foundation complete. Phase 2 authentication complete. Phase 3 onboarding complete. Phase 4 — Discovery complete. Phase 5 Slices 1–5 are complete. Phase 6 Slice 1 — Socket.IO foundation is complete. Backend CI is implemented and verified and now starts Redis for Socket.IO adapter tests.** `GET /api/v1/matches`, rematch, chat HTTP APIs, conversation rooms, and chat events are not implemented. Phase 1 Step 1 and Step 2 migrations remain applied to `love_bites_dev`. The nullable city/location migration `20260929120003` is applied on both `love_bites_dev` and `love_bites_test`. Seeders exist and were not applied to `love_bites_dev`. CD/deployment is not implemented.
-* **Current Development Phase:** **Phase 6 Slice 1 — Socket.IO foundation is complete.** Do not start message persistence, chat HTTP routes, conversation rooms, quotas, media, rematch, `GET /matches`, payments, or deployment until that work is requested. Production interests are still not seeded.
+* **Overall Backend Implementation Status:** **Phase 0 complete. Phase 1 database foundation complete. Phase 2 authentication complete. Phase 3 onboarding complete. Phase 4 — Discovery complete. Phase 5 Slices 1–5 are complete. Phase 6 Slice 1 — Socket.IO foundation is complete. Phase 6 Slice 2 — conversation authorization + TEXT message persistence is complete. Backend CI is implemented and verified and now starts Redis for Socket.IO adapter tests.** `GET /api/v1/matches`, rematch, message history, inbox, quotas, media, conversation rooms, and chat events are not implemented. Phase 1 Step 1 and Step 2 migrations remain applied to `love_bites_dev`. The nullable city/location migration `20260929120003` is applied on both `love_bites_dev` and `love_bites_test`. Seeders exist and were not applied to `love_bites_dev`. CD/deployment is not implemented.
+* **Current Development Phase:** **Phase 6 Slice 2 — TEXT message persistence is complete.** Do not start message quota, media, conversation rooms, chat events, history, rematch, `GET /matches`, payments, or deployment until that work is requested. Production interests are still not seeded.
 * **What is Working:**
   * Base project setup (`package.json`, `tsconfig.json`, `.env.example`, `.sequelizerc`, `jest.config.ts`).
   * Express application (`src/app.ts`) with security headers (Helmet), CORS, JSON parser, cookie parser, HPP, and request ID tracking.
@@ -37,6 +37,7 @@
   * Phase 5 Slice 4 UNDO: `POST /api/v1/discovery/undo`. Premium only. Latest active outgoing `LIKE` or `PASS` inside `created_at >= CURRENT_TIMESTAMP - INTERVAL '5 minutes'`. Sets `is_undone = true` and does not delete the row. A LIKE that owns the current `ACTIVE` match sets that match to `UNDONE` and closes its `ACTIVE` conversation. `unmatched_at` stays null. Does not change `usage_records` and does not use Redis.
   * Phase 5 Slice 5 UNMATCH: `DELETE /api/v1/matches/:matchId`. Free. Either participant of an `ACTIVE` match. Sets `UNMATCHED`, `unmatched_at`, and `unmatched_by_user_id`. Closes the `ACTIVE` conversation. Likes stay. No Redis, quota, or credit change. A second delete is `404 MATCH_NOT_FOUND`. No migration.
   * Phase 6 Slice 1 Socket.IO foundation: `src/socket/socket.server.ts` and `src/socket/socket.auth.ts`. Handshake uses `auth.token` with the existing access JWT, reloads the user from PostgreSQL, stores `AuthenticatedUser` on `socket.data.user`, auto-joins `user:{userId}`, and attaches `@socket.io/redis-adapter` using duplicated `ioredis` clients. No chat events, conversation rooms, or message persistence. Redis is required for Socket.IO; development may keep HTTP up without sockets if Redis fails.
+  * Phase 6 Slice 2 TEXT send: `POST /api/v1/conversations/:conversationId/messages`. Participant-only. Active match and active conversation required. Bidirectional block rejects with `409 BLOCKED_USER`. Closed conversation returns `404 CONVERSATION_CLOSED`. Persists TEXT, updates `last_message_at`, uses `lockLikeUsers`. No quota, Premium check, media, Socket.IO event, or migration.
   * Sequelize seeders for genders and relationship intentions. Idempotent on `code`. Production interests are not seeded.
   * Automated unit and integration test suite. The original 12 Phase 0 tests still pass. Catalog coverage is in the PostgreSQL suite.
   * Clean TypeScript compilation (`npm run build`).
@@ -45,7 +46,7 @@
 * **What is Not Yet Implemented:**
   * Production interest seed data. The approved interest list is not defined. Plans, features, and usage limits are also unseeded.
   * Fuller profile views (`GET /api/v1/profiles/me`, `GET /api/v1/profiles/:userId`) and the unmounted aliases `PATCH /api/v1/onboarding/profile`, `PUT /api/v1/location`, `PUT /api/v1/me/interests`, `PUT /api/v1/me/relationship-intentions`, `GET /api/v1/dating-preferences`, and `PUT /api/v1/dating-preferences`. Registration still validates `dateOfBirth` for age 18+ and does **not** store it or create a `profiles` row. `POST /api/v1/profile` stores date of birth on the profile. Saving interests, intentions, photos, dating preferences, or location does not set `profiles.is_profile_complete`. Only `POST /api/v1/onboarding/complete` sets that flag.
-  * `GET /api/v1/matches`, rematch, who-liked-me, chat HTTP APIs, conversation rooms, chat message events, notifications, the entitlement HTTP API, payments, and admin. UNMATCH is live. Socket.IO foundation is live; Socket.IO `match:unmatch` and chat events are still future scope. Do not treat the match list as live.
+  * `GET /api/v1/matches`, rematch, who-liked-me, inbox, message history, quotas, media, conversation rooms, chat message events, notifications, the entitlement HTTP API, payments, and admin. UNMATCH is live. TEXT send is live. Socket.IO foundation is live; Socket.IO `match:unmatch` and chat events are still future scope. Do not treat the match list as live.
   * Real email or SMS delivery. Phase 2 uses mock providers only.
   * Payment providers, webhook handlers, and notification generation.
   * CD/deployment. No deployment target has been selected. Docker and deployment infrastructure remain future work.
@@ -135,7 +136,7 @@ HTTP Request
 | **Super Like** | **Implemented (Phase 5 Slice 3)** | `src/modules/likes/` | `POST /api/v1/discovery/:userId/super-like`. Premium only. Decrements `SUPER_LIKE` credits and writes `credit_transactions` `CONSUMPTION`. Does not touch `usage_records`. Same match rule as LIKE. Separate Redis idempotency key. |
 | **Undo** | **Implemented (Phase 5 Slice 4)** | `src/modules/likes/` | `POST /api/v1/discovery/undo`. Premium only. Latest active outgoing `LIKE` or `PASS` with `created_at >= CURRENT_TIMESTAMP - INTERVAL '5 minutes'`. Sets `is_undone = true` and does not delete the row. `SUPER_LIKE` is never undone. Expired latest action is `400 UNDO_WINDOW_EXPIRED` with no fallback. No row is `400 NO_UNDOABLE_ACTION`. A LIKE that owns the current `ACTIVE` match sets it to `UNDONE` and closes the `ACTIVE` conversation. `unmatched_at` stays null. Does not change `usage_records`. Does not use Redis. |
 | **Matches** | **UNMATCH implemented (Phase 5 Slice 5). List is not.** | `src/modules/likes/matches.routes.ts`, `likes.service.ts` | `DELETE /api/v1/matches/:matchId`. Either participant. `ACTIVE` becomes `UNMATCHED` with `unmatched_at` and `unmatched_by_user_id`. `ACTIVE` conversation becomes `CLOSED`. Likes stay. No Redis. `GET /api/v1/matches` is not mounted. Rematch is not implemented. |
-| **Chat & Realtime Messaging** | **Socket.IO foundation live. No chat API.** | `src/socket/`, `conversation.model.ts`, `message.model.ts` | LIKE and SUPER LIKE insert an `ACTIVE` conversation. Undo/UNMATCH close it. `messages` is unused. Socket.IO handshake, user room, and Redis adapter are live. No chat HTTP API, conversation rooms, chat events, or read receipts. |
+| **Chat & Realtime Messaging** | **Slice 1–2 live. Quota/media/history not.** | `src/modules/chat/`, `src/socket/`, models | `POST /api/v1/conversations/:conversationId/messages` persists TEXT and updates `last_message_at`. Socket.IO handshake, user room, and Redis adapter are live. No quota, media, history, conversation rooms, chat events, or read receipts. |
 | **Notifications** | **Schema Implemented (Phase 1 Step 2)** | `notification.model.ts` | In-app row store with JSONB `data` default `'{}'`. No generation, push, email, or socket dispatch. |
 | **Safety & Moderation** | **Schema Implemented (Phase 1 Step 2)** | `block.model.ts`, `report.model.ts` | `blocks` and `reports` with documented CHECKs and `SET NULL` reporter/resolver FKs. No moderation workflow. |
 | **Subscriptions & Entitlements** | **Schema plus the live Premium lookup used by Phase 5** | plan, feature, subscription, usage, credit, boost models | Tables exist and are unseeded. There is no entitlement HTTP service. PASS, LIKE, SUPER LIKE, and UNDO treat Premium as a `PREMIUM_MONTHLY` or `PREMIUM_YEARLY` subscription in `ACTIVE`, `PAST_DUE`, or `GRACE_PERIOD` with the period or grace end still in the future. Free LIKE and PASS write `usage_records`. SUPER LIKE writes `user_credit_balances` and `credit_transactions`. |
@@ -232,11 +233,11 @@ Primary Key Strategy: UUIDv4 (gen_random_uuid())
 | **Who Liked Me**| `GET /likes/who-liked-me` | Authenticated | Free: `{ count: N, admirers: [] }`; Premium: full admirer list. |
 | **Matches** | `DELETE /matches/:matchId` | Authenticated `USER` | **Implemented.** Either participant. `ACTIVE` → `UNMATCHED`. Conversation `ACTIVE` → `CLOSED`. Likes unchanged. No Premium, Redis, or quota change. Repeated call is `404 MATCH_NOT_FOUND`. |
 | **Matches** | `GET /matches` | Authenticated | Not mounted. Cursor-paginated active matches list remains planned. |
-| **Chat** | `GET /conversations` | Authenticated | Inbox list with last message snippet. |
-| **Chat** | `GET /conversations/:conversationId/messages` | Authenticated | Cursor-paginated message history. |
-| **Chat** | `POST /conversations/:conversationId/messages` | Authenticated | 6-step auth check, daily quota check (20/day Free), send message. |
-| **Chat** | `POST /conversations/:conversationId/media-upload-url`| Premium (`CHAT_MEDIA`)| Generate S3 presigned URL for chat media. |
-| **Chat** | `PATCH /conversations/:conversationId/read` | Authenticated | Mark conversation messages as read. |
+| **Chat** | `GET /conversations` | Authenticated | Inbox list with last message snippet. Not implemented. |
+| **Chat** | `GET /conversations/:conversationId/messages` | Authenticated | Cursor-paginated message history. Not implemented. |
+| **Chat** | `POST /conversations/:conversationId/messages` | Authenticated `USER` | **Implemented (Slice 2).** TEXT only. Participant + active match/conversation + no block. No quota or Socket.IO. |
+| **Chat** | `POST /conversations/:conversationId/media-upload-url`| Premium (`CHAT_MEDIA`)| Generate S3 presigned URL for chat media. Not implemented. |
+| **Chat** | `PATCH /conversations/:conversationId/read` | Authenticated | Mark conversation messages as read. Not implemented. |
 | **Safety** | `POST /blocks/:userId`, `GET /blocks`, `DELETE /blocks/:userId` | Authenticated | Manage bidirectional user blocking. |
 | **Safety** | `POST /reports` | Authenticated | Submit misconduct report with category & description. |
 | **Notifications**| `GET /notifications`, `PATCH /notifications/:id/read` | Authenticated | Manage notification feed. |
@@ -354,8 +355,8 @@ Primary Key Strategy: UUIDv4 (gen_random_uuid())
 
 ## 12. Work Currently In Progress
 
-* **Status:** **No Phase 6 Slice 1 work is in progress. Socket.IO foundation is complete.**
-* **Context:** Phase 6 Slice 1 is done. Do not start message persistence, chat HTTP routes, conversation rooms, quotas, media, `GET /api/v1/matches`, rematch, payments, or deployment until that work is requested. Do not add a production interest seed. Do not add `Idempotency-Key` to UNDO or UNMATCH.
+* **Status:** **No Phase 6 Slice 2 work is in progress. TEXT message persistence is complete.**
+* **Context:** Phase 6 Slice 2 is done. Do not start message quota, media, conversation rooms, chat events, history, `GET /api/v1/matches`, rematch, payments, or deployment until that work is requested. Do not add a production interest seed. Do not add `Idempotency-Key` to UNDO, UNMATCH, or send message.
 
 ---
 
@@ -369,7 +370,7 @@ The implementation should follow the phased sequence established in `05-developm
 4. **Phase 3 — Profile & Onboarding:** **Complete.** Catalogs, basic profile, interests, relationship intentions, profile photos, dating preferences, location, onboarding status, and onboarding completion are done. Completion sets only `profiles.is_profile_complete`. `users.status` stays separate. Registration still does not persist `dateOfBirth`.
 5. **Phase 4 — Discovery:** **Complete.** `GET /api/v1/discovery` returns one mutually filtered candidate, or `candidate: null`. `distanceKm` is a number to one decimal place. Coordinates are not returned. Onboarding location storage was already done in Phase 3.
 6. **Phase 5 — Likes, Passes & Matches:** **Slices 1–5 complete.** PASS, LIKE and match creation, SUPER LIKE, UNDO, and UNMATCH are live. `GET /matches` and rematch are not.
-7. **Phase 6 — Chat & Realtime Messaging:** **Slice 1 complete** (Socket.IO + Redis adapter + handshake + user room). Remaining: 6-step message authorization, PostgreSQL message persistence, cursor-paginated history, Free/Premium media limits.
+7. **Phase 6 — Chat & Realtime Messaging:** **Slices 1–2 complete** (Socket.IO foundation + TEXT send). Remaining: daily text quota, media, conversation rooms, chat events, history, read receipts.
 8. **Phase 7 — Safety & Moderation:** Bidirectional blocking, misconduct reports submission, admin moderation triage queue.
 9. **Phase 8 — Subscriptions & Centralized Entitlements:** The entitlement engine and plan APIs are not implemented. Phase 5 already reads Premium subscriptions, writes `usage_records` for free LIKE/PASS, and spends `SUPER_LIKE` credits. Plans, features, and usage limits are still unseeded.
 10. **Phase 9 — Payments & Razorpay Integration:** `IPaymentProvider` abstraction, Razorpay provider, checkout order creation, client signature verification, HMAC webhook handler with idempotency ledger, 24-hr grace period.
@@ -425,8 +426,8 @@ The following architectural and business decisions are established and must **no
 
 ## 16. Recommended Next Task
 
-### Task: **Phase 6 Slice 2 — conversation authorization + text message persistence**
-Phase 6 Slice 1 — Socket.IO foundation is complete.
+### Task: **Phase 6 Slice 3 — free text-message quota**
+Phase 6 Slice 2 — conversation authorization + TEXT persistence is complete.
 
 ```text
 PASS                 ✅
@@ -435,25 +436,26 @@ SUPER LIKE           ✅
 UNDO                 ✅
 UNMATCH              ✅
 Socket.IO foundation ✅
+TEXT message send    ✅
 ```
 
-Implemented: Socket.IO on the HTTP server, handshake `auth.token`, DB-backed account checks, `socket.data.user`, auto-join `user:{userId}`, Redis adapter, CI Redis service.
+Implemented: `POST /api/v1/conversations/:conversationId/messages` persists TEXT, updates `last_message_at`, authorizes participants, blocks, and closed conversations, and locks users with `lockLikeUsers`.
 
 Verified:
 
 ```text
-Focused Socket.IO foundation: 11 passed
-Auth middleware + health: 10 passed
-Full Jest: 18 suites passed
-Full PostgreSQL: 17 suites, 211 passed
+Focused conversations-messages: 14 passed
+Relevant Phase 4–6 regression: 106 passed
+Full PostgreSQL: 18 suites, 225 passed
+Full Jest: 18 suites, 124 passed
 Build: passed
 ```
 
-Do not implement yet unless requested: chat HTTP routes, message inserts, quotas, conversation rooms, chat events, history, read receipts, media, typing, notifications, or `match:unmatch`.
+Do not implement yet unless requested: daily text quota, `remainingDailyMessages`, media, conversation rooms, chat events, history, read receipts, typing, notifications, or `match:unmatch`.
 
-No migration was created for Slice 1. No commit was made. No push was made.
+No migration was created for Slice 2. No commit was made. No push was made.
 
-`GET /api/v1/matches`, rematch, chat message APIs, notifications, and payments remain unimplemented. Do not invent a production interest catalog.
+`GET /api/v1/matches`, rematch, message history, inbox, notifications, and payments remain unimplemented. Do not invent a production interest catalog.
 
 ---
 
@@ -476,3 +478,4 @@ No migration was created for Slice 1. No commit was made. No push was made.
 | **2026-10-07** | Phase 5 Slices 1–4 — PASS, LIKE and match, SUPER LIKE, UNDO | **Complete** | Documentation reconciled to the implemented routes. PASS and LIKE share 10 actions per UTC day. SUPER LIKE spends credits. UNDO sets `is_undone`, does not delete the row, does not use Redis, and does not restore quota. Recorded tests at that time, not rerun later: Undo 14; PASS 11; LIKE 20; Super Like 22; Discovery 15; PostgreSQL 15 suites / 187 tests; Jest 18 suites / 124 tests; build passed. |
 | **2026-10-07** | Phase 5 Slice 5 — UNMATCH | **Complete** | `DELETE /api/v1/matches/:matchId`. `ACTIVE` → `UNMATCHED`. Conversation `ACTIVE` → `CLOSED`. Likes, quota, credits, and Redis unchanged. Repeated delete is `404 MATCH_NOT_FOUND`. No migration, commit, or push. Recorded tests: UNMATCH 13; PASS 11; LIKE 20; SUPER LIKE 22; UNDO 14; Discovery 15; PostgreSQL 16 suites / 200 tests; Jest 18 suites / 124 tests; build passed. `GET /matches` and rematch remain unimplemented. |
 | **2026-10-08** | Phase 6 Slice 1 — Socket.IO foundation | **Complete** | Socket.IO attached to HTTP server. Handshake auth reuses access JWT + DB user reload. Auto-joins `user:{userId}`. Redis adapter via duplicated `ioredis` clients. CI Redis service added. No chat routes, events, conversation rooms, message persistence, or migration. |
+| **2026-10-08** | Phase 6 Slice 2 — TEXT message persistence | **Complete** | `POST /api/v1/conversations/:conversationId/messages`. TEXT only. Participant auth, `CONVERSATION_CLOSED`, bidirectional blocks, `lockLikeUsers`, `last_message_at`. No quota, Premium, Socket.IO event, or migration. Tests: Slice 2 14; PostgreSQL 18/225; Jest 18/124; build passed. |

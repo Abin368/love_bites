@@ -467,10 +467,10 @@ Implement swipe action mechanics (`LIKE`, `PASS`, `SUPER_LIKE`), daily action qu
 
 ## 10. Phase 6 — Chat and Realtime Messaging
 
-**Partly complete (2026-10-08).** Slice 1 Socket.IO foundation is implemented. Message persistence, quotas, conversation rooms, chat events, history, read receipts, and media are not.
+**Partly complete (2026-10-08).** Slice 1 Socket.IO foundation and Slice 2 TEXT message persistence are implemented. Quotas, conversation rooms, chat events, history, read receipts, and media are not.
 
 ### 10.1 Objectives
-Build real-time messaging using Socket.IO backed by PostgreSQL persistence, enforce 6-step message authorization, manage unread counters, support tiered media attachments, and provide cursor-based history pagination.
+Build real-time messaging using Socket.IO backed by PostgreSQL persistence, enforce message authorization, manage unread counters, support tiered media attachments, and provide cursor-based history pagination.
 
 ### 10.2 Implementation Steps
 1. **Socket.IO Server Initialization (`src/socket/socket.server.ts`) — Implemented (Slice 1):**
@@ -478,17 +478,14 @@ Build real-time messaging using Socket.IO backed by PostgreSQL persistence, enfo
    * `socket.auth.ts`: Middleware validates JWT access token on handshake, reloads the user from PostgreSQL, and binds `socket.data.user` to the live `AuthenticatedUser`.
    * Automatically join user private room: `user:{userId}`.
    * No conversation rooms, chat events, or message persistence in this slice. Redis is required for the realtime foundation. CI starts a Redis 7 service for adapter tests.
-2. **6-Step Message Authorization Verification (`chat.service.ts`) — Not implemented:**
-   * **Step 1:** Verify sender authentication (`req.user.id`).
-   * **Step 2:** Verify conversation exists and sender is a participant of the backing match.
-   * **Step 3:** Verify backing match is strictly `status = 'ACTIVE'`.
-   * **Step 4:** Verify no active bidirectional safety block exists.
-   * **Step 5 (Entitlement Check):** Free tier is restricted strictly to `TEXT` messages. Rich media (`IMAGE`, `GIF`, `VIDEO`, `VOICE`) requires `CHAT_MEDIA` entitlement (throws `403 PREMIUM_REQUIRED` for Free users).
-   * **Step 6 (Quota Check):** Free tier enforced at maximum **20 outgoing text messages/day** via `usage_records`. Premium users get unlimited messages.
-3. **Message Persistence & Realtime Broadcast — Not implemented:**
-   * Persist message in PostgreSQL `messages` table (`conversation_id`, `sender_id`, `message_type`, `content`, `media_storage_key`).
-   * Update `conversations.last_message_at = CURRENT_TIMESTAMP`.
-   * Broadcast `chat:message:new` event to conversation room `conversation:{conversationId}` and emit push/in-app alert to recipient.
+2. **Message Authorization + TEXT Persistence (`chat.service.ts`) — Implemented (Slice 2):**
+   * **Route:** `POST /api/v1/conversations/:conversationId/messages` with `authenticate` and `requireRole('USER')`.
+   * **Steps 1–4:** authentication, participant check, active match and active conversation, bidirectional block check.
+   * **Persistence:** insert `messages.message_type = 'TEXT'`, set `conversations.last_message_at` to the message `created_at` inside one transaction with `lockLikeUsers`.
+   * **Not in Slice 2:** daily text quota, Premium/media entitlement, Socket.IO broadcast, history, or read receipts.
+3. **Message Persistence & Realtime Broadcast — Partially implemented:**
+   * Persist TEXT messages in PostgreSQL. Update `conversations.last_message_at`.
+   * Broadcast `chat:message:new` to conversation rooms remains later work.
 4. **Message History & Read Receipts — Not implemented:**
    * `GET /api/v1/conversations/:conversationId/messages`: Cursor-paginated history sorted by `created_at DESC`.
    * `PATCH /api/v1/conversations/:conversationId/read`: Updates `read_at = CURRENT_TIMESTAMP` for unread messages and emits `chat:message:read` Socket.IO event.
@@ -790,7 +787,7 @@ To maintain strict adherence to dependency constraints, development should follo
 | **Likes, Passes, Super Like** | Discovery, subscriptions for Premium | `likes`, `usage_records`, `matches`, `conversations`, `user_credit_balances`, `credit_transactions` | `POST /discovery/:userId/pass`, `POST /discovery/:userId/like`, `POST /discovery/:userId/super-like` | PostgreSQL integration: pass 11, like 20, super like 22 |
 | **Unmatch** | Likes Module | `matches`, `conversations` | `DELETE /matches/:matchId` | Implemented. PostgreSQL integration: 13 passed. No Redis, quota, or credit change. `GET /matches` is not implemented. |
 | **Premium Undo** | Likes, Matches, Premium subscription | `likes`, `matches`, `conversations`, `subscriptions`, `plans` | `POST /discovery/undo` | PostgreSQL integration: 14 passed. No Redis idempotency. |
-| **Chat & Messaging**| Matches Module, S3, Socket.IO | `conversations`, `messages`, `usage_records` | `/conversations/*`, `/messages/*`, Socket.IO events | Integration + E2E (6-Step Auth, Quotas) |
+| **Chat & Messaging**| Matches Module, S3, Socket.IO | `conversations`, `messages`, `usage_records` | `POST /conversations/:conversationId/messages`, later history/Socket.IO | Slice 2 TEXT send implemented. Quotas, media, history, and Socket events remain. |
 | **Blocks & Safety** | Users, Matches, Chat | `blocks` | `/blocks`, `/blocks/:userId` | Integration (Bidirectional Isolation) |
 | **Reports** | Users, Safety | `reports` | `/reports` | Integration (Report Submission) |
 | **Notifications** | Matches, Chat, Likes | `notifications` | `GET /notifications`, Socket.IO events | Integration (Event Delivery) |

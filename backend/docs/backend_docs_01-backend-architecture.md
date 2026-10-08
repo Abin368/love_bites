@@ -269,7 +269,7 @@ modules/likes/
 ```
 *Note: Optional files (e.g., `*.constants.ts`) should only be created when explicitly needed.*
 
-Implemented modules today are `auth`, `users`, `profiles`, `profile-photos`, `genders`, `interests`, `relationship-intentions`, `onboarding`, `discovery`, and `likes`. Discovery routes mount the like, pass, super-like, and undo handlers. There is no `passes` table and no separate `likes.routes.ts`. Chat, notifications, safety, subscriptions, payments, entitlements, matches, and admin modules are not implemented as HTTP modules. Their tables exist from Phase 1.
+Implemented modules today are `auth`, `users`, `profiles`, `profile-photos`, `genders`, `interests`, `relationship-intentions`, `onboarding`, `discovery`, `likes`, and `chat`. Discovery routes mount the like, pass, super-like, and undo handlers. There is no `passes` table and no separate `likes.routes.ts`. Chat currently mounts only `POST /conversations/:conversationId/messages`. Notifications, safety, subscriptions, payments, entitlements, match list, and admin modules are not implemented as HTTP modules. Their tables exist from Phase 1.
 
 ---
 
@@ -505,34 +505,37 @@ The live LIKE and SUPER LIKE transaction locks both users in canonical id order,
 
 The live route is `matches.routes` → `likes.controller.unmatch` → `likes.service.unmatch` → `likes.data-access` → one PostgreSQL transaction. The service reuses `lockLikeUsers` and `closeActiveConversation`. There is no repository layer.
 
-Historical `UNDONE` and `UNMATCHED` rows stay in place. `uq_matches_single_active_pair` allows a later `ACTIVE` row for the same pair. Rematch is not implemented and does not revive the old row. There is no match list API and no chat API. The match diagram's notification and Socket.IO steps are not implemented. `match:unmatch` is future scope.
+Historical `UNDONE` and `UNMATCHED` rows stay in place. `uq_matches_single_active_pair` allows a later `ACTIVE` row for the same pair. Rematch is not implemented and does not revive the old row. There is no match list API. TEXT send exists under `/conversations/:conversationId/messages`. The match diagram's notification and Socket.IO steps are not implemented. `match:unmatch` is future scope.
 
 ---
 
 ## 16. Chat & Realtime Architecture
 
-**Not implemented as a chat API.** LIKE and SUPER LIKE create an `ACTIVE` conversation row. Undo of that LIKE sets the conversation to `CLOSED`. No message routes exist. Phase 6 Slice 1 mounted the Socket.IO foundation only. The rules below remain the planned chat contract.
+**Phase 6 Slice 2 implements TEXT send over HTTP.** LIKE and SUPER LIKE create an `ACTIVE` conversation row. Undo or UNMATCH closes it. `POST /api/v1/conversations/:conversationId/messages` authorizes the participant, persists a `TEXT` message, and updates `last_message_at`. Socket.IO foundation from Slice 1 remains available for later realtime delivery. Quotas, media, history, conversation rooms, and chat events are not implemented.
 
-### Messaging Rules
-* Unrestricted messaging: Either participant in an active match can send the first message.
-* Messaging Quotas:
-  * **Free Users:** Max 20 text messages/day. Attachments prohibited.
-  * **Premium Users:** Unlimited text messages, images, GIFs, videos, and voice messages.
+### Messaging Rules (live Slice 2)
+* Either participant of an `ACTIVE` match with an `ACTIVE` conversation can send TEXT.
+* Empty and whitespace-only content are accepted and stored as submitted.
+* Free and Premium callers are treated the same. No daily text quota and no Premium read.
+* Bidirectional blocks reject send with `409 BLOCKED_USER`.
+* Closed conversations reject send with `404 CONVERSATION_CLOSED`.
+
+### Planned later
+* Free tier: Max 20 text messages/day. Attachments prohibited.
+* Premium tier: Unlimited text and media.
+* Socket.IO `chat:message:new` after HTTP persistence.
 
 ### Hybrid Persistence Flow
-Realtime messaging uses Socket.IO for low-latency transport, backed by PostgreSQL for message history. **Redis does NOT store permanent messages.**
+HTTP is the write path for Slice 2. Later slices will broadcast through Socket.IO. **Redis does NOT store permanent messages.**
 
 ```
-Client A                  Server Node                 PostgreSQL               Client B
-   |                           |                           |                      |
-   |--- socket.emit('msg') --->|                           |                      |
-   |                           |-- Verify Entitlement ---->|                      |
-   |                           |-- INSERT Message Record ->|                      |
-   |                           |   (status = 'sent')       |                      |
-   |<-- Ack ('sent') ----------|                           |                      |
-   |                           |-- Publish via Redis Adapter ------------------->|
-   |                           |                           |  (Socket Event)      |
-   |                           |------------------------------------------------->|
+Client A                  Server Node                 PostgreSQL
+   |                           |                           |
+   |--- POST /messages ------->|                           |
+   |                           |-- Authorize + lock users ->|
+   |                           |-- INSERT Message Record ->|
+   |                           |-- UPDATE last_message_at ->|
+   |<-- 201 Created -----------|                           |
 ```
 
 ---

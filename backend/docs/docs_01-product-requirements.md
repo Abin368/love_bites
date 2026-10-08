@@ -240,7 +240,7 @@ Reports are not a Discovery exclusion. Browsing candidate cards does not consume
 * **Mutual Matching:** Triggered when the new action is `LIKE` or `SUPER_LIKE` and the other user already has an active `LIKE` or `SUPER_LIKE`. A reciprocal `PASS` does not match.
   * The system inserts a `matches` row with `status = 'ACTIVE'` and canonical user order.
   * The system inserts one `conversations` row with `status = 'ACTIVE'`.
-  * Chat send/list APIs and match notifications are not implemented.
+  * TEXT send is implemented (`POST /api/v1/conversations/:conversationId/messages`). Inbox, history, quotas, media, and match notifications are not implemented.
 * **Free quota:** A like consumes one of the 10 combined Like and Pass actions for the UTC day, unless the caller has Premium.
 
 #### Super Like
@@ -283,9 +283,10 @@ Reports are not a Discovery exclusion. Browsing candidate cards does not consume
 | **Voice Messages** | Prohibited | Allowed |
 
 ### 8.3 Messaging Quotas & Lifecycle
-* **Free Tier Daily Quota:** 20 sent text messages per 24-hour rolling window (or calendar day, defined by business rules).
+* **Live send path:** Either participant may send TEXT on an `ACTIVE` match with an `ACTIVE` conversation. Empty and whitespace-only content are accepted. Bidirectional blocks reject send. Closed conversations reject send.
+* **Free Tier Daily Quota:** Planned at 20 sent text messages per day. Not enforced yet; Free and Premium callers currently send TEXT without a usage counter.
 * **Incoming Messages:** Received messages do **not** consume the receiver's daily sent quota.
-* **Unmatch Impact:** When a match is unmatched, the conversation becomes `CLOSED` immediately and further messages are blocked once chat exists. The conversation and its messages stay in PostgreSQL. Unmatch does not delete likes.
+* **Unmatch Impact:** When a match is unmatched, the conversation becomes `CLOSED` immediately and further messages are blocked. The conversation and its messages stay in PostgreSQL. Unmatch does not delete likes.
 
 ---
 

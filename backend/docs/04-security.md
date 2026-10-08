@@ -71,7 +71,7 @@ Entitlement & Usage (Entitlements)
 * **Supported Identifiers:** Email Address OR E.164 Phone Number.
 * **Age Invariant:** Date of Birth must be verified server-side to guarantee $\text{Age} \ge 18$ at the exact time of registration:
   $$\text{Current Date} - \text{Date of Birth} \ge 18\text{ years}$$
-* **Verification Mandate:** `auth.middleware.ts` allows an unverified user to authenticate. Discovery, PASS, LIKE, SUPER LIKE, UNDO, and UNMATCH then reject that caller in the service with `403 EMAIL_NOT_VERIFIED` or `403 PHONE_NOT_VERIFIED`. Profile, onboarding, and photo routes do not apply that check. Chat routes are not mounted. A verified email or a verified phone is enough. Verification is what sets `users.status` to `ACTIVE`. Onboarding completion does not change `users.status`.
+* **Verification Mandate:** `auth.middleware.ts` allows an unverified user to authenticate. Discovery, PASS, LIKE, SUPER LIKE, UNDO, UNMATCH, and send message then reject that caller in the service with `403 EMAIL_NOT_VERIFIED` or `403 PHONE_NOT_VERIFIED`. Profile, onboarding, and photo routes do not apply that check. A verified email or a verified phone is enough. Verification is what sets `users.status` to `ACTIVE`. Onboarding completion does not change `users.status`.
 
 ### 4.2 OTP & Email Verification Security
 1. **Entropy:** OTP codes are 6-digit numerical strings generated using cryptographically secure pseudorandom number generators (`crypto.randomInt(100000, 999999)`).
@@ -177,15 +177,7 @@ Incoming HTTP Request
 
 ### 7.2 Insecure Direct Object Reference (IDOR) Defense Rules
 * **User Profile & Photos:** Mutating operations (`PATCH /profiles/me`, `DELETE /profile-photos/:photoId`) resolve target records exclusively using `req.user.id`.
-* **Conversations & Messages:** Querying messages verifies that `req.user.id` is a verified participant of the active match backing that conversation:
-  ```sql
-  SELECT 1 FROM conversations c
-  JOIN matches m ON m.id = c.match_id
-  WHERE c.id = :conversationId 
-    AND (m.user_one_id = :userId OR m.user_two_id = :userId)
-    AND m.status = 'ACTIVE';
-  ```
-  *If this query returns empty, the request is rejected with `404 RESOURCE_NOT_FOUND` to prevent ID enumeration.*
+* **Conversations & Messages:** `POST /api/v1/conversations/:conversationId/messages` derives sender identity from `req.user.id`. A missing conversation or a conversation whose match the caller does not belong to returns `404 RESOURCE_NOT_FOUND` so the id is not enumerated. A participant of a `CLOSED` conversation receives `404 CONVERSATION_CLOSED`. An inconsistent `ACTIVE` conversation with a non-`ACTIVE` match also returns `404 RESOURCE_NOT_FOUND`.
 
 ---
 
@@ -233,7 +225,7 @@ Rate limiting uses **Redis sliding-window counters** to isolate burst abuse whil
 | **Auth Login / Password Reset** | 60s | 5 req | `ratelimit:auth:login:<ip>` | `429 Too Many Requests` + Log Security Alert |
 | **OTP Generation / Resend** | 60s | 1 req | `ratelimit:auth:otp:<identifier>` | `429 Too Many Requests` |
 | **Discovery swipe actions** | 60s | 60 req | `ratelimit:swipes:<userId>` | Planned. PASS, LIKE, SUPER LIKE, and UNDO are not on this limiter. The free product quota is separate: 10 LIKE+PASS actions per UTC day. |
-| **Chat Message Sending** | 60s | 30 req | `ratelimit:chat:<userId>` | `429 Too Many Requests` (Anti-spam) |
+| **Chat Message Sending** | 60s | 30 req | `ratelimit:chat:<userId>` | Planned. Slice 2 send message is not on this limiter. |
 | **Public Reference APIs** | 60s | 100 req | `ratelimit:public:<ip>` | `429 Too Many Requests` |
 | **Admin Operations** | 60s | 120 req | `ratelimit:admin:<adminId>` | `429 Too Many Requests` |
 
@@ -319,37 +311,31 @@ To prevent accidental data leakage, domain services must use explicit **Response
 
 ## 16. Chat and Messaging Security
 
-### 16.1 Six-Step Authorization Verification
-Before persisting or transmitting any message, `chat.service.ts` executes a mandatory 6-step transactional verification:
+### 16.1 Message Send Authorization (Phase 6 Slice 2)
+`POST /api/v1/conversations/:conversationId/messages` is implemented. The route uses `authenticate` and `requireRole('USER')`. `requireVerified` is not on the route. The service requires a verified email or phone and a complete profile with location and dating preferences.
+
+Before insert, `chat.service.ts` runs one PostgreSQL transaction:
 
 ```text
-Incoming Message Payload
+Incoming TEXT payload
          │
          ▼
-[Step 1] Verify sender authentication (req.user.id)
+[Step 1] Authenticated USER (req.user.id is the sender)
          │
          ▼
-[Step 2] Verify conversation exists & matches user's active membership
+[Step 2] Conversation exists and caller is a match participant
          │
          ▼
-[Step 3] Verify backing Match status is strictly 'ACTIVE' (Not unmatched)
+[Step 3] Conversation status is ACTIVE; match status is ACTIVE
          │
          ▼
-[Step 4] Verify no active bidirectional block exists between participants
+[Step 4] No bidirectional block between participants
          │
          ▼
-[Step 5] Verify Entitlement & Media Permissions:
-         • Free tier: MessageType MUST be 'TEXT' (Media throws 403)
-         • Premium tier: Media attachments permitted ('IMAGE', 'GIF', 'VIDEO', 'VOICE')
-         │
-         ▼
-[Step 6] Verify Daily Quota:
-         • Free tier: usage_count < 20 messages/day
-         • Premium tier: Unlimited
-         │
-         ▼
-[Persist in PostgreSQL] ──► [Publish to Redis / Socket.IO]
+[Persist TEXT in PostgreSQL and update last_message_at]
 ```
+
+Steps 5 and 6 from the full chat plan (media entitlement and daily quota) are not in Slice 2. Free and Premium callers are treated the same. No Socket.IO event is emitted. User locks reuse `lockLikeUsers` so send coordinates with UNMATCH and UNDO.
 
 ---
 
@@ -504,7 +490,7 @@ Before creating a Pull Request or deploying code, verify that all applicable ite
 * [ ] Admin endpoints enforce `requireRole('ADMIN')`.
 * [ ] Resource ownership verified for all mutating operations (`resource.user_id === req.user.id`).
 * [x] UNMATCH (`DELETE /api/v1/matches/:matchId`) allows either participant of an `ACTIVE` match and returns `404 MATCH_NOT_FOUND` for every other match id. It does not use Redis.
-* [ ] Chat queries verify active match participation.
+* [x] Send message (`POST /api/v1/conversations/:conversationId/messages`) verifies participant ownership, active match/conversation state, and bidirectional blocks. Missing or foreign conversations return `404 RESOURCE_NOT_FOUND`.
 
 ### Privacy & Data Protection
 * [ ] Exact spatial coordinates (`latitude`, `longitude`) are NEVER returned in API responses.
@@ -519,7 +505,7 @@ Before creating a Pull Request or deploying code, verify that all applicable ite
 
 ### Monetization & Payments
 * [ ] Entitlements are evaluated dynamically from server-side subscriptions.
-* [x] Free LIKE and PASS quota (10 per UTC day) is enforced atomically in `usage_records`. Message quotas are not implemented.
+* [x] Free LIKE and PASS quota (10 per UTC day) is enforced atomically in `usage_records`. Message quotas are not implemented. Slice 2 send message does not write `usage_records` or read Premium.
 * [ ] Plan pricing is resolved server-side; client prices are ignored.
 * [ ] Razorpay webhook HMAC signatures are verified before processing.
 * [ ] Webhook processing is idempotent via `processed_webhooks`.
