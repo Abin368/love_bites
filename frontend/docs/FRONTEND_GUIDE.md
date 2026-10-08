@@ -8,7 +8,7 @@ This is the frontend integration guide for Love Bite. It tells a frontend develo
 
 ## 1. Purpose
 
-Use this document to wire registration, verification, login, refresh, logout, password reset, the Phase 3 onboarding contract, and Phase 4 Discovery: public catalogs, the basic profile, photos, interests, relationship intentions, dating preferences, location, onboarding status, onboarding completion, and `GET /api/v1/discovery`. Do not treat later product areas (likes, matches, chat, payments) as available APIs.
+Use this document to wire registration, verification, login, refresh, logout, password reset, the Phase 3 onboarding contract, and Phase 4 Discovery: public catalogs, the basic profile, photos, interests, relationship intentions, dating preferences, location, onboarding status, onboarding completion, and `GET /api/v1/discovery`. Phase 5 likes/matches and Phase 6 chat HTTP APIs are not covered here. The backend Socket.IO foundation exists (handshake `auth.token`, user room only); chat message events are not available yet.
 
 ---
 
@@ -777,7 +777,7 @@ Phase 2 authentication is implemented. Phase 3 onboarding is implemented: catalo
 
 `GET /api/v1/dating-preferences` and `PUT /api/v1/dating-preferences` are not mounted. `PUT /api/v1/me/interests` and `PUT /api/v1/me/relationship-intentions` are not mounted. `PUT /api/v1/location` and `PATCH /api/v1/onboarding/profile` are not mounted. Registration still does not write `profiles.date_of_birth`. `POST /api/v1/profile` does.
 
-Phase 4 — Discovery is complete. Call `GET /api/v1/discovery` as described in section 27. Phase 5 — Likes, Passes and Matches is next and is not implemented. Do not call likes, passes, super-likes, undo, matches, or chat.
+Phase 4 — Discovery is complete. Call `GET /api/v1/discovery` as described in section 27. Phase 5 likes/matches and Phase 6 chat HTTP APIs are implemented on the backend but are outside this guide’s current frontend wiring scope. Socket.IO foundation exists for `auth.token` handshake and `user:{userId}` only. Do not call chat message events yet.
 
 ---
 

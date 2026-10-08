@@ -467,26 +467,29 @@ Implement swipe action mechanics (`LIKE`, `PASS`, `SUPER_LIKE`), daily action qu
 
 ## 10. Phase 6 — Chat and Realtime Messaging
 
+**Partly complete (2026-10-08).** Slice 1 Socket.IO foundation is implemented. Message persistence, quotas, conversation rooms, chat events, history, read receipts, and media are not.
+
 ### 10.1 Objectives
 Build real-time messaging using Socket.IO backed by PostgreSQL persistence, enforce 6-step message authorization, manage unread counters, support tiered media attachments, and provide cursor-based history pagination.
 
 ### 10.2 Implementation Steps
-1. **Socket.IO Server Initialization (`src/socket/socket.server.ts`):**
+1. **Socket.IO Server Initialization (`src/socket/socket.server.ts`) — Implemented (Slice 1):**
    * Bind Socket.IO to the Express HTTP server with Redis adapter (`@socket.io/redis-adapter`) for horizontal multi-node scaling.
-   * `socket.auth.ts`: Middleware validates JWT access token on handshake; binds `socket.data.user`.
+   * `socket.auth.ts`: Middleware validates JWT access token on handshake, reloads the user from PostgreSQL, and binds `socket.data.user` to the live `AuthenticatedUser`.
    * Automatically join user private room: `user:{userId}`.
-2. **6-Step Message Authorization Verification (`chat.service.ts`):**
+   * No conversation rooms, chat events, or message persistence in this slice. Redis is required for the realtime foundation. CI starts a Redis 7 service for adapter tests.
+2. **6-Step Message Authorization Verification (`chat.service.ts`) — Not implemented:**
    * **Step 1:** Verify sender authentication (`req.user.id`).
    * **Step 2:** Verify conversation exists and sender is a participant of the backing match.
    * **Step 3:** Verify backing match is strictly `status = 'ACTIVE'`.
    * **Step 4:** Verify no active bidirectional safety block exists.
    * **Step 5 (Entitlement Check):** Free tier is restricted strictly to `TEXT` messages. Rich media (`IMAGE`, `GIF`, `VIDEO`, `VOICE`) requires `CHAT_MEDIA` entitlement (throws `403 PREMIUM_REQUIRED` for Free users).
    * **Step 6 (Quota Check):** Free tier enforced at maximum **20 outgoing text messages/day** via `usage_records`. Premium users get unlimited messages.
-3. **Message Persistence & Realtime Broadcast:**
+3. **Message Persistence & Realtime Broadcast — Not implemented:**
    * Persist message in PostgreSQL `messages` table (`conversation_id`, `sender_id`, `message_type`, `content`, `media_storage_key`).
    * Update `conversations.last_message_at = CURRENT_TIMESTAMP`.
    * Broadcast `chat:message:new` event to conversation room `conversation:{conversationId}` and emit push/in-app alert to recipient.
-4. **Message History & Read Receipts:**
+4. **Message History & Read Receipts — Not implemented:**
    * `GET /api/v1/conversations/:conversationId/messages`: Cursor-paginated history sorted by `created_at DESC`.
    * `PATCH /api/v1/conversations/:conversationId/read`: Updates `read_at = CURRENT_TIMESTAMP` for unread messages and emits `chat:message:read` Socket.IO event.
 
@@ -754,10 +757,10 @@ To maintain strict adherence to dependency constraints, development should follo
 16. Matches & Canonical Pair Architecture (Matches Table, Canonical ID Sorting) — schema done; match rows created by LIKE and SUPER LIKE
 17. Mutual Matching Transaction Pipeline (Reciprocal Check, Match Creation) — done
 18. Premium Undo Service (latest LIKE or PASS, five-minute window, match reversion) — done
-19. Unmatch & Rematch Lifecycle Management — next. Not implemented.
-20. Conversations & Messages Schema (Conversations, Messages Tables)
-21. Chat Service & 6-Step Message Authorization Engine
-22. Socket.IO Realtime Engine (Redis Adapter, Handshake Auth, Rooms)
+19. Unmatch & Rematch Lifecycle Management — Unmatch done. Rematch and `GET /matches` not implemented.
+20. Conversations & Messages Schema (Conversations, Messages Tables) — schema exists; chat write path not implemented
+21. Chat Service & 6-Step Message Authorization Engine — next. Not implemented.
+22. Socket.IO Realtime Engine (Redis Adapter, Handshake Auth, Rooms) — Slice 1 foundation done (handshake, user room, Redis adapter). Conversation rooms and chat events not implemented.
 23. Safety Module (Blocks Table, Bidirectional Isolation, Reports Table)
 24. Notification Engine (Notifications Table, Realtime Dispatch)
 25. "Who Liked You" Admirers Feed (Server-Side Masking for Free Tier)
@@ -845,13 +848,13 @@ PostgreSQL integration tests
   The existing database guard remains in place. CI does not create `love_bites_dev` and does not run `npm run db:migrate`.
 * **Database Cleanup:** The existing PostgreSQL integration setup truncates public test tables between tests. It does not drop `love_bites_test`.
 * **Test Factories & Fixtures:** Provide helper factory functions to generate test users, completed profiles, dating preferences, and active subscriptions.
-* **Redis in CI:** CI does not require a real Redis service. Current automated tests use the existing in-memory Redis test double where appropriate. Application Redis for authentication and rate limits is unchanged. Redis hardening is deferred.
+* **Redis in CI:** Backend CI starts a temporary `redis:7-alpine` service and sets `REDIS_URL=redis://localhost:6379` for Jest and PostgreSQL integration tests. Socket.IO adapter tests require that real Redis. Some older suites still use the in-memory Redis test double where appropriate. Redis hardening remains deferred.
 
 ### 21.3 External Service Mocking Strategy
 * **Razorpay Payment Gateway:** Mock Razorpay SDK methods in unit tests; test webhook endpoints by generating valid HMAC-SHA256 test signatures.
 * **AWS S3 Client:** Mock AWS SDK S3 client to return simulated presigned URLs; verify generated object keys match `photos/{userId}/{uuid}.webp`.
 * **SMS / Email Gateways:** Mock external OTP dispatch providers; verify Redis OTP key generation and TTL expiration.
-* **Redis PubSub & Socket.IO:** Future realtime tests may use `ioredis-mock` or a dedicated test Redis instance. That suite is not part of the current CI workflow, which does not start Redis.
+* **Redis PubSub & Socket.IO:** Phase 6 Slice 1 Socket.IO foundation tests use the real CI Redis service and `@socket.io/redis-adapter`. The in-memory Redis double does not support the adapter.
 
 ---
 

@@ -17,6 +17,40 @@ function unauthorized(message: string, errorCode: 'AUTH_REQUIRED' | 'INVALID_TOK
   return new UnauthorizedError(message, [], errorCode);
 }
 
+export async function authenticateAccessToken(token: string): Promise<AuthenticatedUser> {
+  let claims;
+  try {
+    claims = verifyAccessToken(token);
+  } catch (error) {
+    if (error instanceof jwt.TokenExpiredError || error instanceof jwt.JsonWebTokenError) {
+      throw unauthorized('Invalid token.', 'INVALID_TOKEN');
+    }
+    throw error;
+  }
+
+  const user = await findUserById(claims.sub);
+  if (!user || user.status === 'DELETED' || user.deletedAt) {
+    throw unauthorized('Invalid token.', 'INVALID_TOKEN');
+  }
+
+  if (user.status === 'SUSPENDED') {
+    throw new ForbiddenError('Account is suspended.', [], 'ACCOUNT_SUSPENDED');
+  }
+
+  if (user.status === 'BANNED') {
+    throw new ForbiddenError('Account is banned.', [], 'ACCOUNT_BANNED');
+  }
+
+  const isProfileComplete = await findProfileCompletion(user.id);
+  return {
+    id: user.id,
+    role: user.role,
+    status: user.status,
+    isVerified: computeIsVerified(user),
+    isProfileComplete
+  };
+}
+
 export async function authenticate(req: Request, _res: Response, next: NextFunction): Promise<void> {
   try {
     const header = req.header('authorization');
@@ -31,41 +65,7 @@ export async function authenticate(req: Request, _res: Response, next: NextFunct
       return;
     }
 
-    let claims;
-    try {
-      claims = verifyAccessToken(token);
-    } catch (error) {
-      if (error instanceof jwt.TokenExpiredError || error instanceof jwt.JsonWebTokenError) {
-        next(unauthorized('Invalid token.', 'INVALID_TOKEN'));
-        return;
-      }
-      throw error;
-    }
-
-    const user = await findUserById(claims.sub);
-    if (!user || user.status === 'DELETED' || user.deletedAt) {
-      next(unauthorized('Invalid token.', 'INVALID_TOKEN'));
-      return;
-    }
-
-    if (user.status === 'SUSPENDED') {
-      next(new ForbiddenError('Account is suspended.', [], 'ACCOUNT_SUSPENDED'));
-      return;
-    }
-
-    if (user.status === 'BANNED') {
-      next(new ForbiddenError('Account is banned.', [], 'ACCOUNT_BANNED'));
-      return;
-    }
-
-    const isProfileComplete = await findProfileCompletion(user.id);
-    req.user = {
-      id: user.id,
-      role: user.role,
-      status: user.status,
-      isVerified: computeIsVerified(user),
-      isProfileComplete
-    };
+    req.user = await authenticateAccessToken(token);
     next();
   } catch (error) {
     next(error);

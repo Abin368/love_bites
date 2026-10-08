@@ -355,21 +355,11 @@ Incoming Message Payload
 
 ## 17. Socket.IO Realtime Security
 
-1. **Handshake Authentication:** Socket connections must supply a valid JWT in the handshake:
-   ```typescript
-   io.use((socket, next) => {
-     const token = socket.handshake.auth.token;
-     const payload = verifyAccessToken(token);
-     if (!payload) return next(new Error('AUTH_REQUIRED'));
-     socket.data.user = payload;
-     next();
-   });
-   ```
+1. **Handshake Authentication (implemented in Phase 6 Slice 1):** Socket connections must supply `auth.token` with the existing access JWT. `socket.auth.ts` reuses `authenticateAccessToken`, which verifies the JWT and reloads the current user from PostgreSQL. Stale JWT claim fields are not trusted for account state. Missing token → `AUTH_REQUIRED`. Invalid/expired/deleted → `INVALID_TOKEN`. Suspended → `ACCOUNT_SUSPENDED`. Banned → `ACCOUNT_BANNED`. Non-`USER` roles → `FORBIDDEN`. Successful handshakes store the live `AuthenticatedUser` on `socket.data.user`.
 2. **Server-Managed Room Subscriptions:**
-   * Clients can only join rooms authorized by the server:
-     * User Private Room: `user:{userId}` (where `userId === socket.data.user.id`).
-     * Conversation Room: `conversation:{conversationId}` (authorized only after checking match participation in PostgreSQL).
-3. **Zero Client Trust in Socket Events:** Sockets cannot spoof sender IDs. The sender identity is extracted strictly from `socket.data.user.id`.
+   * Implemented now: the server auto-joins only `user:{userId}` where `userId === socket.data.user.id`.
+   * Planned: Conversation Room `conversation:{conversationId}` only after PostgreSQL match participation checks. Slice 1 does not join conversation rooms and does not accept a client join event.
+3. **Zero Client Trust in Socket Events:** Sockets cannot spoof sender IDs. Later chat slices must extract sender identity strictly from `socket.data.user.id`. No chat application events are implemented in Slice 1.
 
 ---
 

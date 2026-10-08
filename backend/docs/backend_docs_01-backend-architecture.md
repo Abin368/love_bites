@@ -511,7 +511,7 @@ Historical `UNDONE` and `UNMATCHED` rows stay in place. `uq_matches_single_activ
 
 ## 16. Chat & Realtime Architecture
 
-**Not implemented as an API.** LIKE and SUPER LIKE create an `ACTIVE` conversation row. Undo of that LIKE sets the conversation to `CLOSED`. No message routes and no Socket.IO server exist. The rules below are the planned chat contract.
+**Not implemented as a chat API.** LIKE and SUPER LIKE create an `ACTIVE` conversation row. Undo of that LIKE sets the conversation to `CLOSED`. No message routes exist. Phase 6 Slice 1 mounted the Socket.IO foundation only. The rules below remain the planned chat contract.
 
 ### Messaging Rules
 * Unrestricted messaging: Either participant in an active match can send the first message.
@@ -683,7 +683,7 @@ Redis is ephemeral. It is not the store for users, matches, messages, payments, 
 * Optional SUPER LIKE idempotency (`idempotency:<callerId>:super-like:<uuid>`, 120 seconds).
 
 ### Not implemented
-Sessions, discovery caching, daily LIKE/PASS counters (those are `usage_records`), Socket.IO presence or adapters, chat queues, notifications, Undo idempotency, and Unmatch idempotency. Undo and UNMATCH do not call Redis.
+Sessions, discovery caching, daily LIKE/PASS counters (those are `usage_records`), Socket.IO presence, chat queues, notifications, Undo idempotency, and Unmatch idempotency. Undo and UNMATCH do not call Redis.
 
 ```
 +-----------------------------------------------------------------------------------+
@@ -691,9 +691,10 @@ Sessions, discovery caching, daily LIKE/PASS counters (those are `usage_records`
 +-----------------------------------------------------------------------------------+
 |  OTP, password reset, rate limits, health, photo reservation   | Implemented      |
 |  LIKE and SUPER LIKE Idempotency-Key (120s)                    | Implemented      |
+|  Socket.IO Redis adapter (Phase 6 Slice 1)                     | Implemented      |
 |  Undo idempotency                                              | Not used         |
 |  Unmatch idempotency                                           | Not used         |
-|  Socket.IO adapter, presence, chat queues, discovery cache     | Planned          |
+|  Presence, chat queues, discovery cache                        | Planned          |
 +-----------------------------------------------------------------------------------+
 ```
 
@@ -703,14 +704,14 @@ Sessions, discovery caching, daily LIKE/PASS counters (those are `usage_records`
 
 ## 23. Realtime Architecture
 
-**Not implemented.** No Socket.IO server is mounted. The notes below are the planned contract.
+**Phase 6 Slice 1 foundation is implemented.** `src/socket/socket.server.ts` attaches Socket.IO to the HTTP server created in `src/server.ts`. `src/socket/socket.auth.ts` authenticates the handshake. Chat application events and conversation rooms are not implemented.
 
-* Framework: Socket.IO initialized over Express HTTP server.
-* Cluster Distribution: Redis Adapter for Socket.IO enables horizontal scaling across multiple application nodes.
+* Framework: Socket.IO initialized over the Express HTTP server.
+* Cluster Distribution: `@socket.io/redis-adapter` uses duplicated `ioredis` pub/sub clients from the existing Redis configuration.
 * Room Topology:
-  * Personal User Room: `user:{userId}` (delivers match updates, system alerts).
-  * Match Conversation Room: `conversation:{conversationId}` (delivers active chat messages).
-* Connection Middleware: Validates JWT tokens during WebSocket handshake before permitting channel subscriptions.
+  * Personal User Room: `user:{userId}` — auto-joined on connect from `socket.data.user.id`.
+  * Match Conversation Room: `conversation:{conversationId}` — planned. Not joined in Slice 1.
+* Connection Middleware: Validates the access JWT, reloads the user from PostgreSQL, rejects deleted/suspended/banned/non-`USER` accounts, and stores `AuthenticatedUser` on `socket.data.user`.
 
 ---
 

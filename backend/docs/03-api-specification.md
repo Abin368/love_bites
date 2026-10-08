@@ -1920,29 +1920,32 @@ Photo objects returned after confirm, list, and patch are `{ "id", "url", "displ
 
 ## 32. Realtime / Socket.IO Events Specification
 
-**Not implemented.** No Socket.IO server is mounted. `DELETE /api/v1/matches/:matchId` does not emit `match:unmatch`. The notes below remain the planned contract.
+**Phase 6 Slice 1 foundation is implemented.** Socket.IO is attached to the Express HTTP server with `@socket.io/redis-adapter`. Chat message HTTP routes, conversation rooms, and application chat events are still not implemented. `DELETE /api/v1/matches/:matchId` still does not emit `match:unmatch`.
 
-* **Handshake Authentication:** Client passes `auth: { token: "<access_token>" }`. Handshake rejects unauthenticated or banned sockets.
-* **Room Topologies:**
-  * User Private Channel: `user:{userId}` (receives system alerts, match alerts).
-  * Match Conversation Channel: `conversation:{conversationId}` (receives live messages).
+### 32.0 Implemented foundation
+* **Handshake:** Client connects with `auth: { token: "<access JWT>" }`. The token is the same access JWT used by HTTP `Authorization: Bearer`. Refresh tokens are not accepted.
+* **Authentication:** Handshake verifies the JWT, reloads the user from PostgreSQL, and rejects missing/invalid/expired tokens (`AUTH_REQUIRED` / `INVALID_TOKEN`), deleted users (`INVALID_TOKEN`), suspended users (`ACCOUNT_SUSPENDED`), banned users (`ACCOUNT_BANNED`), and non-`USER` roles (`FORBIDDEN`).
+* **Socket identity:** Successful handshakes store the live `AuthenticatedUser` on `socket.data.user`. Later chat slices must use `socket.data.user.id` as sender identity. Unverified or incomplete profiles are allowed to connect in Slice 1.
+* **User room:** On connect the server joins exactly `user:{userId}` from `socket.data.user.id`. The client cannot choose the room. Conversation rooms are not joined.
+* **Redis:** Socket.IO requires Redis for the adapter. Production fails startup if Redis or the adapter cannot initialize. Development can keep serving HTTP without Socket.IO when Redis is unavailable.
+* **Not in Slice 1:** No message persistence, no chat send/receive events, no typing events, no read receipts, no conversation-room join, no media uploads, and no notification/match socket emissions.
 
 ### 32.1 Server $\rightarrow$ Client Events
-| Event Name | Room / Target | Payload Structure | Trigger Condition |
-| :--- | :--- | :--- | :--- |
-| `match:new` | `user:{userId}` | `{"matchId": "...", "matchedUser": { "id": "...", "firstName": "Jordan", "photos": [...] }, "matchedAt": "..."}` | Reciprocal like establishes active match. |
-| `match:unmatch` | `user:{userId}` | `{"matchId": "...", "conversationId": "..."}` | Participant unmatches or block is triggered. |
-| `chat:message:new` | `conversation:{id}`| `{"id": "msg-1", "conversationId": "...", "senderId": "...", "messageType": "TEXT", "content": "...", "createdAt": "..."}` | Message persisted in PostgreSQL. |
-| `chat:message:read`| `conversation:{id}`| `{"conversationId": "...", "readerId": "...", "readAt": "..."}` | Participant opens active conversation. |
-| `notification:new` | `user:{userId}` | `{"id": "notif-1", "type": "NEW_LIKE", "title": "New Like!", "message": "Someone liked you!"}` | System notification dispatched. |
+| Event Name | Room / Target | Payload Structure | Trigger Condition | Status |
+| :--- | :--- | :--- | :--- | :--- |
+| `match:new` | `user:{userId}` | `{"matchId": "...", "matchedUser": { "id": "...", "firstName": "Jordan", "photos": [...] }, "matchedAt": "..."}` | Reciprocal like establishes active match. | Planned |
+| `match:unmatch` | `user:{userId}` | `{"matchId": "...", "conversationId": "..."}` | Participant unmatches or block is triggered. | Planned |
+| `chat:message:new` | `conversation:{id}`| `{"id": "msg-1", "conversationId": "...", "senderId": "...", "messageType": "TEXT", "content": "...", "createdAt": "..."}` | Message persisted in PostgreSQL. | Planned |
+| `chat:message:read`| `conversation:{id}`| `{"conversationId": "...", "readerId": "...", "readAt": "..."}` | Participant opens active conversation. | Planned |
+| `notification:new` | `user:{userId}` | `{"id": "notif-1", "type": "NEW_LIKE", "title": "New Like!", "message": "Someone liked you!"}` | System notification dispatched. | Planned |
 
 ### 32.2 Client $\rightarrow$ Server Events
-| Event Name | Payload Structure | Description |
-| :--- | :--- | :--- |
-| `chat:message:send` | `{"conversationId": "...", "messageType": "TEXT", "content": "..."}` | Client transmits chat message. |
-| `chat:message:read` | `{"conversationId": "..."}` | Client marks incoming messages as read. |
-| `chat:typing:start` | `{"conversationId": "..."}` | Client begins typing in active match. |
-| `chat:typing:stop` | `{"conversationId": "..."}` | Client stops typing. |
+| Event Name | Payload Structure | Description | Status |
+| :--- | :--- | :--- | :--- |
+| `chat:message:send` | `{"conversationId": "...", "messageType": "TEXT", "content": "..."}` | Client transmits chat message. | Planned |
+| `chat:message:read` | `{"conversationId": "..."}` | Client marks incoming messages as read. | Planned |
+| `chat:typing:start` | `{"conversationId": "..."}` | Client begins typing in active match. | Planned |
+| `chat:typing:stop` | `{"conversationId": "..."}` | Client stops typing. | Planned |
 
 ---
 
