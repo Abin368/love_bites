@@ -199,64 +199,70 @@ The platform relies on a local radius discovery model:
 * **No Exact Coordinates:** The system **must never** deliver raw latitude and longitude coordinates of any user to any client API payload.
 * **Exposed Location Data:** Clients receive only:
   1. The user's registered City/Town name.
-  2. The calculated approximate distance (e.g., *"5 km away"* or *"Less than 1 km away"*).
+  2. On the live Discovery card, numeric `distanceKm`, rounded to one decimal place. Latitude and longitude are not returned.
 
 ---
 
 ## 7. Discovery Engine & Matching Mechanics
 
 ### 7.1 Single-Card Discovery Stack
+The live Discovery API returns one candidate card at a time. Pass, like, super like, undo, and unmatch are implemented.
 * Users view candidate profiles **one at a time**.
-* **Supported User Actions:**
-  * **Pass:** Swipe Left or tap "Pass" button.
-  * **Like:** Swipe Right or tap "Like" button.
-  * **Super Like:** Tap "Super Like" button (Premium only).
-  * **Undo:** Tap "Undo" button (Premium only, immediately previous action).
+* **Implemented actions:**
+  * **Pass:** `POST /api/v1/discovery/:userId/pass`.
+  * **Like:** `POST /api/v1/discovery/:userId/like`.
+  * **Super Like:** `POST /api/v1/discovery/:userId/super-like`. Premium only, and it spends a Super Like credit.
+  * **Undo:** `POST /api/v1/discovery/undo`. Premium only, latest outgoing Like or Pass, five-minute window.
+  * **Unmatch:** `DELETE /api/v1/matches/:matchId`. Free. Either participant of an `ACTIVE` match can end it.
 
 ### 7.2 Candidate Exclusion Criteria
-The discovery generation engine must filter out candidate profile B for viewing user A if *any* of the following conditions are true:
+`GET /api/v1/discovery` filters out candidate profile B for viewing user A if any of the following are true:
 
-1. B is the user A (Self).
-2. B's profile is incomplete or account status is not `ACTIVE`.
-3. A and B are already matched.
-4. A has blocked B, or B has blocked A.
-5. A has permanently passed B (or B has passed A, if strict mutual discovery rule is enforced).
-6. A or B is suspended, banned, or soft-deleted.
-7. A and B do not satisfy **mutual** dating preferences (Gender interest, Age ranges, Relationship intentions).
-8. B's location falls outside user A's configured radius, or A falls outside B's configured radius.
+1. B is user A.
+2. B's account status is not `ACTIVE`, or B is soft-deleted.
+3. B's profile is incomplete, B has no location, or B has no active primary photo.
+4. A and B have a match with status `ACTIVE`. An `UNMATCHED` or `UNDONE` match does not exclude B.
+5. A has blocked B, or B has blocked A.
+6. A has an active `LIKE`, `PASS`, or `SUPER_LIKE` toward B (`is_undone = false`). An undone action does not exclude B. B's incoming `PASS` toward A does not exclude B.
+7. A and B do not both satisfy distance, age, gender preference, and relationship-intention overlap. Distance uses inclusive PostGIS `ST_DWithin`. Age uses completed years and is inclusive. An empty preferred-gender list or an empty preferred-intention list produces no candidate.
+8. A is unverified, or A's profile, dating preferences, or location are missing. That caller receives a verification error or `400 PROFILE_INCOMPLETE`, not an empty stack.
 
-*Note: Browsing/viewing candidate cards does not consume action quotas.*
+Reports are not a Discovery exclusion. Browsing candidate cards does not consume action quotas. Pass and like consume the free daily quota. Super like and undo do not.
 
 ### 7.3 Swipe Actions Logic
 
 #### Pass Action
-* **Permanence:** A Pass action is permanent in the MVP.
-* **Persistence:** Stored permanently in the database. Logging out, refreshing the app, or reinstalling must **not** reset passed profiles.
+* **Persistence:** Stored as `likes.action = 'PASS'`. Logging out does not clear it.
+* **Undo:** A Premium user can undo that pass only while it is the latest active outgoing Like or Pass and it is inside the five-minute window. The row stays, with `is_undone = true`. While the row is active, Discovery excludes the target.
 
 #### Like Action & Matching Mechanics
-* **Unilateral Like:** Saved in the database. If B has not yet liked A, A's card disappears from A's stack.
-* **Mutual Matching:** Triggered when A likes B AND B already likes A.
-  * System generates a `Match` record.
-  * Enables bidirectional Chat functionality between A and B.
-  * Triggers match notifications to both users.
+* **Unilateral Like:** Saved as `likes.action = 'LIKE'`. The target leaves the caller's Discovery stack while the row is active.
+* **Mutual Matching:** Triggered when the new action is `LIKE` or `SUPER_LIKE` and the other user already has an active `LIKE` or `SUPER_LIKE`. A reciprocal `PASS` does not match.
+  * The system inserts a `matches` row with `status = 'ACTIVE'` and canonical user order.
+  * The system inserts one `conversations` row with `status = 'ACTIVE'`.
+  * Chat send/list APIs and match notifications are not implemented.
+* **Free quota:** A like consumes one of the 10 combined Like and Pass actions for the UTC day, unless the caller has Premium.
+
+#### Super Like
+* Premium only. It spends one `SUPER_LIKE` credit and writes a consumption ledger row. It does not use the daily Like/Pass quota. It can create the same kind of match as a like.
 
 #### Unmatching Mechanics
-* Either user in an active match can initiate an `Unmatch`.
-* **Consequences of Unmatching:**
-  * The `Match` record state transitions to `INACTIVE`.
-  * The active chat conversation is closed and hidden from both inbox views.
-  * Message history is retained in the database for safety and audit purposes, but inaccessible to users.
-  * The system permits future rematches if both users like each other again in discovery.
+* **Implemented.** `DELETE /api/v1/matches/:matchId`. Free for a verified user with a complete profile, location, and dating preferences. Premium is not required.
+* **Who:** either participant of an `ACTIVE` match. A third user receives `404 MATCH_NOT_FOUND` and the match stays `ACTIVE`.
+* **Match:** `ACTIVE` becomes `UNMATCHED`. `unmatched_at` and `unmatched_by_user_id` record when and who. The row is kept. `UNDONE` and already `UNMATCHED` rows are not changed.
+* **Conversation:** the `ACTIVE` conversation becomes `CLOSED` and `closed_at` is set. The conversation and its messages are kept. They are not deleted.
+* **Likes:** existing `LIKE` and `SUPER_LIKE` rows stay, including the reciprocal row. `is_undone` is not changed. UNMATCH does not remove those actions, so discovery can still hide the other user because of an active outgoing like. UNMATCH does not by itself put the pair back into discovery.
+* **Undo is different:** Undo sets `likes.is_undone = true` and, for the LIKE that owns the current match, sets that match to `UNDONE` with `unmatched_at` and `unmatched_by_user_id` left null.
+* **Rematch:** not implemented. A later match would be a new `ACTIVE` row. This action does not revive the old row.
 
 #### Undo Action Rules (Premium Only)
-* **Access:** Restricted to active Premium subscribers.
-* **Scope:** Reverses only the **immediately preceding** Like or Pass action performed by the user.
-* **Repeated Use:** Premium users can use Undo repeatedly for sequential prior actions, step-by-step.
-* **Quota Interaction:** Undo does not consume daily Like/Pass action quotas.
-* **State Integrity Rule:** If User A Liked User B, resulting in a Match, and User A immediately triggers an Undo:
-  * The created `Match` record must be invalidated/removed.
-  * The associated active chat channel must be closed immediately.
-  * User B's Like state towards A remains intact, but A's Like state toward B is cleared.
+* **Access:** An active Premium subscription. Free users receive `403 PREMIUM_REQUIRED`.
+* **Scope:** The latest active outgoing `LIKE` or `PASS` only. `SUPER_LIKE` is never undone. Incoming actions do not count.
+* **Window:** `created_at >= CURRENT_TIMESTAMP - INTERVAL '5 minutes'`. Exactly five minutes is valid. If that latest action is older, the result is `400 UNDO_WINDOW_EXPIRED` and an older action is not chosen. No active Like or Pass returns `400 NO_UNDOABLE_ACTION`.
+* **Repeated Use:** After one undo, the next latest active Like or Pass can be undone, one at a time, when it is still inside the window.
+* **Quota:** Undo does not restore quota, does not consume quota, and does not change `usage_records`.
+* **State:** `is_undone` becomes true. The row is not deleted.
+* **Match:** If that Like created the current `ACTIVE` match, the match becomes `UNDONE`, the `ACTIVE` conversation becomes `CLOSED`, and `closed_at` is set. The other user's reciprocal Like or Super Like stays active. A Pass does not change matches.
 
 ---
 
@@ -279,7 +285,7 @@ The discovery generation engine must filter out candidate profile B for viewing 
 ### 8.3 Messaging Quotas & Lifecycle
 * **Free Tier Daily Quota:** 20 sent text messages per 24-hour rolling window (or calendar day, defined by business rules).
 * **Incoming Messages:** Received messages do **not** consume the receiver's daily sent quota.
-* **Unmatch Impact:** When a match is dissolved, the conversation becomes inactive immediately; sending further messages is blocked.
+* **Unmatch Impact:** When a match is unmatched, the conversation becomes `CLOSED` immediately and further messages are blocked once chat exists. The conversation and its messages stay in PostgreSQL. Unmatch does not delete likes.
 
 ---
 
@@ -294,6 +300,7 @@ The discovery generation engine must filter out candidate profile B for viewing 
 | **Daily Sent Text Messages** | 20 messages / day | Unlimited |
 | **Chat Media (Photo, Video, Voice)**| Disabled | Enabled |
 | **Undo Last Action** | Disabled | Enabled |
+| **Unmatch** | Enabled | Enabled |
 | **Who Liked You Unlocking** | Blurred Count Only | Full Profile Unlocked |
 | **Discovery Filters** | Basic (Age, Distance, Gender, Intentions) | Advanced (Education, Occupation, Interests, Lifestyle) |
 | **Boost Credits** | None | Configurable Monthly Allowance + Purchases |
@@ -474,4 +481,4 @@ The following parameter values are designated as **TBD** and must be populated v
 ## Document Status
 * **Status:** DRAFT
 * **Version:** 1.0
-* **Last Updated:** September 7, 2026
+* **Last Updated:** 7 October 2026. Discovery, pass, like, super like, undo, and unmatch descriptions match the implemented API. Chat, rematch, who-liked-you, the match list, and payments remain product scope that is not yet implemented.

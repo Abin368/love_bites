@@ -13,7 +13,7 @@ This document defines the **RESTful API Specification** and **Socket.IO Realtime
 
 ### Implementation status
 
-Phase 2 authentication and Phase 3 onboarding are implemented. Sections **4**, **11**, **12**, and **14** describe that live behavior. Sections **13** and **17** onward are the planned contract and are not mounted, except where a subsection says otherwise. `PUT /api/v1/me/interests`, `PUT /api/v1/me/relationship-intentions`, `GET /api/v1/dating-preferences`, `PUT /api/v1/dating-preferences`, `PUT /api/v1/location`, and `PATCH /api/v1/onboarding/profile` are not implemented.
+Phase 2 authentication, Phase 3 onboarding, Phase 4 Discovery, and Phase 5 slices for PASS, LIKE and match creation, SUPER LIKE, UNDO, and UNMATCH are implemented. Sections **4**, **11**, **12**, **14**, **19**, **20**, **21**, and **22.2** describe that live behavior. Sections **13**, **17**, **18**, **22.1**, and **23** onward are the planned contract and are not mounted, except where a subsection says otherwise. `PUT /api/v1/me/interests`, `PUT /api/v1/me/relationship-intentions`, `GET /api/v1/dating-preferences`, `PUT /api/v1/dating-preferences`, `PUT /api/v1/location`, and `PATCH /api/v1/onboarding/profile` are not implemented. `GET /api/v1/matches` is not implemented. `DELETE /api/v1/matches/:matchId` is implemented. Match and conversation rows are created by LIKE and SUPER LIKE. UNMATCH does not delete them.
 
 Health checks are also live: `GET /health` and `GET /api/v1/health`.
 
@@ -22,7 +22,7 @@ Health checks are also live: `GET /health` and `GET /api/v1/health`.
 * **Dual-Token Authentication:** Ephemeral JWT Access Tokens (15-minute validity) paired with Rotating Refresh Tokens delivered via secure `HTTP-Only`, `SameSite=Strict`, `Secure` cookies.
 * **Centralized Entitlements & Server-Side Enforcement:** Feature gating (Free vs. Premium tiers) and rate/usage quota limits (10 combined Swipes/day, 20 text messages/day for Free users) are strictly verified server-side. Frontend clients are never trusted with entitlement decisions.
 * **Privacy & Security by Design:** 
-  * Exact spatial coordinates (`latitude`, `longitude`) are **NEVER** returned in any client payload. Clients receive only the registered `city` and an approximate server-calculated distance in kilometers.
+  * Exact spatial coordinates (`latitude`, `longitude`) are **NEVER** returned in any client payload. Live Discovery returns the registered `city` and numeric `distanceKm`, rounded to one decimal place.
   * Liker identities for non-paying Free users are filtered server-side (returning only aggregate counts, with zero personal metadata or photos in API responses).
 * **Idempotent Financial Operations:** Razorpay webhook events and client checkout verifications are guaranteed idempotent via database transaction boundaries and unique event ledgers.
 * **Realtime Synchronization:** Socket.IO handles low-latency chat delivery and instant match alerts, backed by PostgreSQL as the authoritative persistence tier.
@@ -109,8 +109,10 @@ Live routes that require `Authorization: Bearer <accessToken>`:
 * `PUT /api/v1/onboarding/interests`, `PUT /api/v1/onboarding/relationship-intentions`, `PUT /api/v1/onboarding/dating-preferences`, and `PUT /api/v1/onboarding/location`.
 * `GET /api/v1/onboarding/status` and `POST /api/v1/onboarding/complete`.
 * `POST /api/v1/profile-photos/upload-url`, `POST /api/v1/profile-photos/confirm`, `GET /api/v1/profile-photos`, `PATCH /api/v1/profile-photos/:photoId`, and `DELETE /api/v1/profile-photos/:photoId`.
+* `GET /api/v1/discovery`, `POST /api/v1/discovery/:userId/pass`, `POST /api/v1/discovery/:userId/like`, `POST /api/v1/discovery/:userId/super-like`, and `POST /api/v1/discovery/undo`.
+* `DELETE /api/v1/matches/:matchId`.
 
-Those profile, onboarding, and photo routes also require role `USER`. `requireVerified` is not applied, so an unverified `USER` may call them. Any other role, including `ADMIN`, receives `403 FORBIDDEN`. Suspended and banned accounts are rejected with `403` by the authentication middleware.
+Those profile, onboarding, photo, discovery, and unmatch routes also require role `USER`. `requireVerified` is not applied on the route. An unverified `USER` may call profile, onboarding, and photo routes. Discovery, PASS, LIKE, SUPER LIKE, UNDO, and UNMATCH check verification in the service and return `403 EMAIL_NOT_VERIFIED` or `403 PHONE_NOT_VERIFIED`. Any other role, including `ADMIN`, receives `403 FORBIDDEN`. Suspended and banned accounts are rejected with `403` by the authentication middleware.
 
 There is no live admin API yet. `requireRole('ADMIN')` exists for later routes.
 
@@ -131,7 +133,7 @@ Authorization is verified across four distinct tiers:
 * Standard HTTP request headers:
   * `Content-Type: application/json` (for JSON bodies)
   * `Authorization: Bearer <token>` (for authenticated endpoints)
-  * `Idempotency-Key: <UUIDv4>` (optional/mandatory for state-mutating checkout/actions)
+  * `Idempotency-Key: <UUIDv4>` (optional on `POST /api/v1/discovery/:userId/like` and `POST /api/v1/discovery/:userId/super-like`. PASS, UNDO, and UNMATCH do not read this header. Checkout idempotency remains planned.)
   * `X-Request-ID: <UUIDv4>` (client-supplied or generated by gateway for distributed tracing)
 
 ---
@@ -172,7 +174,7 @@ All failed HTTP requests return a standardized, machine-parseable JSON error env
 {
   "success": false,
   "error": {
-    "code": "EXCEEDED_DAILY_LIKE_LIMIT",
+    "code": "DAILY_LIMIT_REACHED",
     "message": "You have reached your daily limit of 10 likes/passes.",
     "details": [],
     "timestamp": "2026-09-15T10:30:00.000Z",
@@ -191,7 +193,7 @@ All failed HTTP requests return a standardized, machine-parseable JSON error env
 | `PHONE_NOT_VERIFIED` | 403 | Account requires SMS OTP verification. |
 | `ACCOUNT_SUSPENDED` | 403 | User account is temporarily suspended by admin. |
 | `ACCOUNT_BANNED` | 403 | User account has been permanently terminated. |
-| `PROFILE_INCOMPLETE` | 400 | `POST /api/v1/onboarding/complete` was called before all seven prerequisites were satisfied. `details` lists every missing step. Nothing is written. |
+| `PROFILE_INCOMPLETE` | 400 | Onboarding is incomplete. Completion lists every missing step in `details` and writes nothing. Discovery, PASS, LIKE, SUPER LIKE, UNDO, and UNMATCH return the same code with empty `details` when the caller has no completed profile, no location, or no dating preferences. |
 | `INVALID_INTEREST` | 400 | One or more interest ids are unknown or inactive. |
 | `INVALID_RELATIONSHIP_INTENTION` | 400 | One or more relationship intention ids are unknown or inactive. |
 | `INVALID_STORAGE_KEY` | 400 | The confirm storage key does not match the upload reservation. |
@@ -205,12 +207,17 @@ All failed HTTP requests return a standardized, machine-parseable JSON error env
 | `PROFILE_NOT_FOUND` | 404 | The authenticated user has no profile row. |
 | `PROFILE_ALREADY_EXISTS` | 409 | The authenticated user already has a profile. |
 | `INVALID_GENDER` | 400 | `genderId` is missing, unknown, or not an active gender. |
-| `MATCH_NOT_FOUND` | 404 | Active match record does not exist. |
+| `MATCH_NOT_FOUND` | 404 | Active match record does not exist. UNMATCH uses this for a missing id, a match the caller does not belong to, a non-`ACTIVE` row, an already `UNMATCHED` row, an `UNDONE` row, and a concurrent request that already changed the row. Message: `Active match record does not exist.` |
 | `CONVERSATION_CLOSED` | 404 | Conversation is closed due to unmatch or safety block. |
 | `DUPLICATE_IDENTIFIER` | 409 | Email or phone is already registered to an active account. |
+| `SELF_INTERACTION` | 400 | The caller targeted their own user id. |
+| `INVALID_TARGET` | 404 | The target exists but is not an active, complete profile with a primary photo. |
 | `ALREADY_SWIPED` | 409 | Target user has already been liked or permanently passed. |
 | `ACTIVE_MATCH_EXISTS` | 409 | Users are already in an active mutual match. |
 | `BLOCKED_USER` | 409 | Interaction prohibited due to an active safety block. |
+| `NO_UNDOABLE_ACTION` | 400 | There is no active outgoing LIKE or PASS to undo. |
+| `UNDO_WINDOW_EXPIRED` | 400 | The latest active outgoing LIKE or PASS is older than five minutes. |
+| `INSUFFICIENT_SUPER_LIKE_CREDITS` | 409 | The caller has no remaining `SUPER_LIKE` credits. |
 | `VALIDATION_ERROR` | 400 | Request body/query failed Zod structural validation. |
 | `UNDERAGE_NOT_PERMITTED`| 422 | User date of birth indicates age < 18 years. |
 | `DAILY_LIMIT_REACHED` | 429 | Free tier daily swipe or message quota exhausted. |
@@ -224,7 +231,7 @@ All failed HTTP requests return a standardized, machine-parseable JSON error env
 ## 9. Pagination Strategy
 
 ### 9.1 Cursor-Based Pagination (Feeds & Infinite Streams)
-Used for Discovery candidates, Chat Messages, Inbox Dialogs, and Notifications.
+Planned for chat, notifications, and match lists. Live `GET /api/v1/discovery` returns one card and does not paginate.
 * **Query Parameters:**
   * `limit`: Integer (Default: `20`, Max: `50`).
   * `cursor`: Base64-encoded string representing `(created_at, id)`.
@@ -616,7 +623,7 @@ From login `user`, and from access-token claims:
 | 401 | `INVALID_TOKEN` | Expired or bad access token: try refresh once. Refresh, verify, and reset failures: go to the relevant form, do not loop. |
 | 401 | `INVALID_CREDENTIALS` | Show the invalid-credentials message. Do not say which field was wrong. |
 | 403 | `ACCOUNT_SUSPENDED` or `ACCOUNT_BANNED` | Block the session and show the message. Do not refresh. |
-| 403 | `EMAIL_NOT_VERIFIED` or `PHONE_NOT_VERIFIED` | Not returned by the Phase 2 auth routes. Reserved for later routes that require verification. |
+| 403 | `EMAIL_NOT_VERIFIED` or `PHONE_NOT_VERIFIED` | Not returned by the Phase 2 auth routes. Discovery, PASS, LIKE, SUPER LIKE, UNDO, and UNMATCH return these when the caller is unverified. |
 | 404 | `USER_NOT_FOUND` | Resend only. The identifier has no account. |
 | 409 | `DUPLICATE_IDENTIFIER` | Registration. Offer login. |
 | 422 | `UNDERAGE_NOT_PERMITTED` | Registration. Block submit. |
@@ -625,13 +632,13 @@ From login `user`, and from access-token claims:
 
 ### 11.12 What is live
 
-Live now: registration, email and phone verification, resend, login, refresh, logout, forgot-password, reset-password, the public catalog reads in section 11.13, the authenticated basic profile API in section 11.14, onboarding interests and relationship intentions in section 11.15, profile photos in section 14, dating preferences in section 12.5, location in section 12.6, onboarding status in section 12.1, and onboarding completion in section 12.7.
+Live now: registration, email and phone verification, resend, login, refresh, logout, forgot-password, reset-password, the public catalog reads in section 11.13, the authenticated basic profile API in section 11.14, onboarding interests and relationship intentions in section 11.15, profile photos in section 14, dating preferences in section 12.5, location in section 12.6, onboarding status in section 12.1, onboarding completion in section 12.7, `GET /api/v1/discovery` in section 19, PASS, LIKE, SUPER LIKE, and UNDO in sections 20 and 21, and UNMATCH in section 22.2.
 
-Phase 3 onboarding is complete. Gender and relationship-intention seed data exist. Production interests are not seeded, because the approved interest list is not defined.
+Phase 3 onboarding is complete. Phase 4 — Discovery is complete. Phase 5 slices for PASS, LIKE and match creation, SUPER LIKE, UNDO, and UNMATCH are complete. `GET /api/v1/matches` is not implemented. Rematch is not implemented. Gender and relationship-intention seed data exist. Production interests are not seeded, because the approved interest list is not defined.
 
-Not implemented: `PUT /api/v1/me/interests`, `PUT /api/v1/me/relationship-intentions`, `GET /api/v1/dating-preferences`, `PUT /api/v1/dating-preferences`, `PUT /api/v1/location`, `PATCH /api/v1/onboarding/profile`, the richer profile views in section 13, discovery, likes, matches, chat, subscriptions, payments, and boosts. Do not call those paths.
+Not implemented: `PUT /api/v1/me/interests`, `PUT /api/v1/me/relationship-intentions`, `GET /api/v1/dating-preferences`, `PUT /api/v1/dating-preferences`, `PUT /api/v1/location`, `PATCH /api/v1/onboarding/profile`, the richer profile views in section 13, `GET /api/v1/matches`, who-liked-me, chat, notifications, subscriptions as a public API, payments, and boosts. Do not call those paths. `DELETE /api/v1/matches/:matchId` is live.
 
-Phase 4 — Discovery is next and is not implemented. Later sections remain the planned contract unless a subsection says it is implemented.
+Later sections remain the planned contract unless a subsection says it is implemented.
 
 ### 11.13 Public catalog reads
 
@@ -1261,16 +1268,23 @@ Photo objects returned after confirm, list, and patch are `{ "id", "url", "displ
 
 ## 19. Discovery APIs
 
+**Implemented.** Phase 4 is complete. `GET /api/v1/discovery` has no query string and no body. It does not accept cursor or offset pagination, and it does not record a seen-state. A repeat call can return the same candidate until eligibility or ranking changes. PASS, LIKE, SUPER LIKE, and UNDO are also mounted under `/api/v1/discovery`. See sections 20 and 21. `POST /api/v1/discovery/undo` is registered before `/:userId` so the word `undo` is not treated as a user id.
+
 ### 19.1 Get Next Discovery Candidate Card
 * **Method & Path:** `GET /api/v1/discovery`
-* **Auth:** Authenticated
-* **Behavior & Business Rules:**
-  * Evaluates PostGIS mutual distance (`ST_DWithin`) using `idx_profiles_location_gist`.
-  * Enforces mutual age, gender, and relationship intention filters.
-  * Excludes: self, incomplete profiles, inactive accounts, active matches, blocks, and permanently passed profiles.
-  * Applies Boost multipliers to discovery candidate ranking.
-  * **Quota Rule:** Browsing candidate profiles is **unlimited for both Free and Premium users**. Quota is consumed ONLY upon submitting a Like or Pass action.
-* **Success Response (`200 OK`):**
+* **Auth:** Authenticated `USER`. The route uses `authenticate` and `requireRole('USER')`. `requireVerified` is not attached. The Discovery service checks the current authenticated verification state.
+* **Caller results:**
+  * Missing token: `401 AUTH_REQUIRED`.
+  * Invalid token, or a deleted account: `401 INVALID_TOKEN`.
+  * Any role other than `USER`, including `ADMIN`: `403 FORBIDDEN`.
+  * Suspended: `403 ACCOUNT_SUSPENDED`. Banned: `403 ACCOUNT_BANNED`.
+  * Unverified email account: `403 EMAIL_NOT_VERIFIED`. Unverified phone account: `403 PHONE_NOT_VERIFIED`.
+  * Missing profile, a profile that is not marked complete, missing dating preferences, or a missing location: `400 PROFILE_INCOMPLETE`. An incomplete caller does not receive an empty stack.
+* **Candidate eligibility:** The candidate is a different user with `users.status = 'ACTIVE'`, `users.deleted_at IS NULL`, `profiles.is_profile_complete = true`, a non-null location, and an active primary photo. The query excludes the candidate when the viewer has an active `LIKE`, `PASS`, or `SUPER_LIKE` (`likes.is_undone = false`), when the pair has a match with `status = 'ACTIVE'`, or when either user has blocked the other. An undone viewer action does not exclude the candidate. A candidate's incoming `PASS` does not exclude the candidate. `UNMATCHED` and `UNDONE` matches do not exclude the candidate. Reports are not part of this query.
+* **Mutual filters:** PostGIS `ST_DWithin` requires the distance to fall within both users' `max_distance_km`. The boundary is inclusive. Age uses completed years, `EXTRACT(YEAR FROM AGE(date_of_birth))`, and both ages must fall inside the other user's `min_age` to `max_age`, inclusive. Each user's gender must appear in the other user's preferred genders. Each user's own relationship intentions must overlap the other user's preferred intentions. An empty preferred-gender list or an empty preferred-intention list produces no candidate. An empty list is not treated as "no preference".
+* **Ranking:** One row. Highest currently active boost multiplier first, then `profiles.created_at DESC`. An active boost has `is_active = true` and `expires_at > CURRENT_TIMESTAMP`. Several active boosts use the highest multiplier. No active boost uses `1.0`.
+* **Quota:** Browsing is unlimited. This route does not consume the combined LIKE and PASS quota and does not consume Super Like credits.
+* **Success Response (`200 OK`):** Message: `Discovery candidate retrieved successfully`.
   ```json
   {
     "success": true,
@@ -1279,39 +1293,83 @@ Photo objects returned after confirm, list, and patch are `{ "id", "url", "displ
         "id": "c3e7d81b-9932-4233-812c-6f5e39482130",
         "firstName": "Jordan",
         "age": 25,
-        "gender": { "name": "Woman", "code": "WOMAN" },
+        "gender": { "id": "gen-1", "code": "WOMAN", "name": "Woman" },
         "bio": "Designer & coffee enthusiast.",
         "occupation": "Product Designer",
         "education": "NID",
         "city": "Bengaluru",
-        "distanceKm": 4,
-        "isSuperLiked": false,
+        "distanceKm": 4.2,
         "photos": [
-          { "id": "p-1", "url": "https://cdn.lovebite.app/signed/...", "displayOrder": 1, "isPrimary": true },
-          { "id": "p-2", "url": "https://cdn.lovebite.app/signed/...", "displayOrder": 2, "isPrimary": false }
+          { "id": "p-1", "url": "https://signed.example/photo-1", "displayOrder": 1, "isPrimary": true },
+          { "id": "p-2", "url": "https://signed.example/photo-2", "displayOrder": 2, "isPrimary": false }
         ],
-        "interests": [{ "id": "int-1", "name": "Design" }, { "id": "int-2", "name": "Coffee" }],
-        "relationshipIntentions": [{ "id": "rel-1", "name": "Long-term relationship" }]
+        "interests": [
+          { "id": "int-1", "code": "DESIGN", "name": "Design", "category": "Creative" }
+        ],
+        "relationshipIntentions": [
+          { "id": "rel-1", "code": "LONG_TERM_RELATIONSHIP", "name": "Long-term relationship" }
+        ]
       }
-    }
+    },
+    "message": "Discovery candidate retrieved successfully"
   }
   ```
-  *(Returns `data: { "candidate": null }` if no eligible candidates remain in the stack).*
+  `id` is the candidate user id. `age` is a number of completed years. `bio`, `occupation`, `education`, and `city` may be null. `distanceKm` is a number rounded to one decimal place, including values below 1, such as `0.7`. Photos are the candidate's active photos, ordered by `displayOrder`, with private signed download URLs valid for 3600 seconds. Interests are the candidate's own interests (`id`, `code`, `name`, `category`). `category` may be null. Relationship intentions are the candidate's own intentions (`id`, `code`, `name`). The response does not include `storageKey`, latitude, longitude, `location`, email, phone, password, or tokens.
+* **Empty stack (`200 OK`):** The same message. `data` is `{ "candidate": null }`.
 
 ---
 
-## 20. Like / Pass APIs
+## 20. Like / Pass / Super Like APIs
 
-### 20.1 Like a Profile
+**Implemented.** These routes are mounted on the discovery router. They share the caller checks below. None of them creates a notification or emits a Socket.IO event. There is no separate passes table. `LIKE`, `PASS`, and `SUPER_LIKE` are rows in `likes`.
+
+### Shared caller and target rules
+
+* **Auth:** `Authorization: Bearer <accessToken>` and role `USER`. `requireVerified` is not on the route. The service checks the current verification state.
+* **Missing token:** `401 AUTH_REQUIRED`. Invalid token or a deleted account: `401 INVALID_TOKEN`.
+* **Any role other than `USER`, including `ADMIN`:** `403 FORBIDDEN`.
+* **Suspended:** `403 ACCOUNT_SUSPENDED`. **Banned:** `403 ACCOUNT_BANNED`.
+* **Unverified email account:** `403 EMAIL_NOT_VERIFIED`. **Unverified phone account:** `403 PHONE_NOT_VERIFIED`.
+* **Incomplete caller:** missing profile, `profiles.is_profile_complete` is false, missing dating preferences, or missing location: `400 PROFILE_INCOMPLETE`. Message: `Onboarding is incomplete.` `details` is empty.
+* **Path `userId`:** required UUID. A bad value is `400 VALIDATION_ERROR` with field `userId` and message `User id must be a valid UUID.` The stored id is lower-cased.
+* **Self target:** `400 SELF_INTERACTION`.
+* **Unknown or deleted target:** `404 USER_NOT_FOUND`. Message: `Target user profile not found.`
+* **Target is not `ACTIVE`, is incomplete, or has no active primary photo:** `404 INVALID_TARGET`.
+* **Either user has blocked the other:** `409 BLOCKED_USER`. Message: `Interaction prohibited due to an active safety block.`
+* **Caller already has an active action toward the target** (`likes.is_undone = false`, any of `LIKE`, `PASS`, or `SUPER_LIKE`): `409 ALREADY_SWIPED`. Message: `Target user has already been liked or permanently passed.` An undone row does not block a new action.
+* **The pair already has a match with `status = 'ACTIVE'`:** `409 ACTIVE_MATCH_EXISTS`. Message: `Users are already in an active mutual match.` Historical `UNDONE` and `UNMATCHED` matches do not block a new action.
+* **Premium:** an active subscription whose plan code is `PREMIUM_MONTHLY` or `PREMIUM_YEARLY`, whose status is `ACTIVE`, `PAST_DUE`, or `GRACE_PERIOD`, and whose `current_period_end` or `grace_period_end` is still in the future. There is no entitlement-feature lookup and no `entitlements` HTTP API.
+* **Free LIKE and PASS quota:** metric `DAILY_LIKE_PASS` in `usage_records`. The window is the current UTC calendar day (`period_start` at UTC midnight, `period_end` 24 hours later). The increment is atomic and stops at 10. `remainingDailyActions` is `10 - usage_count`. Premium callers do not write `usage_records` for this metric, and `remainingDailyActions` is `null`. Exhausted free quota is `429 DAILY_LIMIT_REACHED`. Message: `You have reached your daily limit of 10 likes/passes.` A failed write rolls the quota increment back with the rest of the transaction.
+* **SUPER LIKE credits** are separate. A Super Like does not increment `DAILY_LIKE_PASS`.
+
+### 20.1 Pass a Profile
+* **Method & Path:** `POST /api/v1/discovery/:userId/pass`
+* **Body:** none. This route does not read `Idempotency-Key`.
+* **Self message:** `You cannot pass your own profile.`
+* **Invalid target message:** `This profile cannot be passed.`
+* **Side effects:** Inserts one `likes` row with `action = 'PASS'` and `is_undone = false`. Does not create a match or a conversation. While that row stays active, Discovery excludes the target for the caller. Premium Undo can later set `is_undone = true`. The row is not deleted.
+* **Success Response (`200 OK`):** Message: `Profile passed.`
+  ```json
+  {
+    "success": true,
+    "data": {
+      "action": "PASS",
+      "targetUserId": "c3e7d81b-9932-4233-812c-6f5e39482130",
+      "remainingDailyActions": 8
+    },
+    "message": "Profile passed."
+  }
+  ```
+  Premium success uses `"remainingDailyActions": null`.
+
+### 20.2 Like a Profile
 * **Method & Path:** `POST /api/v1/discovery/:userId/like`
-* **Auth:** Authenticated
-* **Quota Enforcement:** 
-  * Free users: Consumes 1 from the combined 10 daily Like/Pass quota. Throws `429 DAILY_LIMIT_REACHED` if exhausted.
-  * Premium users: Unlimited actions.
-* **Transaction Execution:**
-  * Checks for reciprocal like with row lock (`SELECT FOR UPDATE`).
-  * If reciprocal like exists $\rightarrow$ Creates `matches` row (`status = 'ACTIVE'`) + creates `conversations` row + emits realtime `match:new` Socket.IO event.
-* **Success Response (`200 OK`):**
+* **Body:** none.
+* **Idempotency:** optional header `Idempotency-Key`. When present it must be a UUID. A bad value is `400 VALIDATION_ERROR` on field `Idempotency-Key`. Redis key `idempotency:<callerId>:<key>`, TTL 120 seconds. A stored success is returned again and does not write again. A key still marked in progress returns `409 IDEMPOTENCY_CONFLICT`. Message: `A request with this Idempotency-Key is already in progress.` A failed attempt deletes the pending key. Omitting the header runs the action once with no Redis record.
+* **Self message:** `You cannot like your own profile.`
+* **Invalid target message:** `This profile cannot be liked.`
+* **Transaction:** The two user rows are locked in canonical id order. The like is inserted with `action = 'LIKE'` and `is_undone = false`. If the target has an active `LIKE` or `SUPER_LIKE` toward the caller, the service inserts one `matches` row with `status = 'ACTIVE'` and one `conversations` row with `status = 'ACTIVE'`. Pair columns are `user_one_id = LEAST(caller, target)` and `user_two_id = GREATEST(caller, target)`. `unmatched_at` and `unmatched_by_user_id` stay null. A reciprocal `PASS` does not create a match. The target's reciprocal row stays active. A unique active-pair or active-match conflict returns `409 ALREADY_SWIPED` or `409 ACTIVE_MATCH_EXISTS`. The free quota increment runs in the same transaction after the like, so a quota failure does not leave a like behind. No notification row is written.
+* **Success Response (`200 OK`):** Message is `It's a Match!` when `isMatch` is true, otherwise `Profile liked.`
   ```json
   {
     "success": true,
@@ -1325,62 +1383,69 @@ Photo objects returned after confirm, list, and patch are `{ "id", "url", "displ
     "message": "It's a Match!"
   }
   ```
+  No match uses `"isMatch": false` and `"matchId": null`. Premium uses `"remainingDailyActions": null`.
 
----
-
-### 20.2 Pass a Profile
-* **Method & Path:** `POST /api/v1/discovery/:userId/pass`
-* **Auth:** Authenticated
-* **Quota Enforcement:** Consumes 1 from combined 10 daily quota for Free users.
-* **Permanence:** Stored in `likes` (`action = 'PASS'`). Excludes candidate permanently from future discovery.
-* **Success Response (`200 OK`):**
+### 20.3 Super Like a Profile
+* **Method & Path:** `POST /api/v1/discovery/:userId/super-like`
+* **Body:** none.
+* **Auth extra:** Premium is required inside the transaction. A caller without the Premium subscription described above receives `403 PREMIUM_REQUIRED`. Message: `Feature requires an active Premium subscription.`
+* **Idempotency:** optional `Idempotency-Key` UUID, same conflict and TTL rules as LIKE. Redis key is `idempotency:<callerId>:super-like:<key>`, so a LIKE key and a SUPER LIKE key do not collide.
+* **Self message:** `You cannot super like your own profile.`
+* **Invalid target message:** `This profile cannot be super liked.`
+* **Credits:** Decrements `user_credit_balances.balance` by 1 where `credit_type = 'SUPER_LIKE'` and `balance >= 1`. A missing row or a zero balance is `409 INSUFFICIENT_SUPER_LIKE_CREDITS`. Message: `You do not have any Super Like credits.` The response `remainingSuperLikeCredits` is the balance after the decrement. The same transaction inserts `credit_transactions` with `credit_type = 'SUPER_LIKE'`, `delta = -1`, `reason = 'CONSUMPTION'`, and `reference_id` set to the new like id. This does not change `usage_records`.
+* **Match:** Same reciprocal rule as LIKE. An active incoming `LIKE` or `SUPER_LIKE` creates an `ACTIVE` match and an `ACTIVE` conversation. A reciprocal `PASS` does not. Concurrent reciprocal likes are serialized by locking both users in canonical id order and by the partial unique indexes on active likes and active matches.
+* **Success Response (`200 OK`):** Message is `It's a Match!` when `isMatch` is true, otherwise `Profile super liked.`
   ```json
   {
     "success": true,
     "data": {
-      "action": "PASS",
+      "action": "SUPER_LIKE",
       "targetUserId": "c3e7d81b-9932-4233-812c-6f5e39482130",
-      "remainingDailyActions": 8
+      "isMatch": false,
+      "matchId": null,
+      "remainingSuperLikeCredits": 4
     },
-    "message": "Profile passed."
+    "message": "Profile super liked."
   }
   ```
-
----
-
-### 20.3 Super Like a Profile
-* **Method & Path:** `POST /api/v1/discovery/:userId/super-like`
-* **Auth:** Authenticated (Requires active Super Like credit balance)
-* **Success Response (`200 OK`):** Returns action summary and decremented Super Like balance.
 
 ---
 
 ## 21. Undo APIs
 
-### 21.1 Undo Immediately Preceding Action
+**Implemented.** Undo is Premium only. It does not use Redis and does not read `Idempotency-Key`.
+
+### 21.1 Undo the latest active outgoing LIKE or PASS
 * **Method & Path:** `POST /api/v1/discovery/undo`
-* **Auth:** Authenticated (Premium Entitlement: `UNDO_ACTION`)
-* **Business Rules:**
-  * Restricted to active Premium subscribers (Free users receive `403 PREMIUM_REQUIRED`).
-  * Reverts only the immediately previous action (`likes.is_undone = TRUE`).
-  * If the previous action created an active match, the transaction invalidates the `matches` record (`status = 'UNDONE'`), closes the conversation, and reverts state.
-  * Undo does NOT consume daily Like/Pass quota.
-* **Success Response (`200 OK`):**
+* **Auth:** `Authorization: Bearer <accessToken>` and role `USER`. `requireVerified` is not on the route. The service checks verification and returns `403 EMAIL_NOT_VERIFIED` or `403 PHONE_NOT_VERIFIED`. A non-`USER` role is `403 FORBIDDEN`.
+* **Body:** none. No path parameter and no query string.
+* **Incomplete caller:** `400 PROFILE_INCOMPLETE`, same rule as section 20.
+* **Premium:** the same subscription rule as section 20. Anyone else receives `403 PREMIUM_REQUIRED`. Message: `Feature requires an active Premium subscription.`
+* **Eligible row:** the caller's latest `likes` row with `is_undone = false` and `action IN ('LIKE', 'PASS')`, ordered by `created_at DESC`. Incoming actions are ignored. A `SUPER_LIKE` is never selected. An already undone row is ignored.
+* **Five-minute window:** the selected row is inside the window when `created_at >= CURRENT_TIMESTAMP - INTERVAL '5 minutes'`. A timestamp exactly five minutes old is valid. If that latest eligible row is older, the response is `400 UNDO_WINDOW_EXPIRED`. Message: `The undo window for your last action has expired.` The service does not fall back to an older row.
+* **No eligible row:** `400 NO_UNDOABLE_ACTION`. Message: `There is no action to undo.`
+* **Persistence:** sets `is_undone = true` on that row. The row is not deleted. A repeated undo can then select the next older active `LIKE` or `PASS`, one action at a time, if that next row is itself inside the five-minute window.
+* **Match:** when the undone action is `LIKE` and that pair's current match is `ACTIVE`, the match becomes `UNDONE`. `unmatched_at` and `unmatched_by_user_id` stay null. The associated conversation with `status = 'ACTIVE'` becomes `CLOSED` and `closed_at` is set. A `PASS` does not change matches or conversations. Historical `UNDONE` and `UNMATCHED` matches stay as they are. The other user's reciprocal `LIKE` or `SUPER_LIKE` stays active.
+* **Quota:** Undo does not restore a LIKE or PASS, does not consume another action, and does not update `usage_records`.
+* **Success Response (`200 OK`):** Message: `Previous action undone.`
   ```json
   {
     "success": true,
     "data": {
-      "undoneAction": "PASS",
-      "targetUserId": "c3e7d81b-9932-4233-812c-6f5e39482130",
-      "revertedMatch": false
+      "undoneAction": "LIKE",
+      "targetUserId": "TARGET_USER_ID",
+      "revertedMatch": true
     },
     "message": "Previous action undone."
   }
   ```
+  `undoneAction` is `LIKE` or `PASS`. `revertedMatch` is `true` only when an `ACTIVE` match was moved to `UNDONE`.
 
 ---
 
 ## 22. Match APIs
+
+`GET /api/v1/matches` is not mounted. `DELETE /api/v1/matches/:matchId` is implemented in section 22.2. LIKE and SUPER LIKE insert an `ACTIVE` match and an `ACTIVE` conversation when a reciprocal `LIKE` or `SUPER_LIKE` exists. UNDO of that LIKE moves the current `ACTIVE` match to `UNDONE` and closes its `ACTIVE` conversation. UNDO leaves `unmatched_at` and `unmatched_by_user_id` null. UNMATCH is a different action: it sets `UNMATCHED` and records who ended the match. It does not change `likes`. Rematch, which would insert a later `ACTIVE` row, is not implemented. Socket.IO `match:unmatch` is not emitted.
 
 ### 22.1 List Active Matches
 * **Method & Path:** `GET /api/v1/matches`
@@ -1417,14 +1482,24 @@ Photo objects returned after confirm, list, and patch are `{ "id", "url", "displ
 ---
 
 ### 22.2 Unmatch a User
+**Implemented.** Free for every verified `USER` with a complete profile. Premium is not required. The route does not read subscriptions, `usage_records`, credits, or Redis.
+
 * **Method & Path:** `DELETE /api/v1/matches/:matchId`
-* **Auth:** Authenticated
-* **Business Rules:**
-  * Transitions match `status = 'UNMATCHED'`, sets `unmatched_at = CURRENT_TIMESTAMP`, `unmatched_by_user_id = req.user.id`.
-  * Closes conversation (`conversations.status = 'CLOSED'`).
-  * Preserves message history in PostgreSQL for safety/audit compliance.
-  * Allows legitimate future re-matching if users encounter each other again.
-* **Success Response (`200 OK`):**
+* **Auth:** `Authorization: Bearer <accessToken>` and role `USER`. Middleware is `authenticate` and `requireRole('USER')`. `requireVerified` is not on the route. The service checks verification and returns `403 EMAIL_NOT_VERIFIED` or `403 PHONE_NOT_VERIFIED`. A non-`USER` role is `403 FORBIDDEN`.
+* **Body:** none. No query string.
+* **Path `matchId`:** required UUID. A bad value is `400 VALIDATION_ERROR`. Message: `Validation failed`. `details` is `[{ "field": "matchId", "message": "Match id must be a valid UUID." }]`.
+* **Incomplete caller:** `400 PROFILE_INCOMPLETE`, same rule as section 20. Message: `Onboarding is incomplete.`
+* **Who can unmatch:** either `user_one_id` or `user_two_id` on that row. The other participant does not have to be verified, complete, or `ACTIVE`.
+* **Eligible row:** `matches.status` must be `ACTIVE`. `UNDONE` and `UNMATCHED` rows are not changed.
+* **Not found:** `404 MATCH_NOT_FOUND`. Message: `Active match record does not exist.` This covers a missing id, a match belonging to two other users, a non-`ACTIVE` row, an already `UNMATCHED` row, an `UNDONE` row, and a concurrent request that already transitioned the row. A foreign match is not `403`, so the response does not reveal that the id exists. A repeated `DELETE` is this 404, not another `200`.
+* **Transaction:** one Sequelize transaction. The service loads the match by id. If the caller is not a participant, or the status is not `ACTIVE`, it returns `404` without locking those users. Otherwise it locks both users with `lockLikeUsers` in canonical id order, re-reads the match `FOR UPDATE`, and updates only while `status = 'ACTIVE'` and the caller is still a participant.
+* **Match:** `ACTIVE` becomes `UNMATCHED`. `unmatched_at` and `updated_at` are `CURRENT_TIMESTAMP`. `unmatched_by_user_id` is the caller. `matched_at`, `created_at`, `user_one_id`, and `user_two_id` stay unchanged. The row is kept. Other historical rows for the pair are not updated.
+* **Conversation:** the `ACTIVE` conversation for that match becomes `CLOSED` and `closed_at` is set through `closeActiveConversation`. The conversation row stays. `last_message_at` stays. Messages stay, and `messages.deleted_at` is not set. An already `CLOSED` conversation is left as it is, including its existing `closed_at`. A match with no conversation row still unmatches.
+* **Likes:** no `likes` row is inserted, deleted, or marked undone. Reciprocal `LIKE` and `SUPER_LIKE` rows stay, with `is_undone` unchanged. UNMATCH is not UNDO.
+* **Discovery:** this route does not change the discovery query. An `UNMATCHED` match does not by itself exclude a candidate. An active outgoing `LIKE` or `SUPER_LIKE` still does. UNMATCH does not make the two users appear in discovery while those rows remain.
+* **Rematch:** not implemented. The partial unique index still allows a later new `ACTIVE` row. This endpoint does not revive the old row.
+* **Quota and Redis:** no `usage_records` write, no credit change, and no `credit_transactions` row. `Idempotency-Key` is ignored. No notification row is written and no Socket.IO event is emitted.
+* **Success Response (`200 OK`):** Message: `Unmatched successfully.`
   ```json
   {
     "success": true,
@@ -1432,6 +1507,7 @@ Photo objects returned after confirm, list, and patch are `{ "id", "url", "displ
     "message": "Unmatched successfully."
   }
   ```
+  The body does not include match id, target user id, `unmatchedAt`, conversation status, quota, or credits.
 
 ---
 
@@ -1844,27 +1920,32 @@ Photo objects returned after confirm, list, and patch are `{ "id", "url", "displ
 
 ## 32. Realtime / Socket.IO Events Specification
 
-* **Handshake Authentication:** Client passes `auth: { token: "<access_token>" }`. Handshake rejects unauthenticated or banned sockets.
-* **Room Topologies:**
-  * User Private Channel: `user:{userId}` (receives system alerts, match alerts).
-  * Match Conversation Channel: `conversation:{conversationId}` (receives live messages).
+**Phase 6 Slice 1 foundation is implemented.** Socket.IO is attached to the Express HTTP server with `@socket.io/redis-adapter`. Chat message HTTP routes, conversation rooms, and application chat events are still not implemented. `DELETE /api/v1/matches/:matchId` still does not emit `match:unmatch`.
+
+### 32.0 Implemented foundation
+* **Handshake:** Client connects with `auth: { token: "<access JWT>" }`. The token is the same access JWT used by HTTP `Authorization: Bearer`. Refresh tokens are not accepted.
+* **Authentication:** Handshake verifies the JWT, reloads the user from PostgreSQL, and rejects missing/invalid/expired tokens (`AUTH_REQUIRED` / `INVALID_TOKEN`), deleted users (`INVALID_TOKEN`), suspended users (`ACCOUNT_SUSPENDED`), banned users (`ACCOUNT_BANNED`), and non-`USER` roles (`FORBIDDEN`).
+* **Socket identity:** Successful handshakes store the live `AuthenticatedUser` on `socket.data.user`. Later chat slices must use `socket.data.user.id` as sender identity. Unverified or incomplete profiles are allowed to connect in Slice 1.
+* **User room:** On connect the server joins exactly `user:{userId}` from `socket.data.user.id`. The client cannot choose the room. Conversation rooms are not joined.
+* **Redis:** Socket.IO requires Redis for the adapter. Production fails startup if Redis or the adapter cannot initialize. Development can keep serving HTTP without Socket.IO when Redis is unavailable.
+* **Not in Slice 1:** No message persistence, no chat send/receive events, no typing events, no read receipts, no conversation-room join, no media uploads, and no notification/match socket emissions.
 
 ### 32.1 Server $\rightarrow$ Client Events
-| Event Name | Room / Target | Payload Structure | Trigger Condition |
-| :--- | :--- | :--- | :--- |
-| `match:new` | `user:{userId}` | `{"matchId": "...", "matchedUser": { "id": "...", "firstName": "Jordan", "photos": [...] }, "matchedAt": "..."}` | Reciprocal like establishes active match. |
-| `match:unmatch` | `user:{userId}` | `{"matchId": "...", "conversationId": "..."}` | Participant unmatches or block is triggered. |
-| `chat:message:new` | `conversation:{id}`| `{"id": "msg-1", "conversationId": "...", "senderId": "...", "messageType": "TEXT", "content": "...", "createdAt": "..."}` | Message persisted in PostgreSQL. |
-| `chat:message:read`| `conversation:{id}`| `{"conversationId": "...", "readerId": "...", "readAt": "..."}` | Participant opens active conversation. |
-| `notification:new` | `user:{userId}` | `{"id": "notif-1", "type": "NEW_LIKE", "title": "New Like!", "message": "Someone liked you!"}` | System notification dispatched. |
+| Event Name | Room / Target | Payload Structure | Trigger Condition | Status |
+| :--- | :--- | :--- | :--- | :--- |
+| `match:new` | `user:{userId}` | `{"matchId": "...", "matchedUser": { "id": "...", "firstName": "Jordan", "photos": [...] }, "matchedAt": "..."}` | Reciprocal like establishes active match. | Planned |
+| `match:unmatch` | `user:{userId}` | `{"matchId": "...", "conversationId": "..."}` | Participant unmatches or block is triggered. | Planned |
+| `chat:message:new` | `conversation:{id}`| `{"id": "msg-1", "conversationId": "...", "senderId": "...", "messageType": "TEXT", "content": "...", "createdAt": "..."}` | Message persisted in PostgreSQL. | Planned |
+| `chat:message:read`| `conversation:{id}`| `{"conversationId": "...", "readerId": "...", "readAt": "..."}` | Participant opens active conversation. | Planned |
+| `notification:new` | `user:{userId}` | `{"id": "notif-1", "type": "NEW_LIKE", "title": "New Like!", "message": "Someone liked you!"}` | System notification dispatched. | Planned |
 
 ### 32.2 Client $\rightarrow$ Server Events
-| Event Name | Payload Structure | Description |
-| :--- | :--- | :--- |
-| `chat:message:send` | `{"conversationId": "...", "messageType": "TEXT", "content": "..."}` | Client transmits chat message. |
-| `chat:message:read` | `{"conversationId": "..."}` | Client marks incoming messages as read. |
-| `chat:typing:start` | `{"conversationId": "..."}` | Client begins typing in active match. |
-| `chat:typing:stop` | `{"conversationId": "..."}` | Client stops typing. |
+| Event Name | Payload Structure | Description | Status |
+| :--- | :--- | :--- | :--- |
+| `chat:message:send` | `{"conversationId": "...", "messageType": "TEXT", "content": "..."}` | Client transmits chat message. | Planned |
+| `chat:message:read` | `{"conversationId": "..."}` | Client marks incoming messages as read. | Planned |
+| `chat:typing:start` | `{"conversationId": "..."}` | Client begins typing in active match. | Planned |
+| `chat:typing:stop` | `{"conversationId": "..."}` | Client stops typing. | Planned |
 
 ---
 
@@ -1884,14 +1965,16 @@ Photo objects returned after confirm, list, and patch are `{ "id", "url", "displ
 
 ## 34. Idempotency Specification
 
-1. **Client Mutating APIs:** APIs accepting `Idempotency-Key: <UUIDv4>` header:
-   * `POST /api/v1/discovery/:userId/like`
-   * `POST /api/v1/discovery/undo`
-   * `POST /api/v1/payments/checkout`
-2. **Execution Flow:**
-   * Server checks Redis for cached response keyed by `idempotency:<userId>:<key>`.
-   * If cached response exists, returns previous result without re-executing business mutations.
-   * Lock expires after 120 seconds.
+1. **Implemented client mutating APIs** that accept an optional `Idempotency-Key: <UUIDv4>` header:
+   * `POST /api/v1/discovery/:userId/like` — Redis key `idempotency:<callerId>:<key>`.
+   * `POST /api/v1/discovery/:userId/super-like` — Redis key `idempotency:<callerId>:super-like:<key>`.
+2. **Not used:** `POST /api/v1/discovery/:userId/pass`, `POST /api/v1/discovery/undo`, and `DELETE /api/v1/matches/:matchId` do not read `Idempotency-Key` and do not write an idempotency key. A second unmatch is `404 MATCH_NOT_FOUND`.
+3. **Planned:** `POST /api/v1/payments/checkout`.
+4. **Execution flow for LIKE and SUPER LIKE:**
+   * A stored JSON success is returned without another write.
+   * A key whose value is still the in-progress marker returns `409 IDEMPOTENCY_CONFLICT`.
+   * The key expires after 120 seconds.
+   * A failed attempt deletes the pending key so a retry with the same key can run.
 
 ---
 
@@ -1903,7 +1986,7 @@ Rate limits are enforced using Redis sliding-window algorithms:
 | :--- | :--- | :--- | :--- |
 | **Auth register, login, forgot-password** | 1 minute | 5 requests | IP. Live. `429 RATE_LIMITED`. |
 | **Verification resend** | 1 minute | 1 request | Identifier. Live. Registration consumes the same window. |
-| **Discovery Swipe Actions**| 1 minute | 60 requests | User ID |
+| **Discovery swipe actions** | 1 minute | 60 requests | User ID. Planned. PASS, LIKE, SUPER LIKE, UNDO, and UNMATCH do not use this limiter today. |
 | **Chat Message Sending** | 1 minute | 30 requests | User ID |
 | **General Public APIs** | 1 minute | 100 requests | IP Address. Live for `GET /genders`, `GET /interests`, and `GET /relationship-intentions` as `ratelimit:public:<ip>`. |
 | **Admin APIs** | 1 minute | 120 requests | Admin User ID |
@@ -1932,10 +2015,13 @@ Rate limits are enforced using Redis sliding-window algorithms:
 | **Photos** (`/profile-photos/*`) | `profile_photos` |
 | **Interests / Intentions** | `interests`, `user_interests`, `relationship_intentions`, `user_relationship_intentions` |
 | **Dating Preferences** | `dating_preferences`, `user_dating_preference_genders`, `user_dating_preference_intentions` |
-| **Discovery** (`/discovery`) | `profiles` (PostGIS GiST), `dating_preferences`, `user_dating_preference_genders`, `user_dating_preference_intentions`, `likes`, `matches`, `blocks`, `boost_sessions` |
-| **Likes & Passes** | `likes`, `matches`, `conversations`, `notifications`, `usage_records` |
-| **Undo** (`/discovery/undo`) | `likes`, `matches`, `conversations`, `subscriptions`, `plan_features` |
-| **Matches & Conversations** | `matches`, `conversations` |
+| **Discovery** (`GET /discovery`, implemented) | `profiles` (PostGIS GiST), `users`, `genders`, `dating_preferences`, `user_dating_preference_genders`, `user_dating_preference_intentions`, `user_relationship_intentions`, `relationship_intentions`, `user_interests`, `interests`, `profile_photos`, `likes`, `matches`, `blocks`, `boost_sessions` |
+| **Pass** (`POST /discovery/:userId/pass`, implemented) | `likes`, `usage_records`, `subscriptions`, `plans`, `users`, `profiles`, `profile_photos`, `blocks`, `matches` |
+| **Like** (`POST /discovery/:userId/like`, implemented) | `likes`, `matches`, `conversations`, `usage_records`, `subscriptions`, `plans`, `users`. Redis holds the optional idempotency record. No `notifications` row is written. |
+| **Super Like** (`POST /discovery/:userId/super-like`, implemented) | `likes`, `matches`, `conversations`, `subscriptions`, `plans`, `user_credit_balances`, `credit_transactions`, `users`. Redis holds the optional idempotency record. `usage_records` is not changed. |
+| **Undo** (`POST /discovery/undo`, implemented) | `likes`, `matches`, `conversations`, `subscriptions`, `plans`. Does not change `usage_records`. Does not use Redis. |
+| **Unmatch** (`DELETE /matches/:matchId`, implemented) | `matches`, `conversations`. Does not change `likes`, `messages`, `usage_records`, credits, or Redis. |
+| **Matches list** | `matches`, `conversations`. `GET /matches` is not mounted. |
 | **Messages** (`/messages`) | `messages`, `conversations`, `usage_records` |
 | **Safety** (`/blocks`, `/reports`) | `blocks`, `reports` |
 | **Notifications** | `notifications` |

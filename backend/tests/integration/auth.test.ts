@@ -62,6 +62,16 @@ jest.mock('../../src/modules/profile-photos/profile-photos.data-access', () => (
   softDeletePhoto: async () => undefined,
   swapDisplayOrders: async () => undefined
 }));
+jest.mock('../../src/modules/likes/likes.data-access', () => ({
+  DAILY_LIKE_PASS_METRIC: 'DAILY_LIKE_PASS',
+  FREE_DAILY_LIKE_PASS_LIMIT: 10,
+  currentUtcDayWindow: () => ({ periodStart: new Date(0), periodEnd: new Date(0) }),
+  isActivePairConflict: () => false,
+  findPassTarget: async () => null,
+  hasActivePremium: async () => false,
+  incrementDailyLikePass: async () => null,
+  insertPass: async () => undefined
+}));
 
 import { app } from '../../src/app';
 

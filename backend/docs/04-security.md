@@ -71,7 +71,7 @@ Entitlement & Usage (Entitlements)
 * **Supported Identifiers:** Email Address OR E.164 Phone Number.
 * **Age Invariant:** Date of Birth must be verified server-side to guarantee $\text{Age} \ge 18$ at the exact time of registration:
   $$\text{Current Date} - \text{Date of Birth} \ge 18\text{ years}$$
-* **Verification Mandate:** Unverified accounts (`status = 'UNVERIFIED'`) are strictly blocked from accessing discovery, swipes, matching, or chat endpoints via `auth.middleware.ts`.
+* **Verification Mandate:** `auth.middleware.ts` allows an unverified user to authenticate. Discovery, PASS, LIKE, SUPER LIKE, UNDO, and UNMATCH then reject that caller in the service with `403 EMAIL_NOT_VERIFIED` or `403 PHONE_NOT_VERIFIED`. Profile, onboarding, and photo routes do not apply that check. Chat routes are not mounted. A verified email or a verified phone is enough. Verification is what sets `users.status` to `ACTIVE`. Onboarding completion does not change `users.status`.
 
 ### 4.2 OTP & Email Verification Security
 1. **Entropy:** OTP codes are 6-digit numerical strings generated using cryptographically secure pseudorandom number generators (`crypto.randomInt(100000, 999999)`).
@@ -111,10 +111,7 @@ Entitlement & Usage (Entitlements)
 
 ### 5.2 Password Reset & Session Invalidation
 1. **Reset Tokens:** Cryptographically random 32-byte hex strings (`crypto.randomBytes(32).toString('hex')`), hashed using SHA-256 before storage in Redis (TTL: 15 minutes).
-2. **Session Eviction:** Successful password reset or manual password update immediately:
-   * Revokes all active refresh tokens in `auth_refresh_tokens` for the user.
-   * Purges active Redis session keys.
-   * Terminates active Socket.IO connections.
+2. **Session Eviction:** A successful password reset revokes every active row in `auth_refresh_tokens` for that user and deletes the Redis reset key. There is no Redis session store to purge. Socket.IO is not implemented, so reset does not disconnect a socket.
 
 ---
 
@@ -128,8 +125,8 @@ Entitlement & Usage (Entitlements)
 ├─────────────────────────────────────────────────────────────────────────┤
 │ • Lifespan: 15 minutes (900s)                                            │
 │ • Transport: HTTP Header: `Authorization: Bearer <token>`                │
-│ • Algorithm: HS256 / RS256 with cryptographically random 512-bit secret  │
-│ • Payload Claims: `sub` (userId), `role`, `isVerified`, `isComplete`    │
+│ • Algorithm: HS256. Production boot requires a non-placeholder secret of at least 32 characters. │
+│ • Payload Claims: `sub` (userId), `role`, `isVerified`, `isProfileComplete` │
 │ • Prohibited Claims: Passwords, email, phone, billing details           │
 └─────────────────────────────────────────────────────────────────────────┘
                                    │
@@ -235,7 +232,7 @@ Rate limiting uses **Redis sliding-window counters** to isolate burst abuse whil
 | :--- | :--- | :--- | :--- | :--- |
 | **Auth Login / Password Reset** | 60s | 5 req | `ratelimit:auth:login:<ip>` | `429 Too Many Requests` + Log Security Alert |
 | **OTP Generation / Resend** | 60s | 1 req | `ratelimit:auth:otp:<identifier>` | `429 Too Many Requests` |
-| **Discovery Swipe Actions** | 60s | 60 req | `ratelimit:swipes:<userId>` | `429 Too Many Requests` (Anti-automation) |
+| **Discovery swipe actions** | 60s | 60 req | `ratelimit:swipes:<userId>` | Planned. PASS, LIKE, SUPER LIKE, and UNDO are not on this limiter. The free product quota is separate: 10 LIKE+PASS actions per UTC day. |
 | **Chat Message Sending** | 60s | 30 req | `ratelimit:chat:<userId>` | `429 Too Many Requests` (Anti-spam) |
 | **Public Reference APIs** | 60s | 100 req | `ratelimit:public:<ip>` | `429 Too Many Requests` |
 | **Admin Operations** | 60s | 120 req | `ratelimit:admin:<adminId>` | `429 Too Many Requests` |
@@ -247,10 +244,18 @@ Rate limiting uses **Redis sliding-window counters** to isolate burst abuse whil
 ## 12. Discovery & Dating Security
 
 ### 12.1 Server-Side Filter Enforcements
-The discovery engine filters candidates strictly server-side using PostGIS and SQL constraints. Clients cannot alter discovery criteria by tampering with query strings:
-* **Permanent Pass Enforcement:** If user $A$ has an active pass record against candidate $B$ in `likes`, candidate $B$ is excluded via `NOT EXISTS` in the primary SQL query.
-* **Mutual Preference Enforcement:** The candidate must satisfy the viewer's preferences, AND the viewer must satisfy the candidate's preferences (Age, Gender, Distance).
-* **Self & Match Exclusion:** Viewer ID, active matches, and active bidirectional blocks are excluded at the database level.
+`GET /api/v1/discovery` filters candidates in PostgreSQL. The route has no query string, so a client cannot change the criteria:
+* **Active viewer actions:** An active `likes` row from the viewer (`LIKE`, `PASS`, or `SUPER_LIKE` with `is_undone = false`) excludes the candidate. An undone row does not. The candidate's incoming `PASS` does not.
+* **Mutual preference enforcement:** Both distance radii (`ST_DWithin`, inclusive), both age ranges (completed years, inclusive), both gender lists, and both relationship-intention overlaps are required. An empty preferred-gender or preferred-intention list matches nobody.
+* **Other exclusions:** The candidate must be a different `ACTIVE` user, not soft-deleted, with a completed profile, a non-null location, and an active primary photo. An `ACTIVE` match and a block in either direction are excluded. `UNMATCHED` and `UNDONE` matches are not. Reports are not part of this query.
+* **Actions:** PASS, LIKE, SUPER LIKE, and UNDO require the same verified, complete caller. They reject a block, an active action, and an active match. LIKE and PASS enforce the free quota in PostgreSQL. SUPER LIKE and UNDO require a live Premium subscription (`PREMIUM_MONTHLY` or `PREMIUM_YEARLY`, status `ACTIVE`, `PAST_DUE`, or `GRACE_PERIOD`, with the period or grace end still in the future). The client cannot send an `isPremium` flag.
+
+### 12.3 Unmatch
+`DELETE /api/v1/matches/:matchId` is implemented. The route uses `authenticate` and `requireRole('USER')`. `requireVerified` is not on the route. The service requires a verified email or phone and a complete profile with location and dating preferences. Premium is not checked.
+
+The caller must be `user_one_id` or `user_two_id` on an `ACTIVE` match. A missing id, a match between two other users, `UNDONE`, already `UNMATCHED`, and a request that loses the race return `404 MATCH_NOT_FOUND` with message `Active match record does not exist.` The foreign-match response is 404 so the id's existence is not confirmed.
+
+The write is one PostgreSQL transaction. Both users are locked in canonical id order, then the match row is re-read with `FOR UPDATE`, and the status change is conditional on `ACTIVE`. The success body is only `{ "unmatched": true }`. It does not return the other user, timestamps, or conversation contents. There is no `Idempotency-Key` handling and no Redis call. Likes, quota, and credits are not changed.
 
 ### 12.2 Server-Side Liker Identity Protection ("Who Liked You")
 * **The Vulnerability:** Returning full admirer profiles with a frontend CSS/UI blur filter allows attackers to inspect HTTP responses and bypass monetization.
@@ -287,11 +292,11 @@ To prevent accidental data leakage, domain services must use explicit **Response
 1. **Storage Specification:** Stored as PostGIS `geography(Point, 4326)` in `profiles.location`.
 2. **Zero Coordinate Leakage Mandate:**
    * Raw `latitude` and `longitude` coordinates are **NEVER** serialized in any API response.
-   * Public discovery and profile endpoints return only:
-     1. Registered `city` name (e.g., `"Bengaluru"`).
-     2. Approximate distance rounded to the nearest integer kilometer:
-        $$\text{distanceKm} = \text{ROUND}(\text{ST\_Distance}(\text{userA.location}, \text{userB.location}) / 1000)$$
-3. **Anti-Trilateration Defense:** Distances $< 1\text{ km}$ are clamped to return `"Less than 1 km away"` to prevent malicious geometric trilateration of user residences.
+   * Live Discovery returns only:
+     1. Registered `city` name (for example, `"Bengaluru"`).
+     2. Numeric `distanceKm`, rounded to one decimal place:
+        $$\text{distanceKm} = \text{ROUND}(\text{ST\_Distance}(\text{userA.location}, \text{userB.location}) / 1000,\ 1)$$
+3. **Coordinate privacy:** Values below 1 km stay numeric, for example `0.7`. Latitude, longitude, and `profiles.location` are not returned.
 
 ---
 
@@ -308,7 +313,7 @@ To prevent accidental data leakage, domain services must use explicit **Response
    * Server generates short-lived presigned URL (valid for **300 seconds**) targeting a secure, isolated object key:
      `photos/{userId}/{uuidv4}.webp`
 2. **Presigned Downloads (`GetObject`) / Signed CDN:**
-   * Images are delivered through signed CloudFront URLs or short-lived S3 `GetObject` presigned URLs (TTL: 1 hour), cached in Redis.
+   * Images are delivered through short-lived S3 `GetObject` presigned URLs (TTL: 3600 seconds). Redis stores the upload reservation until confirm. Signed download URLs are not cached in Redis. CloudFront signing is not implemented.
 
 ---
 
@@ -350,27 +355,17 @@ Incoming Message Payload
 
 ## 17. Socket.IO Realtime Security
 
-1. **Handshake Authentication:** Socket connections must supply a valid JWT in the handshake:
-   ```typescript
-   io.use((socket, next) => {
-     const token = socket.handshake.auth.token;
-     const payload = verifyAccessToken(token);
-     if (!payload) return next(new Error('AUTH_REQUIRED'));
-     socket.data.user = payload;
-     next();
-   });
-   ```
+1. **Handshake Authentication (implemented in Phase 6 Slice 1):** Socket connections must supply `auth.token` with the existing access JWT. `socket.auth.ts` reuses `authenticateAccessToken`, which verifies the JWT and reloads the current user from PostgreSQL. Stale JWT claim fields are not trusted for account state. Missing token → `AUTH_REQUIRED`. Invalid/expired/deleted → `INVALID_TOKEN`. Suspended → `ACCOUNT_SUSPENDED`. Banned → `ACCOUNT_BANNED`. Non-`USER` roles → `FORBIDDEN`. Successful handshakes store the live `AuthenticatedUser` on `socket.data.user`.
 2. **Server-Managed Room Subscriptions:**
-   * Clients can only join rooms authorized by the server:
-     * User Private Room: `user:{userId}` (where `userId === socket.data.user.id`).
-     * Conversation Room: `conversation:{conversationId}` (authorized only after checking match participation in PostgreSQL).
-3. **Zero Client Trust in Socket Events:** Sockets cannot spoof sender IDs. The sender identity is extracted strictly from `socket.data.user.id`.
+   * Implemented now: the server auto-joins only `user:{userId}` where `userId === socket.data.user.id`.
+   * Planned: Conversation Room `conversation:{conversationId}` only after PostgreSQL match participation checks. Slice 1 does not join conversation rooms and does not accept a client join event.
+3. **Zero Client Trust in Socket Events:** Sockets cannot spoof sender IDs. Later chat slices must extract sender identity strictly from `socket.data.user.id`. No chat application events are implemented in Slice 1.
 
 ---
 
 ## 18. Subscription & Entitlement Security
 
-1. **Centralized Entitlement Service:** Feature access is verified dynamically via `entitlements.service.ts`. Ad-hoc checks such as `if (req.user.isPremium)` are forbidden.
+1. **Premium checks today:** `entitlements.service.ts` is not implemented. PASS, LIKE, SUPER LIKE, and UNDO decide Premium by reading `subscriptions` joined to `plans` (`PREMIUM_MONTHLY` or `PREMIUM_YEARLY`) with status `ACTIVE`, `PAST_DUE`, or `GRACE_PERIOD` and a `current_period_end` or `grace_period_end` still in the future. Controllers do not trust a client `isPremium` flag. The centralized entitlement service remains later work.
 2. **Tamper-Proof Plan Pricing:** 
    * Clients submit only `planId` during checkout.
    * The backend resolves `plans.price_in_cents` and `plans.currency` directly from PostgreSQL.
@@ -508,6 +503,7 @@ Before creating a Pull Request or deploying code, verify that all applicable ite
 * [ ] Authenticated endpoints enforce `auth.middleware.ts`.
 * [ ] Admin endpoints enforce `requireRole('ADMIN')`.
 * [ ] Resource ownership verified for all mutating operations (`resource.user_id === req.user.id`).
+* [x] UNMATCH (`DELETE /api/v1/matches/:matchId`) allows either participant of an `ACTIVE` match and returns `404 MATCH_NOT_FOUND` for every other match id. It does not use Redis.
 * [ ] Chat queries verify active match participation.
 
 ### Privacy & Data Protection
@@ -523,7 +519,7 @@ Before creating a Pull Request or deploying code, verify that all applicable ite
 
 ### Monetization & Payments
 * [ ] Entitlements are evaluated dynamically from server-side subscriptions.
-* [ ] Daily swipe (10) and message (20) quotas for Free users are enforced atomically in PostgreSQL.
+* [x] Free LIKE and PASS quota (10 per UTC day) is enforced atomically in `usage_records`. Message quotas are not implemented.
 * [ ] Plan pricing is resolved server-side; client prices are ignored.
 * [ ] Razorpay webhook HMAC signatures are verified before processing.
 * [ ] Webhook processing is idempotent via `processed_webhooks`.
