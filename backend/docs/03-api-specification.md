@@ -210,7 +210,7 @@ All failed HTTP requests return a standardized, machine-parseable JSON error env
 | `PROFILE_ALREADY_EXISTS` | 409 | The authenticated user already has a profile. |
 | `INVALID_GENDER` | 400 | `genderId` is missing, unknown, or not an active gender. |
 | `MATCH_NOT_FOUND` | 404 | Active match record does not exist. UNMATCH uses this for a missing id, a match the caller does not belong to, a non-`ACTIVE` row, an already `UNMATCHED` row, an `UNDONE` row, and a concurrent request that already changed the row. Message: `Active match record does not exist.` |
-| `CONVERSATION_CLOSED` | 404 | Conversation is closed due to unmatch or safety block. Message: `Conversation is closed due to unmatch or safety block.` Used when a participant sends to a `CLOSED` conversation. A missing or foreign conversation uses `RESOURCE_NOT_FOUND` instead. Reading retained history does not use this code. |
+| `CONVERSATION_CLOSED` | 404 | Conversation is closed due to unmatch or safety block. Message: `Conversation is closed due to unmatch or safety block.` Used when a participant sends to a `CLOSED` conversation, and when a participant sends `chat:typing:start` for one. A missing or foreign conversation uses `RESOURCE_NOT_FOUND` instead. Reading retained history and marking it read do not use this code. |
 | `DUPLICATE_IDENTIFIER` | 409 | Email or phone is already registered to an active account. |
 | `SELF_INTERACTION` | 400 | The caller targeted their own user id. |
 | `INVALID_TARGET` | 404 | The target exists but is not an active, complete profile with a primary photo. |
@@ -1972,7 +1972,7 @@ Photo objects returned after confirm, list, and patch are `{ "id", "url", "displ
 
 ## 32. Realtime / Socket.IO Events Specification
 
-**Phase 6 Slices 1, 4, and 6 cover the socket foundation, TEXT send/receive, and read receipts.** Socket.IO is attached to the Express HTTP server with `@socket.io/redis-adapter`. `chat:message:send` persists through `chat.service.sendTextMessage` and then emits `chat:message:new` to the recipient user room. HTTP `POST /api/v1/conversations/:conversationId/messages` does not emit that event. `PATCH /api/v1/conversations/:conversationId/read` emits `chat:message:read` to the other participant's user room after commit, and only when at least one incoming message was newly marked. Conversation rooms are not joined. `DELETE /api/v1/matches/:matchId` still does not emit `match:unmatch`. HTTP routes keep working when Socket.IO did not start.
+**Phase 6 Slices 1, 4, 6, and 7 cover the socket foundation, TEXT send/receive, read receipts, and typing indicators.** Socket.IO is attached to the Express HTTP server with `@socket.io/redis-adapter`. `chat:message:send` persists through `chat.service.sendTextMessage` and then emits `chat:message:new` to the recipient user room. HTTP `POST /api/v1/conversations/:conversationId/messages` does not emit that event. `PATCH /api/v1/conversations/:conversationId/read` emits `chat:message:read` to the other participant's user room after commit, and only when at least one incoming message was newly marked. `chat:typing:start` and `chat:typing:stop` relay an ephemeral indicator to that same personal room. Conversation rooms are not joined. `DELETE /api/v1/matches/:matchId` still does not emit `match:unmatch`. HTTP routes keep working when Socket.IO did not start.
 
 ### 32.0 Implemented foundation
 * **Handshake:** Client connects with `auth: { token: "<access JWT>" }`. The token is the same access JWT used by HTTP `Authorization: Bearer`. Refresh tokens are not accepted.
@@ -1980,7 +1980,7 @@ Photo objects returned after confirm, list, and patch are `{ "id", "url", "displ
 * **Socket identity:** Successful handshakes store the live `AuthenticatedUser` on `socket.data.user`. `chat:message:send` uses `socket.data.user.id` as the sender. Unverified or incomplete profiles may connect. The send path reloads the user before it calls the chat service.
 * **User room:** On connect the server joins exactly `user:{userId}` from `socket.data.user.id`. The client cannot choose the room. Conversation rooms are not joined, and there is no conversation-room join event.
 * **Redis:** Socket.IO requires Redis for the adapter. Production fails startup if Redis or the adapter cannot initialize. Development can keep serving HTTP without Socket.IO when Redis is unavailable. Redis is not a message store, a quota store, or a chat idempotency store.
-* **Not in this slice:** No typing events, no client `chat:message:read` command, no conversation-room join, no media uploads, no offline replay, and no notification or match socket emissions. Read receipts are the HTTP route in section 24.3. That route emits the server event below. It does not add a client listener.
+* **Not in this slice:** No client `chat:message:read` command, no conversation-room join, no media uploads, no offline replay, and no notification or match socket emissions. Read receipts are the HTTP route in section 24.3. That route emits the server event below. It does not add a client listener. Typing indicators are section 32.4.
 
 ### 32.1 Server $\rightarrow$ Client Events
 | Event Name | Room / Target | Payload Structure | Trigger Condition | Status |
@@ -1989,6 +1989,8 @@ Photo objects returned after confirm, list, and patch are `{ "id", "url", "displ
 | `match:unmatch` | `user:{userId}` | `{"matchId": "...", "conversationId": "..."}` | Participant unmatches or block is triggered. | Planned |
 | `chat:message:new` | `user:{recipientUserId}` | `{"id": "...", "conversationId": "...", "senderId": "...", "messageType": "TEXT", "content": "...", "createdAt": "..."}` | `chat:message:send` committed a TEXT message. Recipient sockets only. | Implemented |
 | `chat:message:read`| `user:{otherParticipantId}`| `{"conversationId": "...", "readerId": "...", "readAt": "..."}` | `PATCH /conversations/:conversationId/read` committed at least one newly read incoming message. The other participant's sockets only. Not emitted when no row changed, or when the request fails. | Implemented |
+| `chat:typing:start` | `user:{otherParticipantId}` | `{"conversationId": "...", "senderId": "..."}` | A socket became the active typist for that conversation. Recipient sockets only. Repeated starts from the same socket do not emit again. | Implemented |
+| `chat:typing:stop` | `user:{otherParticipantId}` | `{"conversationId": "...", "senderId": "..."}` | That socket stopped, timed out, disconnected, switched conversations, or failed a later authorization check. Recipient sockets only. Emitted once for an active indicator. | Implemented |
 | `notification:new` | `user:{userId}` | `{"id": "notif-1", "type": "NEW_LIKE", "title": "New Like!", "message": "Someone liked you!"}` | System notification dispatched. | Planned |
 
 ### 32.2 Client $\rightarrow$ Server Events
@@ -1996,8 +1998,8 @@ Photo objects returned after confirm, list, and patch are `{ "id", "url", "displ
 | :--- | :--- | :--- | :--- |
 | `chat:message:send` | `{"conversationId": "...", "messageType": "TEXT", "content": "..."}` | Client sends a TEXT message. Acknowledgement carries the result. See section 32.3. | Implemented |
 | `chat:message:read` | `{"conversationId": "..."}` | Client command that would mark incoming messages as read. Not implemented. Use `PATCH /api/v1/conversations/:conversationId/read`. | Planned |
-| `chat:typing:start` | `{"conversationId": "..."}` | Client begins typing in active match. | Planned |
-| `chat:typing:stop` | `{"conversationId": "..."}` | Client stops typing. | Planned |
+| `chat:typing:start` | `{"conversationId": "..."}` | Client begins or continues typing in an active match. See section 32.4. | Implemented |
+| `chat:typing:stop` | `{"conversationId": "..."}` | Client stops typing in the conversation this socket is actively typing. | Implemented |
 
 ### 32.3 `chat:message:send` (implemented)
 
@@ -2012,6 +2014,19 @@ The listener is registered only after handshake authentication and the `user:{us
 * **`chat:message:new`:** emitted only after the service promise resolves. Target is `user:{recipientUserId}`, where the recipient is the other match participant from the authorized conversation. The sender's user room does not receive this event. Every connected device of the recipient does, including devices on other server instances through the Redis adapter. An offline recipient still gets a committed row and the sender still gets the acknowledgement. There is no offline queue, push, or replay. A delivery failure after commit is logged and does not fail the acknowledgement or roll back the message.
 * **Event payload:** `id`, `conversationId`, `senderId`, `messageType`, `content`, `createdAt`. No `remainingDailyMessages`, `mediaUrl`, `readAt`, or profile fields.
 * **Not emitted by HTTP:** `POST /api/v1/conversations/:conversationId/messages` does not emit `chat:message:new`.
+
+### 32.4 Typing indicators (implemented)
+
+`chat:typing:start` and `chat:typing:stop` are ephemeral. Nothing is written to PostgreSQL or Redis. There is no HTTP route and no `conversation:{id}` room. The handlers live in `src/socket/chat.socket.ts` and call `chat.service.authorizeTyping` for a start. That function does not insert a message, consume `DAILY_TEXT_MESSAGES`, update `last_message_at`, or take the send row locks.
+
+* **Payload:** strict `{ "conversationId": "<uuid>" }`. `senderId`, `recipientId`, and any other field are `VALIDATION_ERROR`. A parsed payload larger than 100 KB UTF-8 is `VALIDATION_ERROR` with detail field `payload`. The socket stays connected.
+* **Sender:** `loadAuthenticatedUser(socket.data.user.id)`. The outbound `senderId` is that reloaded id. A client-supplied sender id is rejected before authorization.
+* **Authorization:** the same account, profile, membership, active-match, active-conversation, and either-direction block rules as section 24.2. A `CLOSED` conversation is `CONVERSATION_CLOSED`. A missing or non-participant conversation is `RESOURCE_NOT_FOUND`. A block is `BLOCKED_USER`. Suspended, banned, deleted, and non-`USER` accounts use the same codes as `chat:message:send` and stay connected. History and read receipts may still use a closed thread. Typing may not.
+* **Delivery:** both events go to `user:{otherParticipantId}` on the Socket.IO server that owns the sender's connection. The payload is `{ conversationId, senderId }`. The sender's personal room does not receive them. If the other participant id equals the caller id, the server does not emit. An empty recipient room still returns success. A delivery error is logged and does not disconnect the sender. There is no offline buffer.
+* **Acknowledgement:** success is `{ "success": true, "data": null }`. Failure is `{ "success": false, "error": { "code", "message", "details" } }`. A missing callback does not throw. A stop for a conversation this socket is not actively typing acknowledges success and emits nothing.
+* **One slot per socket:** process memory holds at most one active conversation and one five-second timer for that socket. `chat:typing:start` is emitted only when that socket enters typing for a conversation. Another authorized start for the same conversation runs authorization again, resets the five-second timer, and does not emit a second start. Stop, timeout, disconnect, a conversation switch, and a failed later authorization each emit `chat:typing:stop` once and clear the slot. A switch emits the previous stop before the new start. A failed authorization emits stop to the previously authorized recipient, then acknowledges the error. A timer callback ignores a generation that is no longer current, so it cannot clear a newer slot.
+* **Throttle:** each socket may run 10 typing-start authorization checks per rolling 10 seconds. The count is the in-memory sliding window from `evaluateSlidingWindow`. It does not write a Redis key. The next start is `RATE_LIMITED` with message `Too many requests. Please try again later.` and does not load the account or the conversation. `chat:typing:stop` is not counted. A stop still clears an active indicator after the start limit is exhausted. A `RATE_LIMITED` start does not clear an indicator that is already active.
+* **Several sockets for one user:** each socket emits its own start and stop. The server does not keep a per-user flag or a Redis counter. A client that wants one indicator per person counts unmatched `chat:typing:start` events for that `senderId` and `conversationId` until the matching `chat:typing:stop` arrives. A stop from one tab leaves another tab's start outstanding.
 
 ---
 
@@ -2054,6 +2069,7 @@ Rate limits are enforced using Redis sliding-window algorithms:
 | **Verification resend** | 1 minute | 1 request | Identifier. Live. Registration consumes the same window. |
 | **Discovery swipe actions** | 1 minute | 60 requests | User ID. Planned. PASS, LIKE, SUPER LIKE, UNDO, and UNMATCH do not use this limiter today. |
 | **Chat Message Sending** | 1 minute | 30 requests | User ID. Planned. Not applied to HTTP TEXT send or `chat:message:send`. |
+| **Typing start** | 10 seconds | 10 authorization checks | Socket. Live. Process-local sliding window on `chat:typing:start`. Over-limit starts are `RATE_LIMITED` and do not query. `chat:typing:stop` is not limited. |
 | **General Public APIs** | 1 minute | 100 requests | IP Address. Live for `GET /genders`, `GET /interests`, and `GET /relationship-intentions` as `ratelimit:public:<ip>`. |
 | **Admin APIs** | 1 minute | 120 requests | Admin User ID |
 
@@ -2090,6 +2106,7 @@ Rate limits are enforced using Redis sliding-window algorithms:
 | **Matches list** | `matches`, `conversations`. `GET /matches` is not mounted. |
 | **Messages** (`POST /conversations/:conversationId/messages` and `chat:message:send`, implemented) | `messages`, `conversations`, `matches`, `users`, `blocks`, `usage_records`, `subscriptions`, `plans`. The Redis adapter delivers `chat:message:new` only. Redis does not store the message or the text quota. No `notifications` row is written. |
 | **Read receipts** (`PATCH /conversations/:conversationId/read`, implemented) | `messages` only. Sets `read_at` and `updated_at` to `CURRENT_TIMESTAMP` on unread incoming rows from the other participant. Does not change `conversations`, matches, likes, `usage_records`, or credits. No notification row and no Redis idempotency key. The Redis adapter delivers `chat:message:read` to `user:{otherParticipantId}` only after commit, and only when at least one row changed. |
+| **Typing** (`chat:typing:start`, `chat:typing:stop`, implemented) | Reads `conversations`, `matches`, `blocks`, `users`, and the profile context used by send. Writes no row and no Redis key. Process memory on the socket's node holds one active conversation and one timer per socket. The Redis adapter delivers the recipient event only. |
 | **Safety** (`/blocks`, `/reports`) | `blocks`, `reports` |
 | **Notifications** | `notifications` |
 | **Subscriptions & Plans** | `plans`, `features`, `plan_features`, `subscriptions`, `usage_limits` |

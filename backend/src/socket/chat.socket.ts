@@ -2,15 +2,33 @@ import type { Server, Socket } from 'socket.io';
 import { ZodError, type ZodIssue } from 'zod';
 import { loadAuthenticatedUser } from '../middleware/auth.middleware';
 import * as chatService from '../modules/chat/chat.service';
-import type { SendTextMessageResult } from '../modules/chat/chat.types';
-import { sendTextMessageEventSchema } from '../modules/chat/chat.validator';
-import { AppError, ErrorDetail, ForbiddenError, ValidationError } from '../utils/errors';
+import type { AuthorizeTypingResult, SendTextMessageResult } from '../modules/chat/chat.types';
+import { sendTextMessageEventSchema, typingEventSchema } from '../modules/chat/chat.validator';
+import { AppError, ErrorDetail, ForbiddenError, RateLimitError, ValidationError } from '../utils/errors';
 import { logger } from '../utils/logger';
+import { evaluateSlidingWindow, type SlidingWindowEntry } from '../utils/rate-limit';
 import { activeSocketServer } from './socket.server';
 
 const USER_ROLE_MESSAGE = 'You do not have permission to perform this action.';
 const UNEXPECTED_ERROR_MESSAGE = 'An unexpected error occurred. Please try again later.';
+const RATE_LIMIT_MESSAGE = 'Too many requests. Please try again later.';
 const SOCKET_PAYLOAD_LIMIT_BYTES = 100 * 1024;
+const TYPING_TTL_MS = 5000;
+const TYPING_START_LIMIT = 10;
+const TYPING_START_WINDOW_MS = 10_000;
+
+type TypingEventName = 'chat:typing:start' | 'chat:typing:stop';
+
+interface TypingSession {
+  conversationId: string;
+  senderId: string;
+  recipientId: string;
+  generation: number;
+  timer: NodeJS.Timeout;
+}
+
+const typingSessions = new Map<string, TypingSession>();
+const typingWindows = new Map<string, SlidingWindowEntry[]>();
 
 type Ack = (body: unknown) => void;
 
@@ -216,8 +234,225 @@ export function deliverReadReceipt(input: {
   }
 }
 
+function typingSuccess() {
+  return { success: true, data: null };
+}
+
+function parseTypingPayload(payload: unknown): { conversationId: string } {
+  const parsed = typingEventSchema.safeParse(payload);
+  if (!parsed.success) {
+    const error = parsed.error as ZodError;
+    throw new ValidationError('Validation failed', zodDetails(error.issues));
+  }
+
+  return parsed.data;
+}
+
+function consumeTypingStartAttempt(socketId: string): boolean {
+  const existing = typingWindows.get(socketId) ?? [];
+  const now = Date.now();
+  const decision = evaluateSlidingWindow(
+    existing,
+    now,
+    TYPING_START_WINDOW_MS,
+    TYPING_START_LIMIT,
+    `${now}:${existing.length}`
+  );
+  typingWindows.set(socketId, decision.entries);
+  return decision.allowed;
+}
+
+function deliverTyping(
+  io: Server,
+  event: TypingEventName,
+  input: { conversationId: string; senderId: string; recipientId: string }
+): void {
+  if (input.recipientId.toLowerCase() === input.senderId.toLowerCase()) {
+    logger.error('Refusing to deliver typing to the sender room', {
+      event,
+      conversationId: input.conversationId
+    });
+    return;
+  }
+
+  try {
+    io.to(userRoom(input.recipientId)).emit(event, {
+      conversationId: input.conversationId,
+      senderId: input.senderId
+    });
+  } catch (error) {
+    logger.error('Failed to deliver typing indicator', {
+      error: error instanceof Error ? error.message : 'Unknown error',
+      event,
+      conversationId: input.conversationId,
+      recipientId: input.recipientId
+    });
+  }
+}
+
+function scheduleTypingTimeout(socketId: string, io: Server, session: TypingSession): NodeJS.Timeout {
+  const generation = session.generation;
+  return setTimeout(() => {
+    try {
+      const current = typingSessions.get(socketId);
+      if (!current || current.generation !== generation) {
+        return;
+      }
+      clearTyping(socketId, io);
+    } catch (error) {
+      logger.error('Typing indicator timeout failed', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+        conversationId: session.conversationId
+      });
+    }
+  }, TYPING_TTL_MS);
+}
+
+function clearTyping(socketId: string, io: Server): void {
+  const current = typingSessions.get(socketId);
+  if (!current) {
+    return;
+  }
+
+  clearTimeout(current.timer);
+  typingSessions.delete(socketId);
+  deliverTyping(io, 'chat:typing:stop', current);
+}
+
+function sameTypingTarget(current: TypingSession, result: AuthorizeTypingResult): boolean {
+  return (
+    current.conversationId === result.conversationId &&
+    current.senderId.toLowerCase() === result.senderId.toLowerCase()
+  );
+}
+
+function beginOrRefreshTyping(socketId: string, io: Server, result: AuthorizeTypingResult): void {
+  if (result.recipientId.toLowerCase() === result.senderId.toLowerCase()) {
+    clearTyping(socketId, io);
+    logger.error('Refusing to deliver typing to the sender room', {
+      conversationId: result.conversationId
+    });
+    return;
+  }
+
+  const current = typingSessions.get(socketId);
+  if (current && sameTypingTarget(current, result)) {
+    current.recipientId = result.recipientId;
+    current.generation += 1;
+    clearTimeout(current.timer);
+    current.timer = scheduleTypingTimeout(socketId, io, current);
+    return;
+  }
+
+  if (current) {
+    clearTyping(socketId, io);
+  }
+
+  const session: TypingSession = {
+    conversationId: result.conversationId,
+    senderId: result.senderId,
+    recipientId: result.recipientId,
+    generation: 1,
+    timer: setTimeout(() => undefined, 0)
+  };
+  clearTimeout(session.timer);
+  session.timer = scheduleTypingTimeout(socketId, io, session);
+  typingSessions.set(socketId, session);
+  deliverTyping(io, 'chat:typing:start', session);
+}
+
+function cleanupTypingSocket(socketId: string, io: Server): void {
+  try {
+    clearTyping(socketId, io);
+  } catch (error) {
+    logger.error('Typing indicator disconnect cleanup failed', {
+      error: error instanceof Error ? error.message : 'Unknown error'
+    });
+  } finally {
+    typingWindows.delete(socketId);
+  }
+}
+
+function acknowledgeTypingFailure(event: TypingEventName, socket: Socket, error: unknown, respond: Ack | null): void {
+  if (error instanceof AppError) {
+    logger.warn(`${event} rejected`, {
+      errorCode: error.errorCode,
+      userId: socket.data.user?.id
+    });
+    respond?.(failureAck(error));
+    return;
+  }
+
+  logger.error(`${event} failed`, {
+    error: error instanceof Error ? error.message : 'Unknown error',
+    userId: socket.data.user?.id
+  });
+  respond?.(unexpectedFailure());
+}
+
+async function handleTypingStart(socket: Socket, io: Server, payload: unknown, ack: unknown): Promise<void> {
+  const respond = readAck(ack);
+  try {
+    assertPayloadSize(payload);
+    const parsed = parseTypingPayload(payload);
+    if (!consumeTypingStartAttempt(socket.id)) {
+      acknowledgeTypingFailure(
+        'chat:typing:start',
+        socket,
+        new RateLimitError(RATE_LIMIT_MESSAGE, [], 'RATE_LIMITED'),
+        respond
+      );
+      return;
+    }
+
+    try {
+      const current = await loadAuthenticatedUser(socket.data.user.id);
+      if (current.role !== 'USER') {
+        throw new ForbiddenError(USER_ROLE_MESSAGE, [], 'FORBIDDEN');
+      }
+      socket.data.user = current;
+      const result = await chatService.authorizeTyping({
+        callerId: current.id,
+        isVerified: current.isVerified,
+        conversationId: parsed.conversationId
+      });
+      beginOrRefreshTyping(socket.id, io, result);
+      respond?.(typingSuccess());
+    } catch (error) {
+      clearTyping(socket.id, io);
+      throw error;
+    }
+  } catch (error) {
+    acknowledgeTypingFailure('chat:typing:start', socket, error, respond);
+  }
+}
+
+function handleTypingStop(socket: Socket, io: Server, payload: unknown, ack: unknown): void {
+  const respond = readAck(ack);
+  try {
+    assertPayloadSize(payload);
+    const parsed = parseTypingPayload(payload);
+    const current = typingSessions.get(socket.id);
+    if (current && current.conversationId === parsed.conversationId.toLowerCase()) {
+      clearTyping(socket.id, io);
+    }
+    respond?.(typingSuccess());
+  } catch (error) {
+    acknowledgeTypingFailure('chat:typing:stop', socket, error, respond);
+  }
+}
+
 export function registerChatSocketHandlers(socket: Socket, io: Server): void {
   socket.on('chat:message:send', (payload: unknown, ack?: unknown) => {
     void handleChatMessageSend(socket, io, payload, ack);
+  });
+  socket.on('chat:typing:start', (payload: unknown, ack?: unknown) => {
+    void handleTypingStart(socket, io, payload, ack);
+  });
+  socket.on('chat:typing:stop', (payload: unknown, ack?: unknown) => {
+    void handleTypingStop(socket, io, payload, ack);
+  });
+  socket.on('disconnect', () => {
+    cleanupTypingSocket(socket.id, io);
   });
 }

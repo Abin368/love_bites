@@ -290,6 +290,7 @@ Reports are not a Discovery exclusion. Browsing candidate cards does not consume
 * **History:** `GET /api/v1/conversations/:conversationId/messages` returns cursor-paginated messages for a participant. It does not mark messages read, consume the send quota, or emit a realtime event.
 * **Read receipts:** `PATCH /api/v1/conversations/:conversationId/read` marks the other participant's unread messages in that conversation. A closed conversation can be marked read unless a block exists. The call does not consume the send quota. After the database update commits, the other participant's connected devices receive `chat:message:read`. Opening history does not mark messages read.
 * **Realtime TEXT:** A connected client may send with Socket.IO `chat:message:send`. The server persists through the same rules as HTTP, acknowledges the sender, and emits `chat:message:new` only to the other participant's connected devices. HTTP send does not emit that event. An offline recipient keeps the PostgreSQL row and gets no replay. There is no conversation-room join and no send idempotency key.
+* **Typing:** A connected participant may send `chat:typing:start` and `chat:typing:stop` with only the conversation id. The other participant's devices receive the same event names with the authenticated sender id. Typing requires an active match, an active conversation, a verified complete profile, and no block in either direction. A closed conversation rejects typing even though its history can still be read. The indicator is not stored. It clears on stop, after five seconds without a refreshed start, on disconnect, or when a later start is no longer authorized. Each socket tracks its own indicator. A client that has several tabs counts unmatched starts per sender and conversation.
 
 ---
 
@@ -485,4 +486,4 @@ The following parameter values are designated as **TBD** and must be populated v
 ## Document Status
 * **Status:** DRAFT
 * **Version:** 1.0
-* **Last Updated:** 9 October 2026. Discovery, pass, like, super like, undo, unmatch, HTTP TEXT send, free text quota, Socket.IO TEXT send/receive, message history, and read receipts match the implemented API. Media, inbox, rematch, who-liked-you, the match list, and payments remain product scope that is not yet implemented.
+* **Last Updated:** 9 October 2026. Discovery, pass, like, super like, undo, unmatch, HTTP TEXT send, free text quota, Socket.IO TEXT send/receive, message history, read receipts, and typing indicators match the implemented API. Media, inbox, rematch, who-liked-you, the match list, and payments remain product scope that is not yet implemented.

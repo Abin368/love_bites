@@ -209,6 +209,63 @@ function waitForNewMessage(client: ClientSocket, timeoutMs = 5000): Promise<NewM
   });
 }
 
+interface TypingAck {
+  success: boolean;
+  data?: null;
+  error?: AckError;
+}
+
+interface TypingNotice {
+  conversationId: string;
+  senderId: string;
+}
+
+function typingPayload(conversationId: string, extra?: Record<string, unknown>) {
+  return { conversationId, ...extra };
+}
+
+function emitTyping(
+  client: ClientSocket,
+  event: 'chat:typing:start' | 'chat:typing:stop',
+  payload: unknown
+): Promise<TypingAck> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${event} acknowledgement timed out.`)), 5000);
+    client.emit(event, payload, (body: TypingAck) => {
+      clearTimeout(timer);
+      resolve(body);
+    });
+  });
+}
+
+function waitForTyping(
+  client: ClientSocket,
+  event: 'chat:typing:start' | 'chat:typing:stop',
+  timeoutMs = 5000
+): Promise<TypingNotice> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${event} timed out.`)), timeoutMs);
+    client.once(event, (body: TypingNotice) => {
+      clearTimeout(timer);
+      resolve(body);
+    });
+  });
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function waitForReadReceipt(client: ClientSocket, timeoutMs = 5000): Promise<ReadReceiptEvent> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('chat:message:read timed out.')), timeoutMs);
+    client.once('chat:message:read', (body: ReadReceiptEvent) => {
+      clearTimeout(timer);
+      resolve(body);
+    });
+  });
+}
+
 async function setLocation(userId: string, point: Point, city = 'Bengaluru'): Promise<void> {
   await Profile.update(
     {
@@ -1241,5 +1298,612 @@ describe('Socket.IO chat:message:read', () => {
     expect(typeof response.body.data.readAt).toBe('string');
     const stored = await Message.findByPk(message.id);
     expect(stored?.readAt?.toISOString()).toBe(response.body.data.readAt);
+  });
+});
+
+describe('Socket.IO typing indicators', () => {
+  beforeAll(async () => {
+    const reachable = await redisIsReachable();
+    if (!reachable) {
+      if (process.env.CI) {
+        throw new Error('Socket.IO chat tests require Redis. CI did not provide a reachable Redis at REDIS_URL.');
+      }
+      console.warn('Redis is not reachable, so Socket.IO chat tests were not executed.');
+      return;
+    }
+
+    httpServer = http.createServer(app);
+    runtime = await attachSocketServer(httpServer);
+    port = await listen(httpServer);
+  });
+
+  afterEach(() => {
+    for (const client of openClients) {
+      client.close();
+    }
+    openClients.length = 0;
+    jest.restoreAllMocks();
+  });
+
+  afterAll(async () => {
+    if (runtime) {
+      await closeSocketServer(runtime);
+      runtime = null;
+    }
+  });
+
+  it('emits one chat:typing:start to the recipient and leaves messages, quota, and last_message_at unchanged', async () => {
+    if (!runtime) {
+      return;
+    }
+
+    const { caller, target, conversation } = await activeThread();
+    const sender = await connectReady(caller.id);
+    const recipient = await connectReady(target.id);
+    let senderSawEvent = false;
+    sender.on('chat:typing:start', () => {
+      senderSawEvent = true;
+    });
+    sender.on('chat:typing:stop', () => {
+      senderSawEvent = true;
+    });
+    const incoming = waitForTyping(recipient, 'chat:typing:start');
+
+    const ack = await emitTyping(sender, 'chat:typing:start', typingPayload(conversation.id));
+
+    expect(ack).toEqual({ success: true, data: null });
+    await expect(incoming).resolves.toEqual({
+      conversationId: conversation.id,
+      senderId: caller.id
+    });
+    expect(await Message.count()).toBe(0);
+    expect(await textMessageUsageCount(caller.id)).toBe(0);
+    await conversation.reload();
+    expect(conversation.lastMessageAt).toBeNull();
+    await sleep(50);
+    expect(senderSawEvent).toBe(false);
+    expect(sender.connected).toBe(true);
+    expect(recipient.connected).toBe(true);
+  });
+
+  it('emits one chat:typing:stop to the recipient and nothing to the sender', async () => {
+    if (!runtime) {
+      return;
+    }
+
+    const { caller, target, conversation } = await activeThread();
+    const sender = await connectReady(caller.id);
+    const recipient = await connectReady(target.id);
+    let senderSawEvent = false;
+    sender.on('chat:typing:start', () => {
+      senderSawEvent = true;
+    });
+    sender.on('chat:typing:stop', () => {
+      senderSawEvent = true;
+    });
+    const started = waitForTyping(recipient, 'chat:typing:start');
+    await emitTyping(sender, 'chat:typing:start', typingPayload(conversation.id));
+    await started;
+
+    const stopped = waitForTyping(recipient, 'chat:typing:stop');
+    const ack = await emitTyping(sender, 'chat:typing:stop', typingPayload(conversation.id));
+
+    expect(ack).toEqual({ success: true, data: null });
+    await expect(stopped).resolves.toEqual({
+      conversationId: conversation.id,
+      senderId: caller.id
+    });
+    await sleep(50);
+    expect(senderSawEvent).toBe(false);
+    expect(sender.connected).toBe(true);
+  });
+
+  it('delivers a typing start to every connected recipient device', async () => {
+    if (!runtime) {
+      return;
+    }
+
+    const { caller, target, conversation } = await activeThread();
+    const sender = await connectReady(caller.id);
+    const phone = await connectReady(target.id);
+    const tablet = await connectReady(target.id);
+    await waitForUserRoom(runtime.io, target.id, 2);
+    const phoneEvent = waitForTyping(phone, 'chat:typing:start');
+    const tabletEvent = waitForTyping(tablet, 'chat:typing:start');
+
+    const ack = await emitTyping(sender, 'chat:typing:start', typingPayload(conversation.id));
+
+    expect(ack.success).toBe(true);
+    const [phoneBody, tabletBody] = await Promise.all([phoneEvent, tabletEvent]);
+    expect(phoneBody).toEqual(tabletBody);
+    expect(phoneBody).toEqual({
+      conversationId: conversation.id,
+      senderId: caller.id
+    });
+  });
+
+  it('rejects a spoofed sender id and other unexpected fields without emitting', async () => {
+    if (!runtime) {
+      return;
+    }
+
+    const { caller, target, conversation } = await activeThread();
+    const sender = await connectReady(caller.id);
+    const recipient = await connectReady(target.id);
+    const started = waitForTyping(recipient, 'chat:typing:start');
+    await emitTyping(sender, 'chat:typing:start', typingPayload(conversation.id));
+    await started;
+    let stopped = false;
+    recipient.on('chat:typing:stop', () => {
+      stopped = true;
+    });
+
+    const ack = await emitTyping(
+      sender,
+      'chat:typing:start',
+      typingPayload(conversation.id, { senderId: target.id, recipientId: caller.id })
+    );
+
+    expect(ack.success).toBe(false);
+    expect(ack.error?.code).toBe('VALIDATION_ERROR');
+    expect(ack.error?.message).toBe('Validation failed');
+    expect(ack.error?.details?.some((detail) => detail.code === 'unrecognized_keys')).toBe(true);
+    await sleep(50);
+    expect(stopped).toBe(false);
+    expect(sender.connected).toBe(true);
+
+    const stopNotice = waitForTyping(recipient, 'chat:typing:stop');
+    const stopAck = await emitTyping(sender, 'chat:typing:stop', typingPayload(conversation.id));
+    expect(stopAck).toEqual({ success: true, data: null });
+    await expect(stopNotice).resolves.toEqual({
+      conversationId: conversation.id,
+      senderId: caller.id
+    });
+  });
+
+  it('rejects an invalid UUID, a missing conversation id, and a malformed payload', async () => {
+    if (!runtime) {
+      return;
+    }
+
+    const { caller } = await activeThread();
+    const sender = await connectReady(caller.id);
+
+    const invalidId = await emitTyping(sender, 'chat:typing:start', typingPayload('not-a-uuid'));
+    expect(invalidId.success).toBe(false);
+    expect(invalidId.error?.code).toBe('VALIDATION_ERROR');
+    expect(invalidId.error?.details).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          field: 'conversationId',
+          message: 'Conversation id must be a valid UUID.'
+        })
+      ])
+    );
+
+    const missing = await emitTyping(sender, 'chat:typing:start', {});
+    expect(missing.error?.code).toBe('VALIDATION_ERROR');
+    expect(missing.error?.details).toEqual(
+      expect.arrayContaining([expect.objectContaining({ field: 'conversationId' })])
+    );
+
+    const empty = await emitTyping(sender, 'chat:typing:start', null);
+    expect(empty.error?.code).toBe('VALIDATION_ERROR');
+
+    const listed = await emitTyping(sender, 'chat:typing:start', [randomUUID()]);
+    expect(listed.error?.code).toBe('VALIDATION_ERROR');
+
+    const oversized = await emitTyping(sender, 'chat:typing:start', {
+      conversationId: randomUUID(),
+      padding: 'a'.repeat(100 * 1024)
+    });
+    expect(oversized.error?.code).toBe('VALIDATION_ERROR');
+    expect(oversized.error?.details).toEqual([
+      { field: 'payload', message: 'Payload must not exceed 100 KB.' }
+    ]);
+    expect(sender.connected).toBe(true);
+  });
+
+  it('hides unknown and foreign conversations and emits nothing', async () => {
+    if (!runtime) {
+      return;
+    }
+
+    const { caller, target, genderId, conversation } = await activeThread();
+    const outsider = await buildUser({ genderId, point: north(3) });
+    const sender = await connectReady(caller.id);
+    const stranger = await connectReady(outsider.id);
+    const recipient = await connectReady(target.id);
+    let delivered = false;
+    recipient.on('chat:typing:start', () => {
+      delivered = true;
+    });
+
+    const missing = await emitTyping(sender, 'chat:typing:start', typingPayload(randomUUID()));
+    expect(missing.error).toEqual({
+      code: 'RESOURCE_NOT_FOUND',
+      message: 'Resource not found',
+      details: null
+    });
+
+    const foreign = await emitTyping(stranger, 'chat:typing:start', typingPayload(conversation.id));
+    expect(foreign.error).toEqual({
+      code: 'RESOURCE_NOT_FOUND',
+      message: 'Resource not found',
+      details: null
+    });
+    await sleep(50);
+    expect(delivered).toBe(false);
+    expect(sender.connected).toBe(true);
+    expect(stranger.connected).toBe(true);
+  });
+
+  it('returns CONVERSATION_CLOSED for a participant and emits nothing', async () => {
+    if (!runtime) {
+      return;
+    }
+
+    const { caller, target, match, conversation } = await activeThread();
+    const unmatch = await request(app).delete(`/api/v1/matches/${match.id}`).set(authHeader(caller.id));
+    expect(unmatch.status).toBe(200);
+    const sender = await connectReady(caller.id);
+    const recipient = await connectReady(target.id);
+    let delivered = false;
+    recipient.on('chat:typing:start', () => {
+      delivered = true;
+    });
+
+    const ack = await emitTyping(sender, 'chat:typing:start', typingPayload(conversation.id));
+
+    expect(ack.error).toEqual({
+      code: 'CONVERSATION_CLOSED',
+      message: 'Conversation is closed due to unmatch or safety block.',
+      details: null
+    });
+    await sleep(50);
+    expect(delivered).toBe(false);
+    expect(sender.connected).toBe(true);
+  });
+
+  it('returns BLOCKED_USER for a block in either direction and stops an active indicator', async () => {
+    if (!runtime) {
+      return;
+    }
+
+    const first = await activeThread();
+    await Block.create({
+      blockerId: first.caller.id,
+      blockedId: first.target.id,
+      reason: null,
+      createdAt: new Date()
+    });
+    const firstSender = await connectReady(first.caller.id);
+    const firstRecipient = await connectReady(first.target.id);
+    let firstDelivered = false;
+    firstRecipient.on('chat:typing:start', () => {
+      firstDelivered = true;
+    });
+    const firstAck = await emitTyping(firstSender, 'chat:typing:start', typingPayload(first.conversation.id));
+    expect(firstAck.error).toEqual({
+      code: 'BLOCKED_USER',
+      message: 'Interaction prohibited due to an active safety block.',
+      details: null
+    });
+    expect(firstSender.connected).toBe(true);
+
+    const second = await activeThread();
+    const secondSender = await connectReady(second.caller.id);
+    const secondRecipient = await connectReady(second.target.id);
+    const started = waitForTyping(secondRecipient, 'chat:typing:start');
+    await emitTyping(secondSender, 'chat:typing:start', typingPayload(second.conversation.id));
+    await started;
+    await Block.create({
+      blockerId: second.target.id,
+      blockedId: second.caller.id,
+      reason: null,
+      createdAt: new Date()
+    });
+    const stopped = waitForTyping(secondRecipient, 'chat:typing:stop');
+    const secondAck = await emitTyping(secondSender, 'chat:typing:start', typingPayload(second.conversation.id));
+    expect(secondAck.error?.code).toBe('BLOCKED_USER');
+    await expect(stopped).resolves.toEqual({
+      conversationId: second.conversation.id,
+      senderId: second.caller.id
+    });
+    await sleep(50);
+    expect(firstDelivered).toBe(false);
+    expect(secondSender.connected).toBe(true);
+  });
+
+  it('returns the existing verification and profile errors and stays connected', async () => {
+    if (!runtime) {
+      return;
+    }
+
+    const catalogGender = await gender();
+    const unverified = await buildUser({ genderId: catalogGender.id, emailVerified: false, status: 'UNVERIFIED' });
+    const partner = await buildUser({ genderId: catalogGender.id, point: north(2) });
+    const unverifiedMatch = await insertMatch(unverified.id, partner.id, 'ACTIVE');
+    const unverifiedConversation = await insertConversation(unverifiedMatch.id);
+    const unverifiedSocket = await connectReady(unverified.id);
+    const unverifiedAck = await emitTyping(unverifiedSocket, 'chat:typing:start', typingPayload(unverifiedConversation.id));
+    expect(unverifiedAck.error?.code).toBe('EMAIL_NOT_VERIFIED');
+    expect(unverifiedAck.error?.message).toBe('Email verification is required.');
+    expect(unverifiedSocket.connected).toBe(true);
+
+    const incomplete = await buildUser({ genderId: catalogGender.id, complete: false });
+    const incompleteMatch = await insertMatch(incomplete.id, partner.id, 'ACTIVE');
+    const incompleteConversation = await insertConversation(incompleteMatch.id);
+    const incompleteSocket = await connectReady(incomplete.id);
+    const incompleteAck = await emitTyping(incompleteSocket, 'chat:typing:start', typingPayload(incompleteConversation.id));
+    expect(incompleteAck.error?.code).toBe('PROFILE_INCOMPLETE');
+    expect(incompleteAck.error?.message).toBe('Onboarding is incomplete.');
+    expect(incompleteSocket.connected).toBe(true);
+  });
+
+  it('rechecks a suspended account after the handshake, stops typing, and stays connected', async () => {
+    if (!runtime) {
+      return;
+    }
+
+    const { caller, target, conversation } = await activeThread();
+    const sender = await connectReady(caller.id);
+    const recipient = await connectReady(target.id);
+    const started = waitForTyping(recipient, 'chat:typing:start');
+    await emitTyping(sender, 'chat:typing:start', typingPayload(conversation.id));
+    await started;
+    await caller.update({ status: 'SUSPENDED' });
+
+    const stopped = waitForTyping(recipient, 'chat:typing:stop');
+    const ack = await emitTyping(sender, 'chat:typing:start', typingPayload(conversation.id));
+
+    expect(ack.error).toEqual({
+      code: 'ACCOUNT_SUSPENDED',
+      message: 'Account is suspended.',
+      details: null
+    });
+    await expect(stopped).resolves.toEqual({
+      conversationId: conversation.id,
+      senderId: caller.id
+    });
+    expect(sender.connected).toBe(true);
+  });
+
+  it('refreshes an active indicator without a second start event', async () => {
+    if (!runtime) {
+      return;
+    }
+
+    const { caller, target, conversation } = await activeThread();
+    const sender = await connectReady(caller.id);
+    const recipient = await connectReady(target.id);
+    let starts = 0;
+    let stops = 0;
+    recipient.on('chat:typing:start', () => {
+      starts += 1;
+    });
+    recipient.on('chat:typing:stop', () => {
+      stops += 1;
+    });
+    const started = waitForTyping(recipient, 'chat:typing:start');
+    const first = await emitTyping(sender, 'chat:typing:start', typingPayload(conversation.id));
+    expect(first).toEqual({ success: true, data: null });
+    await started;
+    expect(starts).toBe(1);
+
+    await sleep(1000);
+    expect(stops).toBe(0);
+    const refreshedAt = Date.now();
+    const again = await emitTyping(sender, 'chat:typing:start', typingPayload(conversation.id));
+    expect(again).toEqual({ success: true, data: null });
+    await sleep(50);
+    expect(starts).toBe(1);
+
+    const stopped = await waitForTyping(recipient, 'chat:typing:stop', 8000);
+    expect(stopped).toEqual({
+      conversationId: conversation.id,
+      senderId: caller.id
+    });
+    expect(Date.now() - refreshedAt).toBeGreaterThanOrEqual(4500);
+    expect(stops).toBe(1);
+    await sleep(50);
+    expect(stops).toBe(1);
+    expect(starts).toBe(1);
+  });
+
+  it('stops the previous conversation before starting another', async () => {
+    if (!runtime) {
+      return;
+    }
+
+    const first = await activeThread();
+    const secondTarget = await buildUser({ genderId: first.genderId, point: north(4) });
+    const secondMatch = await insertMatch(first.caller.id, secondTarget.id, 'ACTIVE');
+    const secondConversation = await insertConversation(secondMatch.id);
+    const sender = await connectReady(first.caller.id);
+    const firstRecipient = await connectReady(first.target.id);
+    const secondRecipient = await connectReady(secondTarget.id);
+    const started = waitForTyping(firstRecipient, 'chat:typing:start');
+    await emitTyping(sender, 'chat:typing:start', typingPayload(first.conversation.id));
+    await started;
+
+    const stopped = waitForTyping(firstRecipient, 'chat:typing:stop');
+    const next = waitForTyping(secondRecipient, 'chat:typing:start');
+    const ack = await emitTyping(sender, 'chat:typing:start', typingPayload(secondConversation.id));
+
+    expect(ack).toEqual({ success: true, data: null });
+    await expect(stopped).resolves.toEqual({
+      conversationId: first.conversation.id,
+      senderId: first.caller.id
+    });
+    await expect(next).resolves.toEqual({
+      conversationId: secondConversation.id,
+      senderId: first.caller.id
+    });
+  });
+
+  it('emits one stop when the typing timeout expires', async () => {
+    if (!runtime) {
+      return;
+    }
+
+    const { caller, target, conversation } = await activeThread();
+    const sender = await connectReady(caller.id);
+    const recipient = await connectReady(target.id);
+    let senderSawEvent = false;
+    let stops = 0;
+    sender.on('chat:typing:stop', () => {
+      senderSawEvent = true;
+    });
+    recipient.on('chat:typing:stop', () => {
+      stops += 1;
+    });
+    const started = waitForTyping(recipient, 'chat:typing:start');
+    await emitTyping(sender, 'chat:typing:start', typingPayload(conversation.id));
+    await started;
+
+    const stopped = await waitForTyping(recipient, 'chat:typing:stop', 8000);
+    expect(stopped).toEqual({
+      conversationId: conversation.id,
+      senderId: caller.id
+    });
+    await sleep(50);
+    expect(stops).toBe(1);
+    expect(senderSawEvent).toBe(false);
+    expect(sender.connected).toBe(true);
+  });
+
+  it('emits one stop when the typing socket disconnects', async () => {
+    if (!runtime) {
+      return;
+    }
+
+    const { caller, target, conversation } = await activeThread();
+    const sender = await connectReady(caller.id);
+    const recipient = await connectReady(target.id);
+    let stops = 0;
+    recipient.on('chat:typing:stop', () => {
+      stops += 1;
+    });
+    const started = waitForTyping(recipient, 'chat:typing:start');
+    await emitTyping(sender, 'chat:typing:start', typingPayload(conversation.id));
+    await started;
+
+    const stopped = waitForTyping(recipient, 'chat:typing:stop');
+    sender.disconnect();
+    await expect(stopped).resolves.toEqual({
+      conversationId: conversation.id,
+      senderId: caller.id
+    });
+    await sleep(50);
+    expect(stops).toBe(1);
+    expect(recipient.connected).toBe(true);
+  });
+
+  it('returns RATE_LIMITED after 10 start authorizations and still accepts stop', async () => {
+    if (!runtime) {
+      return;
+    }
+
+    const spy = jest.spyOn(chatService, 'authorizeTyping');
+    const { caller, target, conversation } = await activeThread();
+    const sender = await connectReady(caller.id);
+    const recipient = await connectReady(target.id);
+    let starts = 0;
+    recipient.on('chat:typing:start', () => {
+      starts += 1;
+    });
+    const started = waitForTyping(recipient, 'chat:typing:start');
+
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      const ack = await emitTyping(sender, 'chat:typing:start', typingPayload(conversation.id));
+      expect(ack).toEqual({ success: true, data: null });
+    }
+
+    await started;
+    expect(spy).toHaveBeenCalledTimes(10);
+    expect(starts).toBe(1);
+
+    const limited = await emitTyping(sender, 'chat:typing:start', typingPayload(conversation.id));
+    expect(limited.error).toEqual({
+      code: 'RATE_LIMITED',
+      message: 'Too many requests. Please try again later.',
+      details: null
+    });
+    expect(spy).toHaveBeenCalledTimes(10);
+    expect(sender.connected).toBe(true);
+
+    const stopped = waitForTyping(recipient, 'chat:typing:stop');
+    const stopAck = await emitTyping(sender, 'chat:typing:stop', typingPayload(conversation.id));
+    expect(stopAck).toEqual({ success: true, data: null });
+    await expect(stopped).resolves.toEqual({
+      conversationId: conversation.id,
+      senderId: caller.id
+    });
+    expect(spy).toHaveBeenCalledTimes(10);
+    await sleep(50);
+    expect(starts).toBe(1);
+  });
+
+  it('acknowledges a start when the recipient is offline and keeps the sender connected', async () => {
+    if (!runtime) {
+      return;
+    }
+
+    const { caller, conversation } = await activeThread();
+    const sender = await connectReady(caller.id);
+
+    const ack = await emitTyping(sender, 'chat:typing:start', typingPayload(conversation.id));
+
+    expect(ack).toEqual({ success: true, data: null });
+    expect(sender.connected).toBe(true);
+    expect(await Message.count()).toBe(0);
+    expect(await textMessageUsageCount(caller.id)).toBe(0);
+    await conversation.reload();
+    expect(conversation.lastMessageAt).toBeNull();
+  });
+
+  it('still sends a realtime message and a read receipt after typing', async () => {
+    if (!runtime) {
+      return;
+    }
+
+    const { caller, target, conversation } = await activeThread();
+    const sender = await connectReady(caller.id);
+    const recipient = await connectReady(target.id);
+    const started = waitForTyping(recipient, 'chat:typing:start');
+    await emitTyping(sender, 'chat:typing:start', typingPayload(conversation.id));
+    await started;
+    const stopped = waitForTyping(recipient, 'chat:typing:stop');
+    await emitTyping(sender, 'chat:typing:stop', typingPayload(conversation.id));
+    await stopped;
+
+    const incoming = waitForNewMessage(recipient);
+    const ack = await sendEvent(sender, textPayload(conversation.id, 'After typing'));
+    expect(ack.success).toBe(true);
+    await expect(incoming).resolves.toEqual({
+      id: ack.data?.id,
+      conversationId: conversation.id,
+      senderId: caller.id,
+      messageType: 'TEXT',
+      content: 'After typing',
+      createdAt: ack.data?.createdAt
+    });
+
+    let readerSawEvent = false;
+    recipient.on('chat:message:read', () => {
+      readerSawEvent = true;
+    });
+    const read = waitForReadReceipt(sender);
+    const response = await markConversationRead(target.id, conversation.id);
+    expect(response.status).toBe(200);
+    expect(typeof response.body.data.readAt).toBe('string');
+    await expect(read).resolves.toEqual({
+      conversationId: conversation.id,
+      readerId: target.id,
+      readAt: response.body.data.readAt
+    });
+    await sleep(50);
+    expect(readerSawEvent).toBe(false);
   });
 });

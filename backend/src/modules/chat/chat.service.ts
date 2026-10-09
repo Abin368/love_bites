@@ -26,6 +26,8 @@ import {
   updateConversationLastMessageAt
 } from './chat.data-access';
 import type {
+  AuthorizeTypingInput,
+  AuthorizeTypingResult,
   HistoryMessage,
   ListMessagesInput,
   ListMessagesResult,
@@ -252,4 +254,41 @@ export async function markMessagesRead(input: MarkMessagesReadInput): Promise<Ma
       readAt
     };
   });
+}
+
+export async function authorizeTyping(input: AuthorizeTypingInput): Promise<AuthorizeTypingResult> {
+  const conversationId = parseConversationId(input.conversationId);
+
+  if (!input.isVerified) {
+    await rejectUnverified(input.callerId);
+  }
+
+  const context = await findViewerDiscoveryContext(input.callerId);
+  if (!context || !context.isProfileComplete || !context.hasLocation || !context.hasDatingPreferences) {
+    throw incomplete();
+  }
+
+  const loaded = await findConversationWithMatch(conversationId);
+  if (!loaded || !participates(loaded.userOneId, loaded.userTwoId, input.callerId)) {
+    throw resourceNotFound();
+  }
+
+  if (loaded.conversationStatus === 'CLOSED') {
+    throw conversationClosed();
+  }
+
+  if (loaded.matchStatus !== 'ACTIVE') {
+    throw resourceNotFound();
+  }
+
+  const recipientId = otherParticipant(loaded.userOneId, loaded.userTwoId, input.callerId);
+  if (await hasBidirectionalBlock(input.callerId, recipientId)) {
+    throw new ConflictError(BLOCKED_USER_MESSAGE, [], 'BLOCKED_USER');
+  }
+
+  return {
+    conversationId,
+    senderId: input.callerId,
+    recipientId
+  };
 }

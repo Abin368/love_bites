@@ -61,6 +61,18 @@ export interface MarkMessagesReadResult {
   readAt: Date | null;
 }
 
+export interface AuthorizeTypingInput {
+  callerId: string;
+  isVerified: boolean;
+  conversationId: string;
+}
+
+export interface AuthorizeTypingResult {
+  conversationId: string;
+  senderId: string;
+  recipientId: string;
+}
+
 export interface ConversationMatchLookup {
   conversationId: string;
   conversationStatus: string;

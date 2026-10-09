@@ -350,7 +350,8 @@ Media entitlement (attachments) is not in this slice. Free callers consume `DAIL
    * `chat:message:new` is emitted to `user:{recipientUserId}` after a committed `chat:message:send`. The recipient id comes from the authorized match participants. The sender room does not receive that event.
    * Conversation rooms are not joined. There is no client join event for `conversation:{conversationId}`.
 3. **Zero Client Trust in Socket Events:** `chat:message:send` ignores client identity fields. Unknown payload fields are rejected. Sender identity is `socket.data.user.id` after `loadAuthenticatedUser` reloads the current PostgreSQL account. A stale handshake snapshot is not enough for a send. Account-state failures acknowledge the event and do not disconnect the socket.
-4. **Payload limit:** `chat:message:send` rejects a parsed payload whose JSON UTF-8 size exceeds 100 KB. That failure does not disconnect the socket.
+4. **Payload limit:** `chat:message:send`, `chat:typing:start`, and `chat:typing:stop` reject a parsed payload whose JSON UTF-8 size exceeds 100 KB. That failure does not disconnect the socket.
+5. **Typing indicators:** `chat:typing:start` reloads the account and calls `chat.service.authorizeTyping`. Sender identity is the reloaded user id. Unknown payload fields are rejected. The other participant comes from the match row. Events go only to `user:{otherParticipantId}`. A block in either direction, a closed conversation, and a failed later authorization clear that socket's indicator. State is one conversation and one timer per socket in process memory. It is not stored in PostgreSQL or Redis. Ten start authorizations per socket per 10 seconds are allowed. Further starts return `RATE_LIMITED` without a query. Stop is not limited.
 
 ---
 

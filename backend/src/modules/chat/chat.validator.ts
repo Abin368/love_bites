@@ -186,5 +186,12 @@ export const sendTextMessageEventSchema = sendTextMessageSchema
   })
   .strict();
 
+export const typingEventSchema = z
+  .object({
+    conversationId: conversationIdSchema
+  })
+  .strict();
+
 export type SendTextMessageBody = z.infer<typeof sendTextMessageSchema>;
 export type SendTextMessageEvent = z.infer<typeof sendTextMessageEventSchema>;
+export type TypingEvent = z.infer<typeof typingEventSchema>;
