@@ -1,3 +1,6 @@
+import type { MessageType } from '../../database/models/message.model';
+import type { HistoryCursor } from './chat.validator';
+
 export interface SendTextMessageInput {
   callerId: string;
   isVerified: boolean;
@@ -17,6 +20,32 @@ export interface SendTextMessageResult {
   createdAt: Date;
   remainingDailyMessages: number | null;
   recipientId: string;
+}
+
+export interface ListMessagesInput {
+  callerId: string;
+  isVerified: boolean;
+  conversationId: string;
+  limit: number;
+  cursor: HistoryCursor | null;
+}
+
+export interface HistoryMessage {
+  id: string;
+  conversationId: string;
+  senderId: string;
+  messageType: MessageType;
+  content: string | null;
+  mediaUrl: null;
+  readAt: Date | null;
+  createdAt: Date;
+}
+
+export interface ListMessagesResult {
+  items: HistoryMessage[];
+  nextCursor: string | null;
+  hasMore: boolean;
+  limit: number;
 }
 
 export interface ConversationMatchLookup {

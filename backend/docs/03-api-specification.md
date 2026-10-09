@@ -112,8 +112,9 @@ Live routes that require `Authorization: Bearer <accessToken>`:
 * `GET /api/v1/discovery`, `POST /api/v1/discovery/:userId/pass`, `POST /api/v1/discovery/:userId/like`, `POST /api/v1/discovery/:userId/super-like`, and `POST /api/v1/discovery/undo`.
 * `DELETE /api/v1/matches/:matchId`.
 * `POST /api/v1/conversations/:conversationId/messages`.
+* `GET /api/v1/conversations/:conversationId/messages`.
 
-Those profile, onboarding, photo, discovery, unmatch, and send-message routes also require role `USER`. `requireVerified` is not applied on the route. An unverified `USER` may call profile, onboarding, and photo routes. Discovery, PASS, LIKE, SUPER LIKE, UNDO, UNMATCH, and send message check verification in the service and return `403 EMAIL_NOT_VERIFIED` or `403 PHONE_NOT_VERIFIED`. Any other role, including `ADMIN`, receives `403 FORBIDDEN`. Suspended and banned accounts are rejected with `403` by the authentication middleware.
+Those profile, onboarding, photo, discovery, unmatch, and message routes also require role `USER`. `requireVerified` is not applied on the route. An unverified `USER` may call profile, onboarding, and photo routes. Discovery, PASS, LIKE, SUPER LIKE, UNDO, UNMATCH, send message, and message history check verification in the service and return `403 EMAIL_NOT_VERIFIED` or `403 PHONE_NOT_VERIFIED`. Any other role, including `ADMIN`, receives `403 FORBIDDEN`. Suspended and banned accounts are rejected with `403` by the authentication middleware.
 
 There is no live admin API yet. `requireRole('ADMIN')` exists for later routes.
 
@@ -209,7 +210,7 @@ All failed HTTP requests return a standardized, machine-parseable JSON error env
 | `PROFILE_ALREADY_EXISTS` | 409 | The authenticated user already has a profile. |
 | `INVALID_GENDER` | 400 | `genderId` is missing, unknown, or not an active gender. |
 | `MATCH_NOT_FOUND` | 404 | Active match record does not exist. UNMATCH uses this for a missing id, a match the caller does not belong to, a non-`ACTIVE` row, an already `UNMATCHED` row, an `UNDONE` row, and a concurrent request that already changed the row. Message: `Active match record does not exist.` |
-| `CONVERSATION_CLOSED` | 404 | Conversation is closed due to unmatch or safety block. Message: `Conversation is closed due to unmatch or safety block.` Used when a participant sends to a `CLOSED` conversation. A missing or foreign conversation uses `RESOURCE_NOT_FOUND` instead. |
+| `CONVERSATION_CLOSED` | 404 | Conversation is closed due to unmatch or safety block. Message: `Conversation is closed due to unmatch or safety block.` Used when a participant sends to a `CLOSED` conversation. A missing or foreign conversation uses `RESOURCE_NOT_FOUND` instead. Reading retained history does not use this code. |
 | `DUPLICATE_IDENTIFIER` | 409 | Email or phone is already registered to an active account. |
 | `SELF_INTERACTION` | 400 | The caller targeted their own user id. |
 | `INVALID_TARGET` | 404 | The target exists but is not an active, complete profile with a primary photo. |
@@ -232,7 +233,7 @@ All failed HTTP requests return a standardized, machine-parseable JSON error env
 ## 9. Pagination Strategy
 
 ### 9.1 Cursor-Based Pagination (Feeds & Infinite Streams)
-Planned for chat, notifications, and match lists. Live `GET /api/v1/discovery` returns one card and does not paginate.
+Live for `GET /api/v1/conversations/:conversationId/messages`. Still planned for notifications and match lists. Live `GET /api/v1/discovery` returns one card and does not paginate.
 * **Query Parameters:**
   * `limit`: Integer (Default: `20`, Max: `50`).
   * `cursor`: Base64-encoded string representing `(created_at, id)`.
@@ -1531,10 +1532,25 @@ Photo objects returned after confirm, list, and patch are `{ "id", "url", "displ
 ## 24. Message APIs
 
 ### 24.1 List Messages in a Conversation
+**Implemented (Phase 6 Slice 5).** Read-only history for an authorized participant. This route does not send a message, mark anything read, consume quota, or emit a Socket.IO event. Read receipts remain `PATCH /api/v1/conversations/:conversationId/read` and are not implemented.
+
 * **Method & Path:** `GET /api/v1/conversations/:conversationId/messages`
-* **Auth:** Authenticated
-* **Query Params:** `limit` (default 20), `cursor`
-* **Success Response (`200 OK`):**
+* **Auth:** `Authorization: Bearer <accessToken>` and role `USER`. Middleware is `authenticate`, `requireRole('USER')`, then query validation. `requireVerified` is not on the route. The service checks verification and returns `403 EMAIL_NOT_VERIFIED` or `403 PHONE_NOT_VERIFIED`. A non-`USER` role is `403 FORBIDDEN`.
+* **Incomplete caller:** `400 PROFILE_INCOMPLETE`, same discovery rule as send. Message: `Onboarding is incomplete.`
+* **Path `conversationId`:** required UUID. A bad value is `400 VALIDATION_ERROR`. Message: `Validation failed`. `details` is `[{ "field": "conversationId", "message": "Conversation id must be a valid UUID." }]`.
+* **Query `limit`:** optional integer from 1 through 50. Omitted means 20. `0`, negatives, values above 50, decimals, and non-integers are `400 VALIDATION_ERROR`. The value is not clamped. Detail field: `limit`. Message: `Limit must be an integer from 1 to 50.`
+* **Query `cursor`:** optional. It is the last message returned by the previous page. The value is canonical base64 of a JSON object `{ "createdAt": "<ISO-8601 date-time>", "id": "<message uuid>" }`. A bad encoding, non-JSON payload, missing field, invalid date-time, invalid message UUID, or extra cursor field is `400 VALIDATION_ERROR`. The cursor id does not have to exist.
+* **Unsupported query parameters:** `400 VALIDATION_ERROR`. Detail field is the parameter name. Message: `Unsupported query parameter.`
+* **Who can read:** either `user_one_id` or `user_two_id` on the match that backs the conversation.
+* **Not found:** `404 RESOURCE_NOT_FOUND`. Message: `Resource not found`. Covers a missing conversation id, a conversation whose match the caller does not belong to, and an `ACTIVE` conversation whose match is not `ACTIVE`. The response does not reveal whether the id exists.
+* **Closed conversation:** a participant may read retained messages when `conversations.status = 'CLOSED'`, including after unmatch or undo. The match does not have to stay `ACTIVE`. The route does not return `CONVERSATION_CLOSED` and does not reopen the conversation or match.
+* **Block:** either direction returns `409 BLOCKED_USER`, including when the conversation is `CLOSED`. Message: `Interaction prohibited due to an active safety block.`
+* **Other participant:** the route does not filter on the other account's status.
+* **Rows:** non-deleted messages for that conversation only, every stored `message_type`. Soft-deleted rows (`deleted_at` set) are omitted. There is no per-user hide list.
+* **Order:** `created_at DESC, id DESC`. `id` is a tie-break, not a timestamp. A cursor returns rows strictly older than `(createdAt, id)`: `created_at < cursor.createdAt OR (created_at = cursor.createdAt AND id < cursor.id)`.
+* **Page:** at most `limit` items. `hasMore` is true when another row exists. `nextCursor` is then the base64 cursor of the last returned item. Otherwise `nextCursor` is `null` and `hasMore` is false. An authorized conversation with no visible messages returns `items: []`.
+* **Read-only:** no insert, update, or delete. `read_at`, `deleted_at`, `last_message_at`, conversation status, match status, `usage_records`, and credits stay unchanged. No Socket.IO event is emitted. `media_storage_key` and other storage metadata are not returned. `mediaUrl` is `null` until a media URL resolver exists. `readAt` is the stored value. Items do not include `remainingDailyMessages`.
+* **Success Response (`200 OK`):** Message: `Messages retrieved.`
   ```json
   {
     "success": true,
@@ -1547,19 +1563,20 @@ Photo objects returned after confirm, list, and patch are `{ "id", "url", "displ
           "messageType": "TEXT",
           "content": "Hey Alex! How is your week going?",
           "mediaUrl": null,
-          "readAt": "2026-09-15T08:40:00.000Z",
+          "readAt": null,
           "createdAt": "2026-09-15T08:35:00.000Z"
         }
       ],
       "pagination": { "nextCursor": null, "hasMore": false, "limit": 20 }
-    }
+    },
+    "message": "Messages retrieved."
   }
   ```
 
 ---
 
 ### 24.2 Send a Message
-**Implemented (Phase 6 Slice 2 TEXT persistence + Slice 3 free text quota).** TEXT only. This HTTP route stays persistence-only. It does not emit `chat:message:new`. Realtime send and recipient delivery are `chat:message:send` / `chat:message:new` in section 32. Media types, history, and read receipts are not implemented.
+**Implemented (Phase 6 Slice 2 TEXT persistence + Slice 3 free text quota).** TEXT only. This HTTP route stays persistence-only. It does not emit `chat:message:new`. Realtime send and recipient delivery are `chat:message:send` / `chat:message:new` in section 32. History retrieval is section 24.1. Media types and read receipts are not implemented.
 
 * **Method & Path:** `POST /api/v1/conversations/:conversationId/messages`
 * **Auth:** `Authorization: Bearer <accessToken>` and role `USER`. Middleware is `authenticate` and `requireRole('USER')`. `requireVerified` is not on the route. The service checks verification and returns `403 EMAIL_NOT_VERIFIED` or `403 PHONE_NOT_VERIFIED`. A non-`USER` role is `403 FORBIDDEN`.

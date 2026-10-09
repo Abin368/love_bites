@@ -19,12 +19,13 @@ import {
   findConversationWithMatch,
   hasBidirectionalBlock,
   insertTextMessage,
+  listConversationMessages,
   lockConversationById,
   lockMatchById,
   updateConversationLastMessageAt
 } from './chat.data-access';
-import type { SendTextMessageInput, SendTextMessageResult } from './chat.types';
-import { conversationIdSchema } from './chat.validator';
+import type { HistoryMessage, ListMessagesInput, ListMessagesResult, SendTextMessageInput, SendTextMessageResult } from './chat.types';
+import { conversationIdSchema, encodeHistoryCursor } from './chat.validator';
 
 const RESOURCE_NOT_FOUND_MESSAGE = 'Resource not found';
 const CONVERSATION_CLOSED_MESSAGE = 'Conversation is closed due to unmatch or safety block.';
@@ -74,6 +75,27 @@ async function rejectUnverified(userId: string): Promise<never> {
 
 function incomplete(): ValidationError {
   return new ValidationError('Onboarding is incomplete.', [], 'PROFILE_INCOMPLETE');
+}
+
+function toHistoryMessage(message: {
+  id: string;
+  conversationId: string;
+  senderId: string;
+  messageType: HistoryMessage['messageType'];
+  content: string | null;
+  readAt: Date | null;
+  createdAt: Date;
+}): HistoryMessage {
+  return {
+    id: message.id,
+    conversationId: message.conversationId,
+    senderId: message.senderId,
+    messageType: message.messageType,
+    content: message.content,
+    mediaUrl: null,
+    readAt: message.readAt,
+    createdAt: message.createdAt
+  };
 }
 
 export async function sendTextMessage(input: SendTextMessageInput): Promise<SendTextMessageResult> {
@@ -145,4 +167,43 @@ export async function sendTextMessage(input: SendTextMessageInput): Promise<Send
       recipientId
     };
   });
+}
+
+export async function listMessages(input: ListMessagesInput): Promise<ListMessagesResult> {
+  const conversationId = parseConversationId(input.conversationId);
+
+  if (!input.isVerified) {
+    await rejectUnverified(input.callerId);
+  }
+
+  const context = await findViewerDiscoveryContext(input.callerId);
+  if (!context || !context.isProfileComplete || !context.hasLocation || !context.hasDatingPreferences) {
+    throw incomplete();
+  }
+
+  const loaded = await findConversationWithMatch(conversationId);
+  if (!loaded || !participates(loaded.userOneId, loaded.userTwoId, input.callerId)) {
+    throw resourceNotFound();
+  }
+
+  if (loaded.conversationStatus === 'ACTIVE' && loaded.matchStatus !== 'ACTIVE') {
+    throw resourceNotFound();
+  }
+
+  const recipientId = otherParticipant(loaded.userOneId, loaded.userTwoId, input.callerId);
+  if (await hasBidirectionalBlock(input.callerId, recipientId)) {
+    throw new ConflictError(BLOCKED_USER_MESSAGE, [], 'BLOCKED_USER');
+  }
+
+  const rows = await listConversationMessages(conversationId, input.limit + 1, input.cursor);
+  const hasMore = rows.length > input.limit;
+  const page = hasMore ? rows.slice(0, input.limit) : rows;
+  const last = page[page.length - 1];
+
+  return {
+    items: page.map(toHistoryMessage),
+    nextCursor: hasMore && last ? encodeHistoryCursor(last.createdAt, last.id) : null,
+    hasMore,
+    limit: input.limit
+  };
 }

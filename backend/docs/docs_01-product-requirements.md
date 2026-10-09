@@ -240,7 +240,7 @@ Reports are not a Discovery exclusion. Browsing candidate cards does not consume
 * **Mutual Matching:** Triggered when the new action is `LIKE` or `SUPER_LIKE` and the other user already has an active `LIKE` or `SUPER_LIKE`. A reciprocal `PASS` does not match.
   * The system inserts a `matches` row with `status = 'ACTIVE'` and canonical user order.
   * The system inserts one `conversations` row with `status = 'ACTIVE'`.
-  * TEXT send is implemented (`POST /api/v1/conversations/:conversationId/messages`). Inbox, history, quotas, media, and match notifications are not implemented.
+  * TEXT send is implemented (`POST /api/v1/conversations/:conversationId/messages`). Message history is implemented (`GET /api/v1/conversations/:conversationId/messages`). The free daily TEXT quota is implemented. Inbox, media, and match notifications are not implemented.
 * **Free quota:** A like consumes one of the 10 combined Like and Pass actions for the UTC day, unless the caller has Premium.
 
 #### Super Like
@@ -286,7 +286,8 @@ Reports are not a Discovery exclusion. Browsing candidate cards does not consume
 * **Live send path:** Either participant may send TEXT on an `ACTIVE` match with an `ACTIVE` conversation. Empty and whitespace-only content are accepted. Bidirectional blocks reject send. Closed conversations reject send.
 * **Free Tier Daily Quota:** Enforced at 20 sent text messages per UTC calendar day (`usage_records` metric `DAILY_TEXT_MESSAGES`). Premium callers have unlimited TEXT and do not consume that counter.
 * **Incoming Messages:** Received messages do **not** consume the receiver's daily sent quota.
-* **Unmatch Impact:** When a match is unmatched, the conversation becomes `CLOSED` immediately and further messages are blocked. The conversation and its messages stay in PostgreSQL. Unmatch does not delete likes.
+* **Unmatch Impact:** When a match is unmatched, the conversation becomes `CLOSED` immediately and further messages are blocked. The conversation and its messages stay in PostgreSQL. A participant can still read that retained history unless a safety block exists. Unmatch does not delete likes.
+* **History:** `GET /api/v1/conversations/:conversationId/messages` returns cursor-paginated messages for a participant. It does not mark messages read, consume the send quota, or emit a realtime event. Read receipts are not implemented.
 * **Realtime TEXT:** A connected client may send with Socket.IO `chat:message:send`. The server persists through the same rules as HTTP, acknowledges the sender, and emits `chat:message:new` only to the other participant's connected devices. HTTP send does not emit that event. An offline recipient keeps the PostgreSQL row and gets no replay. There is no conversation-room join and no send idempotency key.
 
 ---
@@ -483,4 +484,4 @@ The following parameter values are designated as **TBD** and must be populated v
 ## Document Status
 * **Status:** DRAFT
 * **Version:** 1.0
-* **Last Updated:** 9 October 2026. Discovery, pass, like, super like, undo, unmatch, HTTP TEXT send, free text quota, and Socket.IO TEXT send/receive match the implemented API. Media, history, inbox, rematch, who-liked-you, the match list, and payments remain product scope that is not yet implemented.
+* **Last Updated:** 9 October 2026. Discovery, pass, like, super like, undo, unmatch, HTTP TEXT send, free text quota, Socket.IO TEXT send/receive, and message history match the implemented API. Media, inbox, rematch, who-liked-you, the match list, read receipts, and payments remain product scope that is not yet implemented.

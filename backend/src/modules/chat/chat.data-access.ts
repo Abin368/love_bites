@@ -1,8 +1,9 @@
-import { QueryTypes, Transaction } from 'sequelize';
+import { literal, Op, QueryTypes, Transaction, WhereOptions } from 'sequelize';
 import { sequelize } from '../../config/database';
 import { Conversation } from '../../database/models/conversation.model';
-import { Message } from '../../database/models/message.model';
+import { Message, MessageAttributes } from '../../database/models/message.model';
 import type { ConversationMatchLookup } from './chat.types';
+import type { HistoryCursor } from './chat.validator';
 
 const CONVERSATION_MATCH_SQL = `
 SELECT
@@ -19,12 +20,12 @@ WHERE c.id = CAST(:conversationId AS uuid)
 
 export async function findConversationWithMatch(
   conversationId: string,
-  transaction: Transaction
+  transaction?: Transaction
 ): Promise<ConversationMatchLookup | null> {
   const rows = await sequelize.query<ConversationMatchLookup>(CONVERSATION_MATCH_SQL, {
     replacements: { conversationId },
     type: QueryTypes.SELECT,
-    transaction
+    ...(transaction ? { transaction } : {})
   });
   return rows[0] ?? null;
 }
@@ -60,7 +61,7 @@ export async function lockConversationById(conversationId: string, transaction: 
 export async function hasBidirectionalBlock(
   callerId: string,
   otherUserId: string,
-  transaction: Transaction
+  transaction?: Transaction
 ): Promise<boolean> {
   const rows = await sequelize.query<{ found: number }>(
     `SELECT 1 AS "found"
@@ -71,10 +72,41 @@ export async function hasBidirectionalBlock(
     {
       replacements: { callerId, otherUserId },
       type: QueryTypes.SELECT,
-      transaction
+      ...(transaction ? { transaction } : {})
     }
   );
   return rows.length > 0;
+}
+
+const HISTORY_CURSOR_PREDICATE = `(
+  "Message"."created_at" < CAST(:cursorCreatedAt AS timestamptz)
+  OR (
+    "Message"."created_at" = CAST(:cursorCreatedAt AS timestamptz)
+    AND "Message"."id" < CAST(:cursorId AS uuid)
+  )
+)`;
+
+export async function listConversationMessages(
+  conversationId: string,
+  limit: number,
+  cursor: HistoryCursor | null
+): Promise<Message[]> {
+  const where: WhereOptions<MessageAttributes> = cursor
+    ? {
+        conversationId,
+        [Op.and]: [literal(HISTORY_CURSOR_PREDICATE)]
+      }
+    : { conversationId };
+
+  return Message.findAll({
+    where,
+    order: [
+      ['createdAt', 'DESC'],
+      ['id', 'DESC']
+    ],
+    limit,
+    ...(cursor ? { replacements: { cursorCreatedAt: cursor.createdAt, cursorId: cursor.id } } : {})
+  });
 }
 
 export async function insertTextMessage(

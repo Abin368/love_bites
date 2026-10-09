@@ -1,6 +1,152 @@
+import { NextFunction, Request, Response } from 'express';
 import { z } from 'zod';
+import { ValidationError, type ErrorDetail } from '../../utils/errors';
 
 export const conversationIdSchema = z.string().uuid('Conversation id must be a valid UUID.');
+
+const HISTORY_LIMIT_MESSAGE = 'Limit must be an integer from 1 to 50.';
+const CURSOR_MALFORMED_MESSAGE = 'Cursor must be a base64-encoded JSON object with createdAt and id.';
+const CURSOR_TIME_MESSAGE = 'Cursor createdAt must be a valid date-time.';
+const CURSOR_ID_MESSAGE = 'Cursor id must be a valid UUID.';
+const CANONICAL_BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=|[A-Za-z0-9+/]{4})$/;
+const cursorIdSchema = z.string().uuid();
+const cursorDateTimeSchema = z.string().datetime({ offset: true });
+
+export interface HistoryCursor {
+  createdAt: string;
+  id: string;
+}
+
+export interface ListMessagesQuery {
+  limit: number;
+  cursor: HistoryCursor | null;
+}
+
+export function encodeHistoryCursor(createdAt: Date, id: string): string {
+  return Buffer.from(JSON.stringify({ createdAt: createdAt.toISOString(), id: id.toLowerCase() }), 'utf8').toString(
+    'base64'
+  );
+}
+
+function isCanonicalBase64(value: string): boolean {
+  if (!CANONICAL_BASE64.test(value)) {
+    return false;
+  }
+  return Buffer.from(value, 'base64').toString('base64') === value;
+}
+
+function parseLimit(value: unknown): { limit?: number; detail?: ErrorDetail } {
+  if (typeof value !== 'string' || !/^[1-9]\d*$/.test(value)) {
+    return { detail: { field: 'limit', message: HISTORY_LIMIT_MESSAGE } };
+  }
+  const limit = Number(value);
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 50) {
+    return { detail: { field: 'limit', message: HISTORY_LIMIT_MESSAGE } };
+  }
+  return { limit };
+}
+
+function parseCursor(value: unknown): { cursor?: HistoryCursor; details: ErrorDetail[] } {
+  if (typeof value !== 'string' || !isCanonicalBase64(value)) {
+    return { details: [{ field: 'cursor', message: CURSOR_MALFORMED_MESSAGE }] };
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(Buffer.from(value, 'base64').toString('utf8'));
+  } catch {
+    return { details: [{ field: 'cursor', message: CURSOR_MALFORMED_MESSAGE }] };
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { details: [{ field: 'cursor', message: CURSOR_MALFORMED_MESSAGE }] };
+  }
+
+  const record = parsed as Record<string, unknown>;
+  const details: ErrorDetail[] = [];
+  for (const key of Object.keys(record)) {
+    if (key !== 'createdAt' && key !== 'id') {
+      details.push({ field: `cursor.${key}`, message: 'Unsupported cursor field.' });
+    }
+  }
+
+  let createdAt: string | undefined;
+  if (!Object.prototype.hasOwnProperty.call(record, 'createdAt')) {
+    details.push({ field: 'cursor.createdAt', message: 'Cursor createdAt is required.' });
+  } else if (typeof record.createdAt !== 'string' || !cursorDateTimeSchema.safeParse(record.createdAt).success) {
+    details.push({ field: 'cursor.createdAt', message: CURSOR_TIME_MESSAGE });
+  } else {
+    const instant = new Date(record.createdAt);
+    if (Number.isNaN(instant.getTime())) {
+      details.push({ field: 'cursor.createdAt', message: CURSOR_TIME_MESSAGE });
+    } else {
+      createdAt = record.createdAt;
+    }
+  }
+
+  let id: string | undefined;
+  if (!Object.prototype.hasOwnProperty.call(record, 'id')) {
+    details.push({ field: 'cursor.id', message: 'Cursor id is required.' });
+  } else if (typeof record.id !== 'string' || !cursorIdSchema.safeParse(record.id).success) {
+    details.push({ field: 'cursor.id', message: CURSOR_ID_MESSAGE });
+  } else {
+    id = record.id.toLowerCase();
+  }
+
+  if (details.length > 0 || !createdAt || !id) {
+    return { details };
+  }
+
+  return { cursor: { createdAt, id }, details: [] };
+}
+
+export function parseListMessagesQuery(input: unknown): ListMessagesQuery {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw new ValidationError('Validation failed', [{ field: 'query', message: 'Query parameters are invalid.' }]);
+  }
+
+  const query = input as Record<string, unknown>;
+  const details: ErrorDetail[] = [];
+  for (const key of Object.keys(query)) {
+    if (key !== 'limit' && key !== 'cursor') {
+      details.push({ field: key, message: 'Unsupported query parameter.' });
+    }
+  }
+
+  let limit = 20;
+  if (Object.prototype.hasOwnProperty.call(query, 'limit')) {
+    const parsedLimit = parseLimit(query.limit);
+    if (parsedLimit.detail) {
+      details.push(parsedLimit.detail);
+    } else if (parsedLimit.limit !== undefined) {
+      limit = parsedLimit.limit;
+    }
+  }
+
+  let cursor: HistoryCursor | null = null;
+  if (Object.prototype.hasOwnProperty.call(query, 'cursor')) {
+    const parsedCursor = parseCursor(query.cursor);
+    details.push(...parsedCursor.details);
+    if (parsedCursor.cursor) {
+      cursor = parsedCursor.cursor;
+    }
+  }
+
+  if (details.length > 0) {
+    throw new ValidationError('Validation failed', details);
+  }
+
+  return { limit, cursor };
+}
+
+export function validateListMessagesQuery(req: Request, res: Response, next: NextFunction): void {
+  try {
+    res.locals.listMessagesQuery = parseListMessagesQuery(req.query);
+    next();
+  } catch (error) {
+    next(error);
+  }
+}
 
 export const sendTextMessageSchema = z
   .object({

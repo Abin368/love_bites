@@ -1,7 +1,8 @@
 import { Response } from 'express';
 import { asyncHandler } from '../../utils/async-handler';
 import * as chatService from './chat.service';
-import type { SendTextMessageBody } from './chat.validator';
+import type { HistoryMessage } from './chat.types';
+import type { ListMessagesQuery, SendTextMessageBody } from './chat.validator';
 
 function send(res: Response, status: number, data: unknown, message: string): void {
   res.status(status).json({ success: true, data, message });
@@ -32,5 +33,43 @@ export const sendTextMessage = asyncHandler(async (req, res) => {
       remainingDailyMessages: result.remainingDailyMessages
     },
     'Message sent.'
+  );
+});
+
+function historyItem(message: HistoryMessage) {
+  return {
+    id: message.id,
+    conversationId: message.conversationId,
+    senderId: message.senderId,
+    messageType: message.messageType,
+    content: message.content,
+    mediaUrl: message.mediaUrl,
+    readAt: message.readAt,
+    createdAt: message.createdAt
+  };
+}
+
+export const listMessages = asyncHandler(async (req, res) => {
+  const query = res.locals.listMessagesQuery as ListMessagesQuery;
+  const result = await chatService.listMessages({
+    callerId: req.user!.id,
+    isVerified: req.user!.isVerified,
+    conversationId: req.params.conversationId,
+    limit: query.limit,
+    cursor: query.cursor
+  });
+
+  send(
+    res,
+    200,
+    {
+      items: result.items.map(historyItem),
+      pagination: {
+        nextCursor: result.nextCursor,
+        hasMore: result.hasMore,
+        limit: result.limit
+      }
+    },
+    'Messages retrieved.'
   );
 });

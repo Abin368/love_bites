@@ -269,7 +269,7 @@ modules/likes/
 ```
 *Note: Optional files (e.g., `*.constants.ts`) should only be created when explicitly needed.*
 
-Implemented modules today are `auth`, `users`, `profiles`, `profile-photos`, `genders`, `interests`, `relationship-intentions`, `onboarding`, `discovery`, `likes`, and `chat`. Discovery routes mount the like, pass, super-like, and undo handlers. There is no `passes` table and no separate `likes.routes.ts`. Chat currently mounts only `POST /conversations/:conversationId/messages`. Notifications, safety, subscriptions, payments, entitlements, match list, and admin modules are not implemented as HTTP modules. Their tables exist from Phase 1.
+Implemented modules today are `auth`, `users`, `profiles`, `profile-photos`, `genders`, `interests`, `relationship-intentions`, `onboarding`, `discovery`, `likes`, and `chat`. Discovery routes mount the like, pass, super-like, and undo handlers. There is no `passes` table and no separate `likes.routes.ts`. Chat mounts `POST /conversations/:conversationId/messages` and `GET /conversations/:conversationId/messages`. Notifications, safety, subscriptions, payments, entitlements, match list, and admin modules are not implemented as HTTP modules. Their tables exist from Phase 1.
 
 ---
 
@@ -511,7 +511,7 @@ Historical `UNDONE` and `UNMATCHED` rows stay in place. `uq_matches_single_activ
 
 ## 16. Chat & Realtime Architecture
 
-**Phase 6 Slices 2–4 implement TEXT send over HTTP and Socket.IO with one shared service.** LIKE and SUPER LIKE create an `ACTIVE` conversation row. Undo or UNMATCH closes it. `POST /api/v1/conversations/:conversationId/messages` and `chat:message:send` both call `chat.service.sendTextMessage`, which authorizes the participant, enforces Free `DAILY_TEXT_MESSAGES` (20 / UTC day) or Premium unlimited, persists a `TEXT` message, and updates `last_message_at`. After the socket transaction commits, the server emits `chat:message:new` to `user:{recipientUserId}` only. The HTTP route does not emit that event. Media, history, conversation rooms, typing, and read receipts are not implemented.
+**Phase 6 Slices 2–5 implement TEXT send, realtime delivery, and message history.** LIKE and SUPER LIKE create an `ACTIVE` conversation row. Undo or UNMATCH closes it. `POST /api/v1/conversations/:conversationId/messages` and `chat:message:send` both call `chat.service.sendTextMessage`, which authorizes the participant, enforces Free `DAILY_TEXT_MESSAGES` (20 / UTC day) or Premium unlimited, persists a `TEXT` message, and updates `last_message_at`. After the socket transaction commits, the server emits `chat:message:new` to `user:{recipientUserId}` only. The HTTP send route does not emit that event. `GET /api/v1/conversations/:conversationId/messages` calls `chat.service.listMessages`. It is read-only, cursor-paginated, and does not emit a socket event. A closed conversation remains readable to a participant unless a block exists. Media, conversation rooms, typing, and read receipts are not implemented.
 
 ### Messaging Rules (live Slices 2–3)
 * Either participant of an `ACTIVE` match with an `ACTIVE` conversation can send TEXT.

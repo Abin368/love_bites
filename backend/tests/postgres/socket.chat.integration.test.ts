@@ -1022,4 +1022,41 @@ describe('Socket.IO chat:message:send', () => {
       process.off('unhandledRejection', onRejection);
     }
   });
+
+  it('does not emit a realtime event when message history is read', async () => {
+    if (!runtime) {
+      return;
+    }
+
+    const { caller, target, conversation } = await activeThread();
+    const now = new Date();
+    await Message.create({
+      conversationId: conversation.id,
+      senderId: caller.id,
+      messageType: 'TEXT',
+      content: 'Already stored',
+      mediaStorageKey: null,
+      mediaMimeType: null,
+      mediaFileSize: null,
+      readAt: null,
+      createdAt: now,
+      updatedAt: now
+    });
+    const callerSocket = await connectReady(caller.id);
+    const targetSocket = await connectReady(target.id);
+    const events: string[] = [];
+    callerSocket.onAny((event) => events.push(`caller:${event}`));
+    targetSocket.onAny((event) => events.push(`target:${event}`));
+
+    const response = await request(app)
+      .get(`/api/v1/conversations/${conversation.id}/messages`)
+      .set(authHeader(caller.id));
+    expect(response.status).toBe(200);
+    expect(response.body.data.items).toHaveLength(1);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(events).toEqual([]);
+    expect(callerSocket.connected).toBe(true);
+    expect(targetSocket.connected).toBe(true);
+    expect(await Message.count()).toBe(1);
+  });
 });

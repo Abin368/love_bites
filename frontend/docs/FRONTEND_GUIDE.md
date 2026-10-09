@@ -8,7 +8,7 @@ This is the frontend integration guide for Love Bite. It tells a frontend develo
 
 ## 1. Purpose
 
-Use this document to wire registration, verification, login, refresh, logout, password reset, the Phase 3 onboarding contract, and Phase 4 Discovery: public catalogs, the basic profile, photos, interests, relationship intentions, dating preferences, location, onboarding status, onboarding completion, and `GET /api/v1/discovery`. Phase 5 likes/matches and Phase 6 chat HTTP wiring are outside this guide’s current frontend scope. The backend supports `POST /api/v1/conversations/:conversationId/messages` for TEXT only with Free daily quota / Premium unlimited (`remainingDailyMessages`). That HTTP route does not emit a socket event. Socket.IO accepts `auth.token`, joins `user:{userId}`, and implements `chat:message:send` plus recipient-only `chat:message:new`. History and inbox are not available yet.
+Use this document to wire registration, verification, login, refresh, logout, password reset, the Phase 3 onboarding contract, and Phase 4 Discovery: public catalogs, the basic profile, photos, interests, relationship intentions, dating preferences, location, onboarding status, onboarding completion, and `GET /api/v1/discovery`. Phase 5 likes/matches and Phase 6 chat HTTP wiring are outside this guide’s current frontend scope. The backend supports `POST /api/v1/conversations/:conversationId/messages` for TEXT only with Free daily quota / Premium unlimited (`remainingDailyMessages`). That HTTP route does not emit a socket event. Socket.IO accepts `auth.token`, joins `user:{userId}`, and implements `chat:message:send` plus recipient-only `chat:message:new`. `GET /api/v1/conversations/:conversationId/messages` returns cursor-paginated history for a participant (`limit` default 20, max 50). A closed conversation stays readable. A block returns `409 BLOCKED_USER`. The history response message is `Messages retrieved.` Items include `mediaUrl: null` and do not include `remainingDailyMessages`. History does not emit a socket event. Inbox is not available yet.
 
 ---
 
@@ -45,8 +45,7 @@ Do not call these. Tables may exist in PostgreSQL, but there are no mounted rout
 - `GET /api/v1/profiles/me` and `GET /api/v1/profiles/:userId`
 - Likes
 - Matches
-- Conversations
-- Chat
+- Inbox (`GET /api/v1/conversations`)
 - Blocks
 - Reports
 - Notification APIs
