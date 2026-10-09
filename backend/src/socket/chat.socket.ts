@@ -6,6 +6,7 @@ import type { SendTextMessageResult } from '../modules/chat/chat.types';
 import { sendTextMessageEventSchema } from '../modules/chat/chat.validator';
 import { AppError, ErrorDetail, ForbiddenError, ValidationError } from '../utils/errors';
 import { logger } from '../utils/logger';
+import { activeSocketServer } from './socket.server';
 
 const USER_ROLE_MESSAGE = 'You do not have permission to perform this action.';
 const UNEXPECTED_ERROR_MESSAGE = 'An unexpected error occurred. Please try again later.';
@@ -179,6 +180,39 @@ async function handleChatMessageSend(socket: Socket, io: Server, payload: unknow
       userId: socket.data.user?.id
     });
     respond?.(unexpectedFailure());
+  }
+}
+
+export function deliverReadReceipt(input: {
+  conversationId: string;
+  readerId: string;
+  recipientId: string;
+  readAt: Date;
+}): void {
+  const io = activeSocketServer();
+  if (!io) {
+    return;
+  }
+
+  if (input.recipientId.toLowerCase() === input.readerId.toLowerCase()) {
+    logger.error('Refusing to deliver chat:message:read to the reader room', {
+      conversationId: input.conversationId
+    });
+    return;
+  }
+
+  try {
+    io.to(userRoom(input.recipientId)).emit('chat:message:read', {
+      conversationId: input.conversationId,
+      readerId: input.readerId,
+      readAt: input.readAt.toISOString()
+    });
+  } catch (error) {
+    logger.error('Failed to deliver chat:message:read', {
+      error: error instanceof Error ? error.message : 'Unknown error',
+      conversationId: input.conversationId,
+      recipientId: input.recipientId
+    });
   }
 }
 

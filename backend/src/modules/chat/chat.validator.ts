@@ -148,6 +148,31 @@ export function validateListMessagesQuery(req: Request, res: Response, next: Nex
   }
 }
 
+export const markReadBodySchema = z.object({}).strict();
+
+export function validateMarkReadRequest(req: Request, _res: Response, next: NextFunction): void {
+  try {
+    if (!req.query || typeof req.query !== 'object' || Array.isArray(req.query)) {
+      throw new ValidationError('Validation failed', [{ field: 'query', message: 'Query parameters are invalid.' }]);
+    }
+
+    const details: ErrorDetail[] = [];
+    for (const key of Object.keys(req.query)) {
+      details.push({ field: key, message: 'Unsupported query parameter.' });
+    }
+    if (details.length > 0) {
+      throw new ValidationError('Validation failed', details);
+    }
+
+    if (req.body === undefined) {
+      req.body = {};
+    }
+    next();
+  } catch (error) {
+    next(error);
+  }
+}
+
 export const sendTextMessageSchema = z
   .object({
     messageType: z.enum(['TEXT']),

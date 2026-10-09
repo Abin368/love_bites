@@ -189,6 +189,16 @@ function sendEvent(client: ClientSocket, payload: unknown): Promise<AckBody> {
   });
 }
 
+interface ReadReceiptEvent {
+  conversationId: string;
+  readerId: string;
+  readAt: string;
+}
+
+function markConversationRead(callerId: string, conversationId: string) {
+  return request(app).patch(`/api/v1/conversations/${conversationId}/read`).set(authHeader(callerId));
+}
+
 function waitForNewMessage(client: ClientSocket, timeoutMs = 5000): Promise<NewMessageEvent> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('chat:message:new timed out.')), timeoutMs);
@@ -1058,5 +1068,178 @@ describe('Socket.IO chat:message:send', () => {
     expect(callerSocket.connected).toBe(true);
     expect(targetSocket.connected).toBe(true);
     expect(await Message.count()).toBe(1);
+  });
+});
+
+describe('Socket.IO chat:message:read', () => {
+  beforeAll(async () => {
+    const reachable = await redisIsReachable();
+    if (!reachable) {
+      if (process.env.CI) {
+        throw new Error('Socket.IO chat tests require Redis. CI did not provide a reachable Redis at REDIS_URL.');
+      }
+      console.warn('Redis is not reachable, so Socket.IO chat tests were not executed.');
+      return;
+    }
+
+    httpServer = http.createServer(app);
+    runtime = await attachSocketServer(httpServer);
+    port = await listen(httpServer);
+  });
+
+  afterEach(() => {
+    for (const client of openClients) {
+      client.close();
+    }
+    openClients.length = 0;
+    jest.restoreAllMocks();
+  });
+
+  afterAll(async () => {
+    if (runtime) {
+      await closeSocketServer(runtime);
+      runtime = null;
+    }
+  });
+
+  it('emits chat:message:read only to the other participant after the read is committed', async () => {
+    if (!runtime) {
+      return;
+    }
+
+    const { caller, target, conversation } = await activeThread();
+    const now = new Date();
+    const message = await Message.create({
+      conversationId: conversation.id,
+      senderId: target.id,
+      messageType: 'TEXT',
+      content: 'Unread',
+      mediaStorageKey: null,
+      mediaMimeType: null,
+      mediaFileSize: null,
+      readAt: null,
+      createdAt: now,
+      updatedAt: now
+    });
+    const reader = await connectReady(caller.id);
+    const recipient = await connectReady(target.id);
+    let readerSawEvent = false;
+    reader.on('chat:message:read', () => {
+      readerSawEvent = true;
+    });
+    let readAtDuringEvent: string | null = null;
+    const incoming = new Promise<ReadReceiptEvent>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('chat:message:read timed out.')), 5000);
+      recipient.once('chat:message:read', (body: ReadReceiptEvent) => {
+        clearTimeout(timer);
+        void Message.findByPk(message.id).then((stored) => {
+          readAtDuringEvent = stored?.readAt?.toISOString() ?? null;
+          resolve(body);
+        });
+      });
+    });
+
+    const response = await markConversationRead(caller.id, conversation.id);
+    const event = await incoming;
+    expect(response.status).toBe(200);
+    expect(event).toEqual({
+      conversationId: conversation.id,
+      readerId: caller.id,
+      readAt: response.body.data.readAt
+    });
+    expect(readAtDuringEvent).toBe(event.readAt);
+    expect(readerSawEvent).toBe(false);
+    const stored = await Message.findByPk(message.id);
+    expect(stored?.readAt?.toISOString()).toBe(event.readAt);
+  });
+
+  it('does not emit when nothing is newly marked, or when the request is rejected', async () => {
+    if (!runtime) {
+      return;
+    }
+
+    const empty = await activeThread();
+    const emptyReader = await connectReady(empty.caller.id);
+    const emptyRecipient = await connectReady(empty.target.id);
+    const emptyEvents: string[] = [];
+    emptyReader.onAny((event) => emptyEvents.push(`reader:${event}`));
+    emptyRecipient.onAny((event) => emptyEvents.push(`recipient:${event}`));
+    const emptyResponse = await markConversationRead(empty.caller.id, empty.conversation.id);
+    expect(emptyResponse.status).toBe(200);
+    expect(emptyResponse.body.data.readAt).toBeNull();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(emptyEvents).toEqual([]);
+
+    const blocked = await activeThread();
+    const now = new Date();
+    await Message.create({
+      conversationId: blocked.conversation.id,
+      senderId: blocked.target.id,
+      messageType: 'TEXT',
+      content: 'Blocked',
+      mediaStorageKey: null,
+      mediaMimeType: null,
+      mediaFileSize: null,
+      readAt: null,
+      createdAt: now,
+      updatedAt: now
+    });
+    await Block.create({
+      blockerId: blocked.caller.id,
+      blockedId: blocked.target.id,
+      reason: null,
+      createdAt: new Date()
+    });
+    const blockedReader = await connectReady(blocked.caller.id);
+    const blockedRecipient = await connectReady(blocked.target.id);
+    const blockedEvents: string[] = [];
+    blockedReader.onAny((event) => blockedEvents.push(event));
+    blockedRecipient.onAny((event) => blockedEvents.push(event));
+    const blockedResponse = await markConversationRead(blocked.caller.id, blocked.conversation.id);
+    expect(blockedResponse.status).toBe(409);
+    expect(blockedResponse.body.error.code).toBe('BLOCKED_USER');
+
+    const invalid = await request(app)
+      .patch(`/api/v1/conversations/${blocked.conversation.id}/read`)
+      .set({ Authorization: 'Bearer not-a-token' });
+    expect(invalid.status).toBe(401);
+
+    const malformed = await markConversationRead(blocked.caller.id, 'not-a-uuid');
+    expect(malformed.status).toBe(400);
+    expect(malformed.body.error.code).toBe('VALIDATION_ERROR');
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(blockedEvents.filter((event) => event === 'chat:message:read')).toEqual([]);
+    const stored = await Message.findOne({ where: { conversationId: blocked.conversation.id } });
+    expect(stored?.readAt).toBeNull();
+  });
+
+  it('keeps the committed read when socket delivery throws', async () => {
+    if (!runtime) {
+      return;
+    }
+
+    const { caller, target, conversation } = await activeThread();
+    const now = new Date();
+    const message = await Message.create({
+      conversationId: conversation.id,
+      senderId: target.id,
+      messageType: 'TEXT',
+      content: 'Still read',
+      mediaStorageKey: null,
+      mediaMimeType: null,
+      mediaFileSize: null,
+      readAt: null,
+      createdAt: now,
+      updatedAt: now
+    });
+    jest.spyOn(runtime.io, 'to').mockImplementation(() => {
+      throw new Error('socket delivery failed');
+    });
+
+    const response = await markConversationRead(caller.id, conversation.id);
+    expect(response.status).toBe(200);
+    expect(typeof response.body.data.readAt).toBe('string');
+    const stored = await Message.findByPk(message.id);
+    expect(stored?.readAt?.toISOString()).toBe(response.body.data.readAt);
   });
 });

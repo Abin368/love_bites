@@ -1532,7 +1532,7 @@ Photo objects returned after confirm, list, and patch are `{ "id", "url", "displ
 ## 24. Message APIs
 
 ### 24.1 List Messages in a Conversation
-**Implemented (Phase 6 Slice 5).** Read-only history for an authorized participant. This route does not send a message, mark anything read, consume quota, or emit a Socket.IO event. Read receipts remain `PATCH /api/v1/conversations/:conversationId/read` and are not implemented.
+**Implemented (Phase 6 Slice 5).** Read-only history for an authorized participant. This route does not send a message, mark anything read, consume quota, or emit a Socket.IO event. Marking messages read is `PATCH /api/v1/conversations/:conversationId/read` in section 24.3.
 
 * **Method & Path:** `GET /api/v1/conversations/:conversationId/messages`
 * **Auth:** `Authorization: Bearer <accessToken>` and role `USER`. Middleware is `authenticate`, `requireRole('USER')`, then query validation. `requireVerified` is not on the route. The service checks verification and returns `403 EMAIL_NOT_VERIFIED` or `403 PHONE_NOT_VERIFIED`. A non-`USER` role is `403 FORBIDDEN`.
@@ -1576,7 +1576,7 @@ Photo objects returned after confirm, list, and patch are `{ "id", "url", "displ
 ---
 
 ### 24.2 Send a Message
-**Implemented (Phase 6 Slice 2 TEXT persistence + Slice 3 free text quota).** TEXT only. This HTTP route stays persistence-only. It does not emit `chat:message:new`. Realtime send and recipient delivery are `chat:message:send` / `chat:message:new` in section 32. History retrieval is section 24.1. Media types and read receipts are not implemented.
+**Implemented (Phase 6 Slice 2 TEXT persistence + Slice 3 free text quota).** TEXT only. This HTTP route stays persistence-only. It does not emit `chat:message:new`. Realtime send and recipient delivery are `chat:message:send` / `chat:message:new` in section 32. History retrieval is section 24.1. Read receipts are section 24.3. Media types are not implemented.
 
 * **Method & Path:** `POST /api/v1/conversations/:conversationId/messages`
 * **Auth:** `Authorization: Bearer <accessToken>` and role `USER`. Middleware is `authenticate` and `requireRole('USER')`. `requireVerified` is not on the route. The service checks verification and returns `403 EMAIL_NOT_VERIFIED` or `403 PHONE_NOT_VERIFIED`. A non-`USER` role is `403 FORBIDDEN`.
@@ -1617,9 +1617,35 @@ Photo objects returned after confirm, list, and patch are `{ "id", "url", "displ
 ---
 
 ### 24.3 Mark Conversation Messages as Read
+**Implemented (Phase 6 Slice 6).** Marks the caller's unread incoming messages in one conversation. This route does not send a message, consume quota, change conversation or match status, or join a conversation room. There is no client Socket.IO command for this action.
+
 * **Method & Path:** `PATCH /api/v1/conversations/:conversationId/read`
-* **Auth:** Authenticated
-* **Success Response (`200 OK`):** Updates `read_at = CURRENT_TIMESTAMP` for unread messages and emits `chat:message:read` Socket.IO event.
+* **Auth:** `Authorization: Bearer <accessToken>` and role `USER`. Middleware is `authenticate`, `requireRole('USER')`, then empty-request validation. `requireVerified` is not on the route. The service checks verification and returns `403 EMAIL_NOT_VERIFIED` or `403 PHONE_NOT_VERIFIED`. A non-`USER` role is `403 FORBIDDEN`.
+* **Incomplete caller:** `400 PROFILE_INCOMPLETE`, same discovery rule as history. Message: `Onboarding is incomplete.`
+* **Path `conversationId`:** required UUID. A bad value is `400 VALIDATION_ERROR`. Message: `Validation failed`. `details` is `[{ "field": "conversationId", "message": "Conversation id must be a valid UUID." }]`.
+* **Body:** none. An omitted body or `{}` is accepted. A non-empty JSON object is `400 VALIDATION_ERROR`. Malformed JSON is `400 VALIDATION_ERROR` with message `Invalid JSON payload structure`.
+* **Query:** none. Any query parameter is `400 VALIDATION_ERROR`. Detail field is the parameter name. Message: `Unsupported query parameter.`
+* **Idempotency-Key:** not read and not written.
+* **Who can mark read:** either `user_one_id` or `user_two_id` on the match that backs the conversation. The same rules as section 24.1 apply.
+* **Not found:** `404 RESOURCE_NOT_FOUND`. Message: `Resource not found`. Covers a missing conversation id, a conversation whose match the caller does not belong to, and an `ACTIVE` conversation whose match is not `ACTIVE`. The response does not reveal whether the id exists.
+* **Closed conversation:** a participant may mark retained incoming messages when `conversations.status = 'CLOSED'`, including after unmatch or undo, unless a block exists. The route does not return `CONVERSATION_CLOSED` and does not reopen the conversation or match.
+* **Block:** either direction returns `409 BLOCKED_USER`, including when the conversation is `CLOSED`. Message: `Interaction prohibited due to an active safety block.` The block check is not skipped for a closed conversation.
+* **Other participant:** the route does not filter on the other account's status.
+* **Rows updated:** non-deleted messages in this conversation whose `sender_id` is the other participant and whose `read_at` is null. Every stored `message_type` is included. The caller's own messages stay unchanged. Messages that already have `read_at` keep that timestamp. Soft-deleted rows and rows in other conversations stay unchanged.
+* **Timestamp:** one `UPDATE` sets `read_at` and `updated_at` to PostgreSQL `CURRENT_TIMESTAMP` on only the rows that match. Every newly marked row in that call shares that database timestamp. The value is not an application clock time.
+* **No eligible rows:** still `200 OK` with `readAt: null`. Nothing is written and no Socket.IO event is emitted.
+* **Repeat:** a second call is a no-op. It returns `readAt: null` and does not overwrite the timestamp from the first call.
+* **Unchanged:** message content, sender, type, `created_at`, and `deleted_at`. `conversations.last_message_at`, status, `closed_at`, and `updated_at`. Match status and likes. `usage_records`, including `DAILY_TEXT_MESSAGES`. Credits and `credit_transactions`. No new message, notification, or Redis key.
+* **Realtime:** after the transaction commits, and only when at least one row was newly marked, the server emits `chat:message:read` to `user:{otherParticipantId}`. The reader's own room does not receive it. Conversation rooms are not joined. If Socket.IO is not running, the HTTP request still succeeds. A delivery error after commit does not roll back `read_at` and does not change the `200` response. See section 32.1.
+* **Success Response (`200 OK`):** Message: `Messages marked as read.`
+  ```json
+  {
+    "success": true,
+    "data": { "readAt": "2026-10-09T15:19:00.123Z" },
+    "message": "Messages marked as read."
+  }
+  ```
+  `readAt` is the UTC timestamp stored on the newly marked rows, or `null` when no row was newly marked. The body does not include a count, message ids, quota, or conversation status.
 
 ---
 
@@ -1946,7 +1972,7 @@ Photo objects returned after confirm, list, and patch are `{ "id", "url", "displ
 
 ## 32. Realtime / Socket.IO Events Specification
 
-**Phase 6 Slices 1 and 4 are implemented for the socket foundation and TEXT send/receive.** Socket.IO is attached to the Express HTTP server with `@socket.io/redis-adapter`. `chat:message:send` persists through `chat.service.sendTextMessage` and then emits `chat:message:new` to the recipient user room. HTTP `POST /api/v1/conversations/:conversationId/messages` does not emit that event. Conversation rooms are not joined. `DELETE /api/v1/matches/:matchId` still does not emit `match:unmatch`.
+**Phase 6 Slices 1, 4, and 6 cover the socket foundation, TEXT send/receive, and read receipts.** Socket.IO is attached to the Express HTTP server with `@socket.io/redis-adapter`. `chat:message:send` persists through `chat.service.sendTextMessage` and then emits `chat:message:new` to the recipient user room. HTTP `POST /api/v1/conversations/:conversationId/messages` does not emit that event. `PATCH /api/v1/conversations/:conversationId/read` emits `chat:message:read` to the other participant's user room after commit, and only when at least one incoming message was newly marked. Conversation rooms are not joined. `DELETE /api/v1/matches/:matchId` still does not emit `match:unmatch`. HTTP routes keep working when Socket.IO did not start.
 
 ### 32.0 Implemented foundation
 * **Handshake:** Client connects with `auth: { token: "<access JWT>" }`. The token is the same access JWT used by HTTP `Authorization: Bearer`. Refresh tokens are not accepted.
@@ -1954,7 +1980,7 @@ Photo objects returned after confirm, list, and patch are `{ "id", "url", "displ
 * **Socket identity:** Successful handshakes store the live `AuthenticatedUser` on `socket.data.user`. `chat:message:send` uses `socket.data.user.id` as the sender. Unverified or incomplete profiles may connect. The send path reloads the user before it calls the chat service.
 * **User room:** On connect the server joins exactly `user:{userId}` from `socket.data.user.id`. The client cannot choose the room. Conversation rooms are not joined, and there is no conversation-room join event.
 * **Redis:** Socket.IO requires Redis for the adapter. Production fails startup if Redis or the adapter cannot initialize. Development can keep serving HTTP without Socket.IO when Redis is unavailable. Redis is not a message store, a quota store, or a chat idempotency store.
-* **Not in this slice:** No typing events, no read receipts, no conversation-room join, no media uploads, no offline replay, and no notification or match socket emissions.
+* **Not in this slice:** No typing events, no client `chat:message:read` command, no conversation-room join, no media uploads, no offline replay, and no notification or match socket emissions. Read receipts are the HTTP route in section 24.3. That route emits the server event below. It does not add a client listener.
 
 ### 32.1 Server $\rightarrow$ Client Events
 | Event Name | Room / Target | Payload Structure | Trigger Condition | Status |
@@ -1962,14 +1988,14 @@ Photo objects returned after confirm, list, and patch are `{ "id", "url", "displ
 | `match:new` | `user:{userId}` | `{"matchId": "...", "matchedUser": { "id": "...", "firstName": "Jordan", "photos": [...] }, "matchedAt": "..."}` | Reciprocal like establishes active match. | Planned |
 | `match:unmatch` | `user:{userId}` | `{"matchId": "...", "conversationId": "..."}` | Participant unmatches or block is triggered. | Planned |
 | `chat:message:new` | `user:{recipientUserId}` | `{"id": "...", "conversationId": "...", "senderId": "...", "messageType": "TEXT", "content": "...", "createdAt": "..."}` | `chat:message:send` committed a TEXT message. Recipient sockets only. | Implemented |
-| `chat:message:read`| `conversation:{id}`| `{"conversationId": "...", "readerId": "...", "readAt": "..."}` | Participant opens active conversation. | Planned |
+| `chat:message:read`| `user:{otherParticipantId}`| `{"conversationId": "...", "readerId": "...", "readAt": "..."}` | `PATCH /conversations/:conversationId/read` committed at least one newly read incoming message. The other participant's sockets only. Not emitted when no row changed, or when the request fails. | Implemented |
 | `notification:new` | `user:{userId}` | `{"id": "notif-1", "type": "NEW_LIKE", "title": "New Like!", "message": "Someone liked you!"}` | System notification dispatched. | Planned |
 
 ### 32.2 Client $\rightarrow$ Server Events
 | Event Name | Payload Structure | Description | Status |
 | :--- | :--- | :--- | :--- |
 | `chat:message:send` | `{"conversationId": "...", "messageType": "TEXT", "content": "..."}` | Client sends a TEXT message. Acknowledgement carries the result. See section 32.3. | Implemented |
-| `chat:message:read` | `{"conversationId": "..."}` | Client marks incoming messages as read. | Planned |
+| `chat:message:read` | `{"conversationId": "..."}` | Client command that would mark incoming messages as read. Not implemented. Use `PATCH /api/v1/conversations/:conversationId/read`. | Planned |
 | `chat:typing:start` | `{"conversationId": "..."}` | Client begins typing in active match. | Planned |
 | `chat:typing:stop` | `{"conversationId": "..."}` | Client stops typing. | Planned |
 
@@ -2008,7 +2034,7 @@ The listener is registered only after handshake authentication and the `user:{us
 1. **Implemented client mutating APIs** that accept an optional `Idempotency-Key: <UUIDv4>` header:
    * `POST /api/v1/discovery/:userId/like` — Redis key `idempotency:<callerId>:<key>`.
    * `POST /api/v1/discovery/:userId/super-like` — Redis key `idempotency:<callerId>:super-like:<key>`.
-2. **Not used:** `POST /api/v1/discovery/:userId/pass`, `POST /api/v1/discovery/undo`, `DELETE /api/v1/matches/:matchId`, `POST /api/v1/conversations/:conversationId/messages`, and Socket.IO `chat:message:send` do not read an idempotency key and do not write one. Each accepted TEXT send inserts a new message. A second unmatch is `404 MATCH_NOT_FOUND`.
+2. **Not used:** `POST /api/v1/discovery/:userId/pass`, `POST /api/v1/discovery/undo`, `DELETE /api/v1/matches/:matchId`, `POST /api/v1/conversations/:conversationId/messages`, `PATCH /api/v1/conversations/:conversationId/read`, and Socket.IO `chat:message:send` do not read an idempotency key and do not write one. Each accepted TEXT send inserts a new message. A second unmatch is `404 MATCH_NOT_FOUND`. A repeated read-receipt call is a no-op because it updates only rows whose `read_at` is null. It does not use Redis.
 3. **Planned:** `POST /api/v1/payments/checkout`.
 4. **Execution flow for LIKE and SUPER LIKE:**
    * A stored JSON success is returned without another write.
@@ -2063,6 +2089,7 @@ Rate limits are enforced using Redis sliding-window algorithms:
 | **Unmatch** (`DELETE /matches/:matchId`, implemented) | `matches`, `conversations`. Does not change `likes`, `messages`, `usage_records`, credits, or Redis. |
 | **Matches list** | `matches`, `conversations`. `GET /matches` is not mounted. |
 | **Messages** (`POST /conversations/:conversationId/messages` and `chat:message:send`, implemented) | `messages`, `conversations`, `matches`, `users`, `blocks`, `usage_records`, `subscriptions`, `plans`. The Redis adapter delivers `chat:message:new` only. Redis does not store the message or the text quota. No `notifications` row is written. |
+| **Read receipts** (`PATCH /conversations/:conversationId/read`, implemented) | `messages` only. Sets `read_at` and `updated_at` to `CURRENT_TIMESTAMP` on unread incoming rows from the other participant. Does not change `conversations`, matches, likes, `usage_records`, or credits. No notification row and no Redis idempotency key. The Redis adapter delivers `chat:message:read` to `user:{otherParticipantId}` only after commit, and only when at least one row changed. |
 | **Safety** (`/blocks`, `/reports`) | `blocks`, `reports` |
 | **Notifications** | `notifications` |
 | **Subscriptions & Plans** | `plans`, `features`, `plan_features`, `subscriptions`, `usage_limits` |

@@ -48,6 +48,19 @@ export interface ListMessagesResult {
   limit: number;
 }
 
+export interface MarkMessagesReadInput {
+  callerId: string;
+  isVerified: boolean;
+  conversationId: string;
+}
+
+export interface MarkMessagesReadResult {
+  conversationId: string;
+  readerId: string;
+  recipientId: string;
+  readAt: Date | null;
+}
+
 export interface ConversationMatchLookup {
   conversationId: string;
   conversationStatus: string;

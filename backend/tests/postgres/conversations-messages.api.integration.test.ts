@@ -227,6 +227,11 @@ function listMessages(
   return query ? pending.query(query) : pending;
 }
 
+function markRead(callerId: string, conversationId: string, body?: unknown) {
+  const pending = request(app).patch(`/api/v1/conversations/${conversationId}/read`).set(authHeader(callerId));
+  return body === undefined ? pending : pending.send(body);
+}
+
 async function insertHistoryMessage(input: {
   conversationId: string;
   senderId: string;
@@ -1481,5 +1486,518 @@ describe('GET /api/v1/conversations/:conversationId/messages', () => {
     const stored = await Message.findByPk(message.id);
     expect(stored?.readAt?.toISOString()).toBe(readAt.toISOString());
     expect(stored?.deletedAt).toBeNull();
+  });
+});
+
+describe('PATCH /api/v1/conversations/:conversationId/read', () => {
+  it('marks unread incoming TEXT and non-TEXT messages with one database timestamp', async () => {
+    const { caller, target, conversation } = await activeThread();
+    const older = new Date('2026-10-09T10:00:00.000Z');
+    const newer = new Date('2026-10-09T10:05:00.000Z');
+    const own = await insertHistoryMessage({
+      conversationId: conversation.id,
+      senderId: caller.id,
+      content: 'mine',
+      createdAt: older
+    });
+    const text = await insertHistoryMessage({
+      conversationId: conversation.id,
+      senderId: target.id,
+      content: 'hello',
+      createdAt: older
+    });
+    const image = await insertHistoryMessage({
+      conversationId: conversation.id,
+      senderId: target.id,
+      content: null,
+      createdAt: newer,
+      messageType: 'IMAGE',
+      mediaStorageKey: `private/${randomUUID()}/photo`
+    });
+
+    const response = await markRead(caller.id, conversation.id);
+    expect(response.status).toBe(200);
+    expect(response.body.message).toBe('Messages marked as read.');
+    expect(response.body.success).toBe(true);
+    expect(typeof response.body.data.readAt).toBe('string');
+
+    const storedText = await Message.findByPk(text.id);
+    const storedImage = await Message.findByPk(image.id);
+    const storedOwn = await Message.findByPk(own.id);
+    expect(storedText?.readAt).toBeInstanceOf(Date);
+    expect(storedImage?.readAt?.toISOString()).toBe(storedText?.readAt?.toISOString());
+    expect(storedText?.updatedAt.toISOString()).toBe(storedText?.readAt?.toISOString());
+    expect(storedImage?.updatedAt.toISOString()).toBe(storedText?.readAt?.toISOString());
+    expect(response.body.data.readAt).toBe(storedText?.readAt?.toISOString());
+    expect(storedOwn?.readAt).toBeNull();
+    expect(storedOwn?.updatedAt.toISOString()).toBe(older.toISOString());
+    expect(storedText?.content).toBe('hello');
+    expect(storedText?.createdAt.toISOString()).toBe(older.toISOString());
+    expect(storedText?.deletedAt).toBeNull();
+    expect(storedImage?.messageType).toBe('IMAGE');
+  });
+
+  it('keeps an existing read timestamp and treats a repeat as a no-op', async () => {
+    const { caller, target, conversation } = await activeThread();
+    const original = new Date('2026-10-09T09:00:00.000Z');
+    const createdAt = new Date('2026-10-09T08:00:00.000Z');
+    const already = await insertHistoryMessage({
+      conversationId: conversation.id,
+      senderId: target.id,
+      content: 'seen',
+      createdAt,
+      readAt: original
+    });
+    const unread = await insertHistoryMessage({
+      conversationId: conversation.id,
+      senderId: target.id,
+      content: 'new',
+      createdAt: new Date('2026-10-09T08:05:00.000Z')
+    });
+
+    const first = await markRead(caller.id, conversation.id);
+    expect(first.status).toBe(200);
+    const markedAt = first.body.data.readAt as string;
+    const storedAlready = await Message.findByPk(already.id);
+    const storedUnread = await Message.findByPk(unread.id);
+    expect(storedAlready?.readAt?.toISOString()).toBe(original.toISOString());
+    expect(storedAlready?.updatedAt.toISOString()).toBe(createdAt.toISOString());
+    expect(storedUnread?.readAt?.toISOString()).toBe(markedAt);
+
+    const second = await markRead(caller.id, conversation.id);
+    expect(second.status).toBe(200);
+    expect(second.body).toEqual({
+      success: true,
+      data: { readAt: null },
+      message: 'Messages marked as read.'
+    });
+    const afterAlready = await Message.findByPk(already.id);
+    const afterUnread = await Message.findByPk(unread.id);
+    expect(afterAlready?.readAt?.toISOString()).toBe(original.toISOString());
+    expect(afterUnread?.readAt?.toISOString()).toBe(markedAt);
+  });
+
+  it('returns readAt null when there are no unread incoming messages', async () => {
+    const { caller, conversation } = await activeThread();
+    await insertHistoryMessage({
+      conversationId: conversation.id,
+      senderId: caller.id,
+      content: 'only mine',
+      createdAt: new Date('2026-10-09T10:00:00.000Z')
+    });
+
+    const response = await markRead(caller.id, conversation.id);
+    expect(response.status).toBe(200);
+    expect(response.body.data).toEqual({ readAt: null });
+    expect(await Message.findAll()).toEqual(
+      expect.arrayContaining([expect.objectContaining({ readAt: null, senderId: caller.id })])
+    );
+    expect((await Message.findAll()).every((row) => row.readAt === null)).toBe(true);
+  });
+
+  it('excludes soft-deleted messages and leaves another conversation unchanged', async () => {
+    const first = await activeThread();
+    const second = await activeThread();
+    const kept = await insertHistoryMessage({
+      conversationId: first.conversation.id,
+      senderId: first.target.id,
+      content: 'kept',
+      createdAt: new Date('2026-10-09T10:00:00.000Z')
+    });
+    const removed = await insertHistoryMessage({
+      conversationId: first.conversation.id,
+      senderId: first.target.id,
+      content: 'removed',
+      createdAt: new Date('2026-10-09T10:01:00.000Z')
+    });
+    await removed.destroy();
+    const other = await insertHistoryMessage({
+      conversationId: second.conversation.id,
+      senderId: second.target.id,
+      content: 'elsewhere',
+      createdAt: new Date('2026-10-09T10:02:00.000Z')
+    });
+
+    const response = await markRead(first.caller.id, first.conversation.id);
+    expect(response.status).toBe(200);
+    expect(response.body.data.readAt).toEqual(expect.any(String));
+
+    const storedKept = await Message.findByPk(kept.id);
+    const storedRemoved = await Message.findByPk(removed.id, { paranoid: false });
+    const storedOther = await Message.findByPk(other.id);
+    expect(storedKept?.readAt?.toISOString()).toBe(response.body.data.readAt);
+    expect(storedRemoved?.readAt).toBeNull();
+    expect(storedRemoved?.deletedAt).toBeInstanceOf(Date);
+    expect(storedRemoved?.content).toBe('removed');
+    expect(storedOther?.readAt).toBeNull();
+  });
+
+  it('hides unknown, foreign, and inconsistent conversations', async () => {
+    const { caller, target, genderId, conversation } = await activeThread();
+    const outsider = await buildUser({ genderId, point: north(3) });
+    await insertHistoryMessage({
+      conversationId: conversation.id,
+      senderId: target.id,
+      content: 'hidden',
+      createdAt: new Date('2026-10-09T10:00:00.000Z')
+    });
+
+    const missing = await markRead(caller.id, randomUUID());
+    expect(missing.status).toBe(404);
+    expect(missing.body.error.code).toBe('RESOURCE_NOT_FOUND');
+    expect(missing.body.error.message).toBe('Resource not found');
+
+    const foreign = await markRead(outsider.id, conversation.id);
+    expect(foreign.status).toBe(404);
+    expect(foreign.body.error.code).toBe('RESOURCE_NOT_FOUND');
+    expect(foreign.body.error.message).toBe('Resource not found');
+
+    const inactiveMatch = await insertMatch(caller.id, target.id, 'UNMATCHED');
+    const inconsistent = await insertConversation(inactiveMatch.id, 'ACTIVE', null, null);
+    await insertHistoryMessage({
+      conversationId: inconsistent.id,
+      senderId: target.id,
+      content: 'inconsistent',
+      createdAt: new Date('2026-10-09T10:02:00.000Z')
+    });
+    const hidden = await markRead(caller.id, inconsistent.id);
+    expect(hidden.status).toBe(404);
+    expect(hidden.body.error.code).toBe('RESOURCE_NOT_FOUND');
+    expect((await Message.findAll()).every((row) => row.readAt === null)).toBe(true);
+  });
+
+  it('rejects a block in either direction, including after the conversation is closed', async () => {
+    const outgoing = await activeThread();
+    await insertHistoryMessage({
+      conversationId: outgoing.conversation.id,
+      senderId: outgoing.caller.id,
+      content: 'from caller',
+      createdAt: new Date('2026-10-09T10:00:00.000Z')
+    });
+    await Block.create({
+      blockerId: outgoing.caller.id,
+      blockedId: outgoing.target.id,
+      reason: null,
+      createdAt: new Date()
+    });
+    const callerBlocked = await markRead(outgoing.target.id, outgoing.conversation.id);
+    expect(callerBlocked.status).toBe(409);
+    expect(callerBlocked.body.error.code).toBe('BLOCKED_USER');
+    expect(callerBlocked.body.error.message).toBe('Interaction prohibited due to an active safety block.');
+
+    const incoming = await activeThread();
+    await insertHistoryMessage({
+      conversationId: incoming.conversation.id,
+      senderId: incoming.target.id,
+      content: 'from target',
+      createdAt: new Date('2026-10-09T10:01:00.000Z')
+    });
+    await Block.create({
+      blockerId: incoming.target.id,
+      blockedId: incoming.caller.id,
+      reason: null,
+      createdAt: new Date()
+    });
+    const recipientBlocked = await markRead(incoming.caller.id, incoming.conversation.id);
+    expect(recipientBlocked.status).toBe(409);
+    expect(recipientBlocked.body.error.code).toBe('BLOCKED_USER');
+
+    const closed = await activeThread();
+    const message = await insertHistoryMessage({
+      conversationId: closed.conversation.id,
+      senderId: closed.caller.id,
+      content: 'after close',
+      createdAt: new Date('2026-10-09T10:02:00.000Z')
+    });
+    const unmatch = await request(app).delete(`/api/v1/matches/${closed.match.id}`).set(authHeader(closed.caller.id));
+    expect(unmatch.status).toBe(200);
+    await Block.create({
+      blockerId: closed.target.id,
+      blockedId: closed.caller.id,
+      reason: null,
+      createdAt: new Date()
+    });
+    const closedBlocked = await markRead(closed.target.id, closed.conversation.id);
+    expect(closedBlocked.status).toBe(409);
+    expect(closedBlocked.body.error.code).toBe('BLOCKED_USER');
+    await closed.conversation.reload();
+    await closed.match.reload();
+    expect(closed.conversation.status).toBe('CLOSED');
+    expect(closed.match.status).toBe('UNMATCHED');
+    const stored = await Message.findByPk(message.id);
+    expect(stored?.readAt).toBeNull();
+  });
+
+  it('marks messages read in a closed conversation without reopening it', async () => {
+    const { caller, target, match, conversation } = await activeThread();
+    const createdAt = new Date('2026-10-09T10:00:00.000Z');
+    const message = await insertHistoryMessage({
+      conversationId: conversation.id,
+      senderId: caller.id,
+      content: 'kept',
+      createdAt
+    });
+    await conversation.update({ lastMessageAt: createdAt });
+    const unmatch = await request(app).delete(`/api/v1/matches/${match.id}`).set(authHeader(caller.id));
+    expect(unmatch.status).toBe(200);
+    await conversation.reload();
+    await match.reload();
+    const closedAt = conversation.closedAt?.toISOString();
+    const lastMessageAt = conversation.lastMessageAt?.toISOString();
+    const conversationUpdatedAt = conversation.updatedAt.toISOString();
+
+    const response = await markRead(target.id, conversation.id);
+    expect(response.status).toBe(200);
+    expect(typeof response.body.data.readAt).toBe('string');
+    const stored = await Message.findByPk(message.id);
+    expect(stored?.readAt?.toISOString()).toBe(response.body.data.readAt);
+    await conversation.reload();
+    await match.reload();
+    expect(conversation.status).toBe('CLOSED');
+    expect(conversation.closedAt?.toISOString()).toBe(closedAt);
+    expect(conversation.lastMessageAt?.toISOString()).toBe(lastMessageAt);
+    expect(conversation.updatedAt.toISOString()).toBe(conversationUpdatedAt);
+    expect(match.status).toBe('UNMATCHED');
+  });
+
+  it('rejects an unverified caller and an incomplete profile', async () => {
+    const catalogGender = await gender();
+    const target = await buildUser({ genderId: catalogGender.id });
+    const emailCaller = await buildUser({ genderId: catalogGender.id, emailVerified: false });
+    const emailMatch = await insertMatch(emailCaller.id, target.id, 'ACTIVE');
+    const emailConversation = await insertConversation(emailMatch.id, 'ACTIVE', null, null);
+    const emailResponse = await markRead(emailCaller.id, emailConversation.id);
+    expect(emailResponse.status).toBe(403);
+    expect(emailResponse.body.error.code).toBe('EMAIL_NOT_VERIFIED');
+
+    const phoneCaller = await buildUser({ genderId: catalogGender.id, phoneOnly: true, emailVerified: false });
+    const phoneMatch = await insertMatch(phoneCaller.id, target.id, 'ACTIVE');
+    const phoneConversation = await insertConversation(phoneMatch.id, 'ACTIVE', null, null);
+    const phoneResponse = await markRead(phoneCaller.id, phoneConversation.id);
+    expect(phoneResponse.status).toBe(403);
+    expect(phoneResponse.body.error.code).toBe('PHONE_NOT_VERIFIED');
+
+    const incomplete = await buildUser({ genderId: catalogGender.id, complete: false });
+    const incompleteMatch = await insertMatch(incomplete.id, target.id, 'ACTIVE');
+    const incompleteConversation = await insertConversation(incompleteMatch.id, 'ACTIVE', null, null);
+    const incompleteResponse = await markRead(incomplete.id, incompleteConversation.id);
+    expect(incompleteResponse.status).toBe(400);
+    expect(incompleteResponse.body.error.code).toBe('PROFILE_INCOMPLETE');
+
+    const missingPreferences = await buildUser({ genderId: catalogGender.id, preferences: false });
+    const preferencesMatch = await insertMatch(missingPreferences.id, target.id, 'ACTIVE');
+    const preferencesConversation = await insertConversation(preferencesMatch.id, 'ACTIVE', null, null);
+    const preferencesResponse = await markRead(missingPreferences.id, preferencesConversation.id);
+    expect(preferencesResponse.status).toBe(400);
+    expect(preferencesResponse.body.error.code).toBe('PROFILE_INCOMPLETE');
+
+    const missingLocation = await buildUser({ genderId: catalogGender.id, point: null });
+    const locationMatch = await insertMatch(missingLocation.id, target.id, 'ACTIVE');
+    const locationConversation = await insertConversation(locationMatch.id, 'ACTIVE', null, null);
+    const locationResponse = await markRead(missingLocation.id, locationConversation.id);
+    expect(locationResponse.status).toBe(400);
+    expect(locationResponse.body.error.code).toBe('PROFILE_INCOMPLETE');
+  });
+
+  it('rejects a missing token, an invalid token, a deleted account, an admin, a suspended user, and a banned user', async () => {
+    const { conversation } = await activeThread();
+
+    const missing = await request(app).patch(`/api/v1/conversations/${conversation.id}/read`);
+    expect(missing.status).toBe(401);
+    expect(missing.body.error.code).toBe('AUTH_REQUIRED');
+
+    const invalid = await request(app)
+      .patch(`/api/v1/conversations/${conversation.id}/read`)
+      .set({ Authorization: 'Bearer not-a-token' });
+    expect(invalid.status).toBe(401);
+    expect(invalid.body.error.code).toBe('INVALID_TOKEN');
+
+    const deleted = await User.create({
+      email: `deleted-${randomUUID()}@example.com`,
+      passwordHash: PASSWORD_HASH,
+      role: 'USER',
+      status: 'ACTIVE',
+      emailVerified: true,
+      phoneVerified: false
+    });
+    await deleted.destroy();
+    const deletedResponse = await markRead(deleted.id, conversation.id);
+    expect(deletedResponse.status).toBe(401);
+    expect(deletedResponse.body.error.code).toBe('INVALID_TOKEN');
+
+    const admin = await User.create({
+      email: `admin-${randomUUID()}@example.com`,
+      passwordHash: PASSWORD_HASH,
+      role: 'ADMIN',
+      status: 'ACTIVE',
+      emailVerified: true,
+      phoneVerified: false
+    });
+    const forbidden = await request(app)
+      .patch(`/api/v1/conversations/${conversation.id}/read`)
+      .set(authHeader(admin.id, 'ADMIN'));
+    expect(forbidden.status).toBe(403);
+    expect(forbidden.body.error.code).toBe('FORBIDDEN');
+
+    const suspended = await User.create({
+      email: `suspended-${randomUUID()}@example.com`,
+      passwordHash: PASSWORD_HASH,
+      role: 'USER',
+      status: 'SUSPENDED',
+      emailVerified: true,
+      phoneVerified: false
+    });
+    const suspendedResponse = await markRead(suspended.id, conversation.id);
+    expect(suspendedResponse.status).toBe(403);
+    expect(suspendedResponse.body.error.code).toBe('ACCOUNT_SUSPENDED');
+
+    const banned = await User.create({
+      email: `banned-${randomUUID()}@example.com`,
+      passwordHash: PASSWORD_HASH,
+      role: 'USER',
+      status: 'BANNED',
+      emailVerified: true,
+      phoneVerified: false
+    });
+    const bannedResponse = await markRead(banned.id, conversation.id);
+    expect(bannedResponse.status).toBe(403);
+    expect(bannedResponse.body.error.code).toBe('ACCOUNT_BANNED');
+  });
+
+  it('rejects an invalid conversation id, an unsupported query, a non-empty body, and malformed JSON', async () => {
+    const { caller, target, conversation } = await activeThread();
+    await insertHistoryMessage({
+      conversationId: conversation.id,
+      senderId: target.id,
+      content: 'stay',
+      createdAt: new Date('2026-10-09T10:00:00.000Z')
+    });
+
+    const invalidId = await markRead(caller.id, 'not-a-uuid');
+    expect(invalidId.status).toBe(400);
+    expect(invalidId.body.error.code).toBe('VALIDATION_ERROR');
+    expect(invalidId.body.error.message).toBe('Validation failed');
+    expect(invalidId.body.error.details).toEqual([
+      { field: 'conversationId', message: 'Conversation id must be a valid UUID.' }
+    ]);
+
+    const unsupported = await request(app)
+      .patch(`/api/v1/conversations/${conversation.id}/read`)
+      .query({ sort: 'desc' })
+      .set(authHeader(caller.id));
+    expect(unsupported.status).toBe(400);
+    expect(unsupported.body.error.code).toBe('VALIDATION_ERROR');
+    expect(unsupported.body.error.details).toEqual([{ field: 'sort', message: 'Unsupported query parameter.' }]);
+
+    const extra = await markRead(caller.id, conversation.id, { readAt: '2026-10-09T10:00:00.000Z' });
+    expect(extra.status).toBe(400);
+    expect(extra.body.error.code).toBe('VALIDATION_ERROR');
+    expect(extra.body.error.message).toBe('Validation failed');
+
+    const malformed = await request(app)
+      .patch(`/api/v1/conversations/${conversation.id}/read`)
+      .set(authHeader(caller.id))
+      .set('Content-Type', 'application/json')
+      .send('{not-json');
+    expect(malformed.status).toBe(400);
+    expect(malformed.body.error.code).toBe('VALIDATION_ERROR');
+    expect(malformed.body.error.message).toBe('Invalid JSON payload structure');
+
+    expect((await Message.findAll()).every((row) => row.readAt === null)).toBe(true);
+  });
+
+  it('does not change quota, credits, last_message_at, conversation status, or match status', async () => {
+    const { caller, target, match, conversation } = await activeThread();
+    const createdAt = new Date('2026-10-09T10:00:00.000Z');
+    await insertHistoryMessage({
+      conversationId: conversation.id,
+      senderId: target.id,
+      content: 'steady',
+      createdAt
+    });
+    await conversation.update({ lastMessageAt: createdAt });
+    await seedTextUsage(caller.id, 4);
+    await UserCreditBalance.create({
+      userId: caller.id,
+      creditType: 'SUPER_LIKE',
+      balance: 3,
+      ...timestamps()
+    });
+    await CreditTransaction.create({
+      userId: caller.id,
+      creditType: 'SUPER_LIKE',
+      delta: -1,
+      reason: 'CONSUMPTION',
+      createdAt: new Date()
+    });
+    await conversation.reload();
+    await match.reload();
+    const beforeConversation = conversation.toJSON();
+    const beforeMatch = match.toJSON();
+    const beforeUsage = await UsageRecord.count();
+
+    const response = await markRead(caller.id, conversation.id);
+    expect(response.status).toBe(200);
+    expect(typeof response.body.data.readAt).toBe('string');
+    expect(await UsageRecord.count()).toBe(beforeUsage);
+    expect(await textMessageUsageCount(caller.id)).toBe(4);
+    expect(await textMessageUsageCount(target.id)).toBe(0);
+    expect(await UserCreditBalance.count()).toBe(1);
+    expect(await CreditTransaction.count()).toBe(1);
+    await conversation.reload();
+    await match.reload();
+    expect(conversation.toJSON()).toEqual(beforeConversation);
+    expect(match.toJSON()).toEqual(beforeMatch);
+    expect(await Message.count()).toBe(1);
+  });
+
+  it('lets concurrent requests mark each unread message once', async () => {
+    const { caller, target, conversation } = await activeThread();
+    const original = new Date('2026-10-09T09:00:00.000Z');
+    const already = await insertHistoryMessage({
+      conversationId: conversation.id,
+      senderId: target.id,
+      content: 'already',
+      createdAt: new Date('2026-10-09T08:00:00.000Z'),
+      readAt: original
+    });
+    const first = await insertHistoryMessage({
+      conversationId: conversation.id,
+      senderId: target.id,
+      content: 'one',
+      createdAt: new Date('2026-10-09T08:01:00.000Z')
+    });
+    const second = await insertHistoryMessage({
+      conversationId: conversation.id,
+      senderId: target.id,
+      content: 'two',
+      createdAt: new Date('2026-10-09T08:02:00.000Z')
+    });
+    const own = await insertHistoryMessage({
+      conversationId: conversation.id,
+      senderId: caller.id,
+      content: 'own',
+      createdAt: new Date('2026-10-09T08:03:00.000Z')
+    });
+
+    const [left, right] = await Promise.all([
+      markRead(caller.id, conversation.id),
+      markRead(caller.id, conversation.id)
+    ]);
+    expect(left.status).toBe(200);
+    expect(right.status).toBe(200);
+    const stamps = [left.body.data.readAt, right.body.data.readAt].filter((value) => value !== null);
+    expect(stamps).toHaveLength(1);
+
+    const storedFirst = await Message.findByPk(first.id);
+    const storedSecond = await Message.findByPk(second.id);
+    const storedAlready = await Message.findByPk(already.id);
+    const storedOwn = await Message.findByPk(own.id);
+    expect(storedFirst?.readAt?.toISOString()).toBe(stamps[0]);
+    expect(storedSecond?.readAt?.toISOString()).toBe(stamps[0]);
+    expect(storedFirst?.updatedAt.toISOString()).toBe(stamps[0]);
+    expect(storedSecond?.updatedAt.toISOString()).toBe(stamps[0]);
+    expect(storedAlready?.readAt?.toISOString()).toBe(original.toISOString());
+    expect(storedOwn?.readAt).toBeNull();
   });
 });

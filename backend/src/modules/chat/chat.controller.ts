@@ -1,4 +1,5 @@
 import { Response } from 'express';
+import { deliverReadReceipt } from '../../socket/chat.socket';
 import { asyncHandler } from '../../utils/async-handler';
 import * as chatService from './chat.service';
 import type { HistoryMessage } from './chat.types';
@@ -48,6 +49,25 @@ function historyItem(message: HistoryMessage) {
     createdAt: message.createdAt
   };
 }
+
+export const markMessagesRead = asyncHandler(async (req, res) => {
+  const result = await chatService.markMessagesRead({
+    callerId: req.user!.id,
+    isVerified: req.user!.isVerified,
+    conversationId: req.params.conversationId
+  });
+
+  if (result.readAt) {
+    deliverReadReceipt({
+      conversationId: result.conversationId,
+      readerId: result.readerId,
+      recipientId: result.recipientId,
+      readAt: result.readAt
+    });
+  }
+
+  send(res, 200, { readAt: result.readAt }, 'Messages marked as read.');
+});
 
 export const listMessages = asyncHandler(async (req, res) => {
   const query = res.locals.listMessagesQuery as ListMessagesQuery;

@@ -3,7 +3,7 @@ import { authenticate } from '../../middleware/auth.middleware';
 import { requireRole } from '../../middleware/role.middleware';
 import { validate } from '../../middleware/validate.middleware';
 import * as chatController from './chat.controller';
-import { sendTextMessageSchema, validateListMessagesQuery } from './chat.validator';
+import { markReadBodySchema, sendTextMessageSchema, validateListMessagesQuery, validateMarkReadRequest } from './chat.validator';
 
 const router = Router();
 
@@ -21,6 +21,15 @@ router.post(
   requireRole('USER'),
   validate(sendTextMessageSchema),
   chatController.sendTextMessage
+);
+
+router.patch(
+  '/:conversationId/read',
+  authenticate,
+  requireRole('USER'),
+  validateMarkReadRequest,
+  validate(markReadBodySchema),
+  chatController.markMessagesRead
 );
 
 export const chatRoutes = router;

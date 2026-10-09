@@ -133,6 +133,38 @@ export async function insertTextMessage(
   );
 }
 
+const MARK_INCOMING_READ_SQL = `
+UPDATE messages
+SET read_at = CURRENT_TIMESTAMP,
+    updated_at = CURRENT_TIMESTAMP
+WHERE conversation_id = CAST(:conversationId AS uuid)
+  AND sender_id = CAST(:senderId AS uuid)
+  AND read_at IS NULL
+  AND deleted_at IS NULL
+RETURNING read_at AS "readAt"
+`;
+
+export async function markIncomingMessagesRead(
+  conversationId: string,
+  senderId: string,
+  transaction: Transaction
+): Promise<Date | null> {
+  const rows = await sequelize.query<{ readAt: Date | string }>(MARK_INCOMING_READ_SQL, {
+    replacements: { conversationId, senderId },
+    type: QueryTypes.SELECT,
+    transaction
+  });
+  const value = rows[0]?.readAt;
+  if (!value) {
+    return null;
+  }
+  const readAt = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(readAt.getTime())) {
+    return null;
+  }
+  return readAt;
+}
+
 export async function updateConversationLastMessageAt(
   conversationId: string,
   lastMessageAt: Date,

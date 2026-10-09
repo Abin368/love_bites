@@ -467,7 +467,7 @@ Implement swipe action mechanics (`LIKE`, `PASS`, `SUPER_LIKE`), daily action qu
 
 ## 10. Phase 6 — Chat and Realtime Messaging
 
-**Partly complete (2026-10-09).** Slice 1 Socket.IO foundation, Slice 2 TEXT message persistence, Slice 3 free text-message quota, Slice 4 realtime TEXT send/receive, and Slice 5 message history are implemented. Conversation rooms, read receipts, typing, and media are not.
+**Partly complete (2026-10-09).** Slice 1 Socket.IO foundation, Slice 2 TEXT message persistence, Slice 3 free text-message quota, Slice 4 realtime TEXT send/receive, Slice 5 message history, and Slice 6 read receipts are implemented. Conversation rooms, typing, and media are not.
 
 ### 10.1 Objectives
 Build real-time messaging using Socket.IO backed by PostgreSQL persistence, enforce message authorization, manage unread counters, support tiered media attachments, and provide cursor-based history pagination.
@@ -492,10 +492,11 @@ Build real-time messaging using Socket.IO backed by PostgreSQL persistence, enfo
    * `chat:message:send` validates a strict TEXT payload, reloads the current account, and calls `chat.service.sendTextMessage`.
    * The success acknowledgement matches the HTTP message data, including `remainingDailyMessages`. Failures use the existing error codes and do not disconnect the socket.
    * After commit, `chat:message:new` is emitted only to `user:{recipientUserId}`. HTTP `POST` does not emit it.
-   * No conversation room, join event, idempotency key, offline queue, or schema change. Read receipts remain later work.
-5. **Message History — Implemented (Slice 5).** Read receipts are not:
+   * No conversation room, join event, idempotency key, offline queue, or schema change. Read receipts are Slice 6.
+5. **Message History — Implemented (Slice 5):**
    * `GET /api/v1/conversations/:conversationId/messages`: Cursor-paginated history for a participant. `limit` defaults to 20 and maxes at 50. Order is `created_at DESC, id DESC`. A `CLOSED` conversation still returns retained messages. A block in either direction is `409 BLOCKED_USER`. The read does not change `read_at`, `last_message_at`, quota, or emit a socket event.
-   * `PATCH /api/v1/conversations/:conversationId/read`: Not implemented. It would update `read_at = CURRENT_TIMESTAMP` for unread messages and emit `chat:message:read`.
+6. **Read receipts — Implemented (Slice 6):**
+   * `PATCH /api/v1/conversations/:conversationId/read`: A participant marks unread incoming messages, of every stored type, with one PostgreSQL `CURRENT_TIMESTAMP`. Already-read rows, the caller's own rows, and soft-deleted rows stay unchanged. A closed conversation is allowed unless a block exists. The call does not reopen the conversation, consume `DAILY_TEXT_MESSAGES`, or change `last_message_at`. After commit, and only when at least one row changed, `chat:message:read` goes to `user:{otherParticipantId}`. No conversation room and no client socket command. No migration.
 
 ---
 
@@ -794,7 +795,7 @@ To maintain strict adherence to dependency constraints, development should follo
 | **Likes, Passes, Super Like** | Discovery, subscriptions for Premium | `likes`, `usage_records`, `matches`, `conversations`, `user_credit_balances`, `credit_transactions` | `POST /discovery/:userId/pass`, `POST /discovery/:userId/like`, `POST /discovery/:userId/super-like` | PostgreSQL integration: pass 11, like 20, super like 22 |
 | **Unmatch** | Likes Module | `matches`, `conversations` | `DELETE /matches/:matchId` | Implemented. PostgreSQL integration: 13 passed. No Redis, quota, or credit change. `GET /matches` is not implemented. |
 | **Premium Undo** | Likes, Matches, Premium subscription | `likes`, `matches`, `conversations`, `subscriptions`, `plans` | `POST /discovery/undo` | PostgreSQL integration: 14 passed. No Redis idempotency. |
-| **Chat & Messaging**| Matches Module, S3, Socket.IO | `conversations`, `messages`, `usage_records` | `POST /conversations/:conversationId/messages`, `GET /conversations/:conversationId/messages`, `chat:message:send` | Slices 2–5: TEXT send, free `DAILY_TEXT_MESSAGES` quota (20/UTC day), realtime TEXT delivery, and cursor-paginated history. Media, rooms, typing, and read receipts remain. |
+| **Chat & Messaging**| Matches Module, S3, Socket.IO | `conversations`, `messages`, `usage_records` | `POST /conversations/:conversationId/messages`, `GET /conversations/:conversationId/messages`, `PATCH /conversations/:conversationId/read`, `chat:message:send` | Slices 2–6: TEXT send, free `DAILY_TEXT_MESSAGES` quota (20/UTC day), realtime TEXT delivery, cursor-paginated history, and read receipts. Media, rooms, and typing remain. |
 | **Blocks & Safety** | Users, Matches, Chat | `blocks` | `/blocks`, `/blocks/:userId` | Integration (Bidirectional Isolation) |
 | **Reports** | Users, Safety | `reports` | `/reports` | Integration (Report Submission) |
 | **Notifications** | Matches, Chat, Likes | `notifications` | `GET /notifications`, Socket.IO events | Integration (Event Delivery) |

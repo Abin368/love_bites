@@ -22,9 +22,18 @@ import {
   listConversationMessages,
   lockConversationById,
   lockMatchById,
+  markIncomingMessagesRead,
   updateConversationLastMessageAt
 } from './chat.data-access';
-import type { HistoryMessage, ListMessagesInput, ListMessagesResult, SendTextMessageInput, SendTextMessageResult } from './chat.types';
+import type {
+  HistoryMessage,
+  ListMessagesInput,
+  ListMessagesResult,
+  MarkMessagesReadInput,
+  MarkMessagesReadResult,
+  SendTextMessageInput,
+  SendTextMessageResult
+} from './chat.types';
 import { conversationIdSchema, encodeHistoryCursor } from './chat.validator';
 
 const RESOURCE_NOT_FOUND_MESSAGE = 'Resource not found';
@@ -206,4 +215,41 @@ export async function listMessages(input: ListMessagesInput): Promise<ListMessag
     hasMore,
     limit: input.limit
   };
+}
+
+export async function markMessagesRead(input: MarkMessagesReadInput): Promise<MarkMessagesReadResult> {
+  const conversationId = parseConversationId(input.conversationId);
+
+  if (!input.isVerified) {
+    await rejectUnverified(input.callerId);
+  }
+
+  const context = await findViewerDiscoveryContext(input.callerId);
+  if (!context || !context.isProfileComplete || !context.hasLocation || !context.hasDatingPreferences) {
+    throw incomplete();
+  }
+
+  return sequelize.transaction(async (transaction) => {
+    const loaded = await findConversationWithMatch(conversationId, transaction);
+    if (!loaded || !participates(loaded.userOneId, loaded.userTwoId, input.callerId)) {
+      throw resourceNotFound();
+    }
+
+    if (loaded.conversationStatus === 'ACTIVE' && loaded.matchStatus !== 'ACTIVE') {
+      throw resourceNotFound();
+    }
+
+    const recipientId = otherParticipant(loaded.userOneId, loaded.userTwoId, input.callerId);
+    if (await hasBidirectionalBlock(input.callerId, recipientId, transaction)) {
+      throw new ConflictError(BLOCKED_USER_MESSAGE, [], 'BLOCKED_USER');
+    }
+
+    const readAt = await markIncomingMessagesRead(conversationId, recipientId, transaction);
+    return {
+      conversationId,
+      readerId: input.callerId,
+      recipientId,
+      readAt
+    };
+  });
 }

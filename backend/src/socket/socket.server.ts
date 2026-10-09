@@ -14,6 +14,23 @@ export interface SocketRuntime {
   subClient: Redis;
 }
 
+const attachedServers: Server[] = [];
+
+export function rememberSocketServer(io: Server): void {
+  attachedServers.push(io);
+}
+
+export function forgetSocketServer(io: Server): void {
+  const index = attachedServers.lastIndexOf(io);
+  if (index >= 0) {
+    attachedServers.splice(index, 1);
+  }
+}
+
+export function activeSocketServer(): Server | null {
+  return attachedServers[0] ?? null;
+}
+
 function allowedOrigins(): string[] {
   return env.CORS_ORIGIN.split(',').map((origin) => origin.trim());
 }
@@ -80,10 +97,12 @@ export async function attachSocketServer(httpServer: HttpServer): Promise<Socket
       });
   });
 
+  rememberSocketServer(io);
   return { io, pubClient, subClient };
 }
 
 export async function closeSocketServer(runtime: SocketRuntime): Promise<void> {
+  forgetSocketServer(runtime.io);
   try {
     await new Promise<void>((resolve, reject) => {
       void runtime.io.close((error) => {

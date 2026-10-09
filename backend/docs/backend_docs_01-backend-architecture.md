@@ -269,7 +269,7 @@ modules/likes/
 ```
 *Note: Optional files (e.g., `*.constants.ts`) should only be created when explicitly needed.*
 
-Implemented modules today are `auth`, `users`, `profiles`, `profile-photos`, `genders`, `interests`, `relationship-intentions`, `onboarding`, `discovery`, `likes`, and `chat`. Discovery routes mount the like, pass, super-like, and undo handlers. There is no `passes` table and no separate `likes.routes.ts`. Chat mounts `POST /conversations/:conversationId/messages` and `GET /conversations/:conversationId/messages`. Notifications, safety, subscriptions, payments, entitlements, match list, and admin modules are not implemented as HTTP modules. Their tables exist from Phase 1.
+Implemented modules today are `auth`, `users`, `profiles`, `profile-photos`, `genders`, `interests`, `relationship-intentions`, `onboarding`, `discovery`, `likes`, and `chat`. Discovery routes mount the like, pass, super-like, and undo handlers. There is no `passes` table and no separate `likes.routes.ts`. Chat mounts `POST /conversations/:conversationId/messages`, `GET /conversations/:conversationId/messages`, and `PATCH /conversations/:conversationId/read`. Notifications, safety, subscriptions, payments, entitlements, match list, and admin modules are not implemented as HTTP modules. Their tables exist from Phase 1.
 
 ---
 
@@ -511,7 +511,7 @@ Historical `UNDONE` and `UNMATCHED` rows stay in place. `uq_matches_single_activ
 
 ## 16. Chat & Realtime Architecture
 
-**Phase 6 Slices 2–5 implement TEXT send, realtime delivery, and message history.** LIKE and SUPER LIKE create an `ACTIVE` conversation row. Undo or UNMATCH closes it. `POST /api/v1/conversations/:conversationId/messages` and `chat:message:send` both call `chat.service.sendTextMessage`, which authorizes the participant, enforces Free `DAILY_TEXT_MESSAGES` (20 / UTC day) or Premium unlimited, persists a `TEXT` message, and updates `last_message_at`. After the socket transaction commits, the server emits `chat:message:new` to `user:{recipientUserId}` only. The HTTP send route does not emit that event. `GET /api/v1/conversations/:conversationId/messages` calls `chat.service.listMessages`. It is read-only, cursor-paginated, and does not emit a socket event. A closed conversation remains readable to a participant unless a block exists. Media, conversation rooms, typing, and read receipts are not implemented.
+**Phase 6 Slices 2–6 implement TEXT send, realtime delivery, message history, and read receipts.** LIKE and SUPER LIKE create an `ACTIVE` conversation row. Undo or UNMATCH closes it. `POST /api/v1/conversations/:conversationId/messages` and `chat:message:send` both call `chat.service.sendTextMessage`, which authorizes the participant, enforces Free `DAILY_TEXT_MESSAGES` (20 / UTC day) or Premium unlimited, persists a `TEXT` message, and updates `last_message_at`. After the socket transaction commits, the server emits `chat:message:new` to `user:{recipientUserId}` only. The HTTP send route does not emit that event. `GET /api/v1/conversations/:conversationId/messages` calls `chat.service.listMessages`. It is read-only, cursor-paginated, and does not emit a socket event. A closed conversation remains readable to a participant unless a block exists. `PATCH /api/v1/conversations/:conversationId/read` calls `chat.service.markMessagesRead`. It uses the history authorization rules, including closed conversations and either-direction blocks. After commit, and only when at least one incoming row was newly marked, it emits `chat:message:read` to `user:{otherParticipantId}`. Media, conversation rooms, and typing are not implemented.
 
 ### Messaging Rules (live Slices 2–3)
 * Either participant of an `ACTIVE` match with an `ACTIVE` conversation can send TEXT.
@@ -710,7 +710,7 @@ Sessions, discovery caching, daily LIKE/PASS counters (those are `usage_records`
 
 ## 23. Realtime Architecture
 
-**Phase 6 Slices 1 and 4 are implemented.** `src/socket/socket.server.ts` attaches Socket.IO to the HTTP server created in `src/server.ts`. `src/socket/socket.auth.ts` authenticates the handshake. `src/socket/chat.socket.ts` handles `chat:message:send` after the user room join. Conversation rooms are not implemented.
+**Phase 6 Slices 1, 4, and 6 are implemented.** `src/socket/socket.server.ts` attaches Socket.IO to the HTTP server created in `src/server.ts`. `src/socket/socket.auth.ts` authenticates the handshake. `src/socket/chat.socket.ts` handles `chat:message:send` after the user room join and emits `chat:message:read` from the HTTP read-receipt route. Conversation rooms are not implemented. There is no client `chat:message:read` listener.
 
 * Framework: Socket.IO initialized over the Express HTTP server.
 * Cluster Distribution: `@socket.io/redis-adapter` uses duplicated `ioredis` pub/sub clients from the existing Redis configuration. Recipient delivery uses that adapter. Message rows stay in PostgreSQL.
