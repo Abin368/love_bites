@@ -16,6 +16,7 @@ export interface SendTextMessageResult {
   readAt: null;
   createdAt: Date;
   remainingDailyMessages: number | null;
+  recipientId: string;
 }
 
 export interface ConversationMatchLookup {

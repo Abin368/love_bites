@@ -311,8 +311,8 @@ To prevent accidental data leakage, domain services must use explicit **Response
 
 ## 16. Chat and Messaging Security
 
-### 16.1 Message Send Authorization (Phase 6 Slice 2 + Slice 3 quota)
-`POST /api/v1/conversations/:conversationId/messages` is implemented. The route uses `authenticate` and `requireRole('USER')`. `requireVerified` is not on the route. The service requires a verified email or phone and a complete profile with location and dating preferences.
+### 16.1 Message Send Authorization (Phase 6 Slices 2–4)
+`POST /api/v1/conversations/:conversationId/messages` and Socket.IO `chat:message:send` both call `chat.service.sendTextMessage`. The HTTP route uses `authenticate` and `requireRole('USER')`. `requireVerified` is not on the route. The service requires a verified email or phone and a complete profile with location and dating preferences. The socket path reloads the user from PostgreSQL before that call and uses `socket.data.user.id` as the sender.
 
 Before insert, `chat.service.ts` runs one PostgreSQL transaction:
 
@@ -320,7 +320,7 @@ Before insert, `chat.service.ts` runs one PostgreSQL transaction:
 Incoming TEXT payload
          │
          ▼
-[Step 1] Authenticated USER (req.user.id is the sender)
+[Step 1] Authenticated USER (HTTP req.user.id or socket.data.user.id is the sender)
          │
          ▼
 [Step 2] Conversation exists and caller is a match participant
@@ -338,7 +338,7 @@ Incoming TEXT payload
 [Persist TEXT in PostgreSQL and update last_message_at]
 ```
 
-Media entitlement (attachments) is not in this slice. Free callers consume `DAILY_TEXT_MESSAGES` after authorization succeeds; exhausted free quota is `429 DAILY_LIMIT_REACHED` with message `You have reached your daily limit of 20 text messages.` Premium callers do not write `usage_records` and return `remainingDailyMessages: null`. Quota and message write share one transaction. No Socket.IO event is emitted. User locks reuse `lockLikeUsers` so send coordinates with UNMATCH and UNDO.
+Media entitlement (attachments) is not in this slice. Free callers consume `DAILY_TEXT_MESSAGES` after authorization succeeds; exhausted free quota is `429 DAILY_LIMIT_REACHED` with message `You have reached your daily limit of 20 text messages.` Premium callers do not write `usage_records` and return `remainingDailyMessages: null`. Quota and message write share one transaction. HTTP send does not emit a Socket.IO event. `chat:message:send` emits `chat:message:new` only after that transaction commits. User locks reuse `lockLikeUsers` so HTTP and socket sends coordinate with UNMATCH and UNDO. Redis is not used for this quota.
 
 ---
 
@@ -347,8 +347,10 @@ Media entitlement (attachments) is not in this slice. Free callers consume `DAIL
 1. **Handshake Authentication (implemented in Phase 6 Slice 1):** Socket connections must supply `auth.token` with the existing access JWT. `socket.auth.ts` reuses `authenticateAccessToken`, which verifies the JWT and reloads the current user from PostgreSQL. Stale JWT claim fields are not trusted for account state. Missing token → `AUTH_REQUIRED`. Invalid/expired/deleted → `INVALID_TOKEN`. Suspended → `ACCOUNT_SUSPENDED`. Banned → `ACCOUNT_BANNED`. Non-`USER` roles → `FORBIDDEN`. Successful handshakes store the live `AuthenticatedUser` on `socket.data.user`.
 2. **Server-Managed Room Subscriptions:**
    * Implemented now: the server auto-joins only `user:{userId}` where `userId === socket.data.user.id`.
-   * Planned: Conversation Room `conversation:{conversationId}` only after PostgreSQL match participation checks. Slice 1 does not join conversation rooms and does not accept a client join event.
-3. **Zero Client Trust in Socket Events:** Sockets cannot spoof sender IDs. Later chat slices must extract sender identity strictly from `socket.data.user.id`. No chat application events are implemented in Slice 1.
+   * `chat:message:new` is emitted to `user:{recipientUserId}` after a committed `chat:message:send`. The recipient id comes from the authorized match participants. The sender room does not receive that event.
+   * Conversation rooms are not joined. There is no client join event for `conversation:{conversationId}`.
+3. **Zero Client Trust in Socket Events:** `chat:message:send` ignores client identity fields. Unknown payload fields are rejected. Sender identity is `socket.data.user.id` after `loadAuthenticatedUser` reloads the current PostgreSQL account. A stale handshake snapshot is not enough for a send. Account-state failures acknowledge the event and do not disconnect the socket.
+4. **Payload limit:** `chat:message:send` rejects a parsed payload whose JSON UTF-8 size exceeds 100 KB. That failure does not disconnect the socket.
 
 ---
 

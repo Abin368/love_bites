@@ -511,7 +511,7 @@ Historical `UNDONE` and `UNMATCHED` rows stay in place. `uq_matches_single_activ
 
 ## 16. Chat & Realtime Architecture
 
-**Phase 6 Slices 2–3 implement TEXT send over HTTP with free daily quota.** LIKE and SUPER LIKE create an `ACTIVE` conversation row. Undo or UNMATCH closes it. `POST /api/v1/conversations/:conversationId/messages` authorizes the participant, enforces Free `DAILY_TEXT_MESSAGES` (20 / UTC day) or Premium unlimited, persists a `TEXT` message, and updates `last_message_at`. Socket.IO foundation from Slice 1 remains available for later realtime delivery. Media, history, conversation rooms, and chat events are not implemented.
+**Phase 6 Slices 2–4 implement TEXT send over HTTP and Socket.IO with one shared service.** LIKE and SUPER LIKE create an `ACTIVE` conversation row. Undo or UNMATCH closes it. `POST /api/v1/conversations/:conversationId/messages` and `chat:message:send` both call `chat.service.sendTextMessage`, which authorizes the participant, enforces Free `DAILY_TEXT_MESSAGES` (20 / UTC day) or Premium unlimited, persists a `TEXT` message, and updates `last_message_at`. After the socket transaction commits, the server emits `chat:message:new` to `user:{recipientUserId}` only. The HTTP route does not emit that event. Media, history, conversation rooms, typing, and read receipts are not implemented.
 
 ### Messaging Rules (live Slices 2–3)
 * Either participant of an `ACTIVE` match with an `ACTIVE` conversation can send TEXT.
@@ -524,20 +524,21 @@ Historical `UNDONE` and `UNMATCHED` rows stay in place. `uq_matches_single_activ
 
 ### Planned later
 * Premium media attachments.
-* Socket.IO `chat:message:new` after HTTP persistence.
+* `chat:message:new` after an HTTP send. Slice 4 does not emit from `POST /messages`.
 
-### Hybrid Persistence Flow
-HTTP is the write path for Slices 2–3. Later slices will broadcast through Socket.IO. **Redis does NOT store permanent messages or the free text quota.**
+### Persistence and delivery
+HTTP and `chat:message:send` share one service transaction. The socket acknowledgement returns the HTTP message data to the sender. `chat:message:new` goes to the recipient user room after commit and omits `remainingDailyMessages`. **Redis does NOT store permanent messages or the free text quota.** It only fans the recipient event across instances. There is no chat idempotency key and no offline replay.
 
 ```
-Client A                  Server Node                 PostgreSQL
-   |                           |                           |
-   |--- POST /messages ------->|                           |
-   |                           |-- Authorize + lock users ->|
-   |                           |-- Premium / quota upsert ->|
-   |                           |-- INSERT Message Record ->|
-   |                           |-- UPDATE last_message_at ->|
-   |<-- 201 Created -----------|                           |
+Client A                  Server Node                 PostgreSQL              Client B
+   |                           |                           |                      |
+   |-- chat:message:send ----->|                           |                      |
+   |                           |-- Authorize + lock users ->|                      |
+   |                           |-- Premium / quota upsert ->|                      |
+   |                           |-- INSERT Message Record ->|                      |
+   |                           |-- UPDATE last_message_at ->|                      |
+   |<-- acknowledgement -------|                           |                      |
+   |                           |-- chat:message:new ----------------------------->|
 ```
 
 ---
@@ -709,14 +710,14 @@ Sessions, discovery caching, daily LIKE/PASS counters (those are `usage_records`
 
 ## 23. Realtime Architecture
 
-**Phase 6 Slice 1 foundation is implemented.** `src/socket/socket.server.ts` attaches Socket.IO to the HTTP server created in `src/server.ts`. `src/socket/socket.auth.ts` authenticates the handshake. Chat application events and conversation rooms are not implemented.
+**Phase 6 Slices 1 and 4 are implemented.** `src/socket/socket.server.ts` attaches Socket.IO to the HTTP server created in `src/server.ts`. `src/socket/socket.auth.ts` authenticates the handshake. `src/socket/chat.socket.ts` handles `chat:message:send` after the user room join. Conversation rooms are not implemented.
 
 * Framework: Socket.IO initialized over the Express HTTP server.
-* Cluster Distribution: `@socket.io/redis-adapter` uses duplicated `ioredis` pub/sub clients from the existing Redis configuration.
+* Cluster Distribution: `@socket.io/redis-adapter` uses duplicated `ioredis` pub/sub clients from the existing Redis configuration. Recipient delivery uses that adapter. Message rows stay in PostgreSQL.
 * Room Topology:
-  * Personal User Room: `user:{userId}` — auto-joined on connect from `socket.data.user.id`.
-  * Match Conversation Room: `conversation:{conversationId}` — planned. Not joined in Slice 1.
-* Connection Middleware: Validates the access JWT, reloads the user from PostgreSQL, rejects deleted/suspended/banned/non-`USER` accounts, and stores `AuthenticatedUser` on `socket.data.user`.
+  * Personal User Room: `user:{userId}` — auto-joined on connect from `socket.data.user.id`. `chat:message:new` targets the recipient's user room only.
+  * Match Conversation Room: `conversation:{conversationId}` — not joined. No join event.
+* Connection Middleware: Validates the access JWT, reloads the user from PostgreSQL, rejects deleted/suspended/banned/non-`USER` accounts, and stores `AuthenticatedUser` on `socket.data.user`. Each send reloads that account again before calling the chat service.
 
 ---
 

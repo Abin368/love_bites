@@ -5,6 +5,7 @@ import { createAdapter } from '@socket.io/redis-adapter';
 import { env } from '../config/env';
 import { redis } from '../config/redis';
 import { logger } from '../utils/logger';
+import { registerChatSocketHandlers } from './chat.socket';
 import { authenticateSocket } from './socket.auth';
 
 export interface SocketRuntime {
@@ -66,13 +67,17 @@ export async function attachSocketServer(httpServer: HttpServer): Promise<Socket
   io.use(authenticateSocket);
   io.on('connection', (socket) => {
     const room = userRoom(socket.data.user.id);
-    void Promise.resolve(socket.join(room)).catch((error: unknown) => {
-      logger.error('Failed to join user room', {
-        error: error instanceof Error ? error.message : 'Unknown error',
-        userId: socket.data.user.id
+    void Promise.resolve(socket.join(room))
+      .then(() => {
+        registerChatSocketHandlers(socket, io);
+      })
+      .catch((error: unknown) => {
+        logger.error('Failed to join user room', {
+          error: error instanceof Error ? error.message : 'Unknown error',
+          userId: socket.data.user.id
+        });
+        socket.disconnect(true);
       });
-      socket.disconnect(true);
-    });
   });
 
   return { io, pubClient, subClient };

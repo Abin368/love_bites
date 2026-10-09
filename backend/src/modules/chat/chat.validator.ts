@@ -9,4 +9,11 @@ export const sendTextMessageSchema = z
   })
   .strict();
 
+export const sendTextMessageEventSchema = sendTextMessageSchema
+  .extend({
+    conversationId: conversationIdSchema
+  })
+  .strict();
+
 export type SendTextMessageBody = z.infer<typeof sendTextMessageSchema>;
+export type SendTextMessageEvent = z.infer<typeof sendTextMessageEventSchema>;

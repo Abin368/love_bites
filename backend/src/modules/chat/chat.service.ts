@@ -141,7 +141,8 @@ export async function sendTextMessage(input: SendTextMessageInput): Promise<Send
       mediaUrl: null,
       readAt: null,
       createdAt: message.createdAt,
-      remainingDailyMessages
+      remainingDailyMessages,
+      recipientId
     };
   });
 }

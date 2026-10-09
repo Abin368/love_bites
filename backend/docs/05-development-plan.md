@@ -467,7 +467,7 @@ Implement swipe action mechanics (`LIKE`, `PASS`, `SUPER_LIKE`), daily action qu
 
 ## 10. Phase 6 — Chat and Realtime Messaging
 
-**Partly complete (2026-10-08).** Slice 1 Socket.IO foundation, Slice 2 TEXT message persistence, and Slice 3 free text-message quota are implemented. Conversation rooms, chat events, history, read receipts, and media are not.
+**Partly complete (2026-10-09).** Slice 1 Socket.IO foundation, Slice 2 TEXT message persistence, Slice 3 free text-message quota, and Slice 4 realtime TEXT send/receive are implemented. Conversation rooms, history, read receipts, typing, and media are not.
 
 ### 10.1 Objectives
 Build real-time messaging using Socket.IO backed by PostgreSQL persistence, enforce message authorization, manage unread counters, support tiered media attachments, and provide cursor-based history pagination.
@@ -488,9 +488,11 @@ Build real-time messaging using Socket.IO backed by PostgreSQL persistence, enfo
    * Exhausted free quota is `429 DAILY_LIMIT_REACHED` with message `You have reached your daily limit of 20 text messages.`
    * PostgreSQL is the quota source of truth. Redis is not used for this product quota. No migration.
    * **Not in Slice 3:** media entitlement, Socket.IO broadcast, history, or read receipts.
-4. **Message Persistence & Realtime Broadcast — Partially implemented:**
-   * Persist TEXT messages in PostgreSQL. Update `conversations.last_message_at`. Free text quota is enforced.
-   * Broadcast `chat:message:new` to conversation rooms remains later work.
+4. **Realtime TEXT send/receive — Implemented (Slice 4):**
+   * `chat:message:send` validates a strict TEXT payload, reloads the current account, and calls `chat.service.sendTextMessage`.
+   * The success acknowledgement matches the HTTP message data, including `remainingDailyMessages`. Failures use the existing error codes and do not disconnect the socket.
+   * After commit, `chat:message:new` is emitted only to `user:{recipientUserId}`. HTTP `POST` does not emit it.
+   * No conversation room, join event, idempotency key, offline queue, or schema change. History and read receipts remain later work.
 5. **Message History & Read Receipts — Not implemented:**
    * `GET /api/v1/conversations/:conversationId/messages`: Cursor-paginated history sorted by `created_at DESC`.
    * `PATCH /api/v1/conversations/:conversationId/read`: Updates `read_at = CURRENT_TIMESTAMP` for unread messages and emits `chat:message:read` Socket.IO event.

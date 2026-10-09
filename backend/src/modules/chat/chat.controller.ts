@@ -9,7 +9,7 @@ function send(res: Response, status: number, data: unknown, message: string): vo
 
 export const sendTextMessage = asyncHandler(async (req, res) => {
   const body = req.body as SendTextMessageBody;
-  const data = await chatService.sendTextMessage({
+  const result = await chatService.sendTextMessage({
     callerId: req.user!.id,
     isVerified: req.user!.isVerified,
     conversationId: req.params.conversationId,
@@ -17,5 +17,20 @@ export const sendTextMessage = asyncHandler(async (req, res) => {
     content: body.content
   });
 
-  send(res, 201, data, 'Message sent.');
+  send(
+    res,
+    201,
+    {
+      id: result.id,
+      conversationId: result.conversationId,
+      senderId: result.senderId,
+      messageType: result.messageType,
+      content: result.content,
+      mediaUrl: result.mediaUrl,
+      readAt: result.readAt,
+      createdAt: result.createdAt,
+      remainingDailyMessages: result.remainingDailyMessages
+    },
+    'Message sent.'
+  );
 });

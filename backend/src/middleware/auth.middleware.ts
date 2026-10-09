@@ -17,18 +17,8 @@ function unauthorized(message: string, errorCode: 'AUTH_REQUIRED' | 'INVALID_TOK
   return new UnauthorizedError(message, [], errorCode);
 }
 
-export async function authenticateAccessToken(token: string): Promise<AuthenticatedUser> {
-  let claims;
-  try {
-    claims = verifyAccessToken(token);
-  } catch (error) {
-    if (error instanceof jwt.TokenExpiredError || error instanceof jwt.JsonWebTokenError) {
-      throw unauthorized('Invalid token.', 'INVALID_TOKEN');
-    }
-    throw error;
-  }
-
-  const user = await findUserById(claims.sub);
+export async function loadAuthenticatedUser(userId: string): Promise<AuthenticatedUser> {
+  const user = await findUserById(userId);
   if (!user || user.status === 'DELETED' || user.deletedAt) {
     throw unauthorized('Invalid token.', 'INVALID_TOKEN');
   }
@@ -49,6 +39,20 @@ export async function authenticateAccessToken(token: string): Promise<Authentica
     isVerified: computeIsVerified(user),
     isProfileComplete
   };
+}
+
+export async function authenticateAccessToken(token: string): Promise<AuthenticatedUser> {
+  let claims;
+  try {
+    claims = verifyAccessToken(token);
+  } catch (error) {
+    if (error instanceof jwt.TokenExpiredError || error instanceof jwt.JsonWebTokenError) {
+      throw unauthorized('Invalid token.', 'INVALID_TOKEN');
+    }
+    throw error;
+  }
+
+  return loadAuthenticatedUser(claims.sub);
 }
 
 export async function authenticate(req: Request, _res: Response, next: NextFunction): Promise<void> {
