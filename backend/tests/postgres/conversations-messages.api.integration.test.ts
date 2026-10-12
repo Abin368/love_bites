@@ -17,7 +17,9 @@ import { CreditTransaction } from '../../src/database/models/credit-transaction.
 import { UsageRecord } from '../../src/database/models/usage-record.model';
 import { UserCreditBalance } from '../../src/database/models/user-credit-balance.model';
 import { User, UserStatus } from '../../src/database/models/user.model';
-import { encodeHistoryCursor } from '../../src/modules/chat/chat.validator';
+import { encodeHistoryCursor, encodeInboxCursor } from '../../src/modules/chat/chat.validator';
+import { forgetSocketServer, rememberSocketServer } from '../../src/socket/socket.server';
+import type { Server } from 'socket.io';
 import {
   currentUtcDayWindow,
   DAILY_TEXT_MESSAGES_METRIC
@@ -191,15 +193,28 @@ async function insertConversation(
   matchId: string,
   status: 'ACTIVE' | 'CLOSED',
   closedAt: Date | null,
-  lastMessageAt: Date | null
+  lastMessageAt: Date | null,
+  id?: string
 ): Promise<Conversation> {
-  return Conversation.create({
+  const conversation = await Conversation.create({
+    ...(id ? { id } : {}),
     matchId,
     status,
     lastMessageAt,
     closedAt,
     ...timestamps()
   });
+  await sequelize.query(
+    `UPDATE conversations
+     SET last_message_at = :lastMessageAt
+     WHERE id = CAST(:id AS uuid)`,
+    { replacements: { id: conversation.id, lastMessageAt } }
+  );
+  const stored = await Conversation.findByPk(conversation.id);
+  if (!stored) {
+    throw new Error('Conversation was not inserted.');
+  }
+  return stored;
 }
 
 async function activeThread() {
@@ -234,6 +249,67 @@ function markRead(callerId: string, conversationId: string, body?: unknown) {
 
 function getUnreadCount(callerId: string, conversationId: string) {
   return request(app).get(`/api/v1/conversations/${conversationId}/unread-count`).set(authHeader(callerId));
+}
+
+function listInbox(callerId: string, query?: Record<string, string>) {
+  const pending = request(app).get('/api/v1/conversations').set(authHeader(callerId));
+  return query ? pending.query(query) : pending;
+}
+
+async function inboxPeer(genderId: string, firstName = 'Alex'): Promise<User> {
+  const user = await User.create({
+    email: `inbox-${randomUUID()}@example.com`,
+    phone: null,
+    passwordHash: PASSWORD_HASH,
+    role: 'USER',
+    status: 'ACTIVE',
+    emailVerified: true,
+    phoneVerified: false
+  });
+  await Profile.create({
+    userId: user.id,
+    firstName,
+    dateOfBirth: '1998-04-12',
+    genderId,
+    bio: 'hidden-bio',
+    occupation: 'hidden-occupation',
+    education: 'hidden-education',
+    isProfileComplete: true
+  });
+  return user;
+}
+
+async function openInboxThread(input: {
+  callerId: string;
+  targetId: string;
+  conversationId?: string;
+  matchStatus?: 'ACTIVE' | 'UNMATCHED' | 'UNDONE';
+  conversationStatus?: 'ACTIVE' | 'CLOSED';
+  lastMessageAt?: Date | null;
+}) {
+  const match = await insertMatch(input.callerId, input.targetId, input.matchStatus ?? 'ACTIVE');
+  const conversation = await insertConversation(
+    match.id,
+    input.conversationStatus ?? 'ACTIVE',
+    input.conversationStatus === 'CLOSED' ? new Date('2026-10-01T00:00:00.000Z') : null,
+    input.lastMessageAt === undefined ? null : input.lastMessageAt,
+    input.conversationId
+  );
+  return { match, conversation };
+}
+
+function attachFakeSocket(): { emit: jest.Mock; detach: () => void } {
+  const emit = jest.fn();
+  const io = {
+    to: () => ({ emit })
+  } as unknown as Server;
+  rememberSocketServer(io);
+  return {
+    emit,
+    detach: () => {
+      forgetSocketServer(io);
+    }
+  };
 }
 
 async function insertHistoryMessage(input: {
@@ -2642,5 +2718,774 @@ describe('GET /api/v1/conversations/:conversationId/unread-count', () => {
     const response = await getUnreadCount(caller.id, conversation.id);
     expect(response.status).toBe(200);
     expect(response.body.data).toEqual({ unreadCount: 21 });
+  });
+});
+
+describe('GET /api/v1/conversations', () => {
+  it('returns the approved envelope for an eligible conversation', async () => {
+    const catalogGender = await gender();
+    const caller = await buildUser({ genderId: catalogGender.id });
+    await Profile.update({ firstName: 'Jordan' }, { where: { userId: caller.id } });
+    const target = await inboxPeer(catalogGender.id, 'Alex');
+    const createdAt = new Date('2026-10-12T15:00:00.000Z');
+    const { match, conversation } = await openInboxThread({
+      callerId: caller.id,
+      targetId: target.id,
+      lastMessageAt: createdAt
+    });
+    const message = await insertHistoryMessage({
+      conversationId: conversation.id,
+      senderId: target.id,
+      content: '  hello  ',
+      createdAt
+    });
+
+    const response = await listInbox(caller.id);
+    expect(response.status).toBe(200);
+    expect(response.body.success).toBe(true);
+    expect(response.body.message).toBe('Conversations retrieved.');
+    expect(response.body.data.pagination).toEqual({ limit: 20, nextCursor: null, hasMore: false });
+    expect(response.body.data.conversations).toEqual([
+      {
+        conversationId: conversation.id,
+        matchId: match.id,
+        status: 'ACTIVE',
+        participant: { userId: target.id, firstName: 'Alex' },
+        lastMessage: {
+          id: message.id,
+          senderId: target.id,
+          messageType: 'TEXT',
+          content: '  hello  ',
+          createdAt: createdAt.toISOString(),
+          mediaUrl: null
+        },
+        unreadCount: 1
+      }
+    ]);
+    expect(Object.keys(response.body.data).sort()).toEqual(['conversations', 'pagination']);
+    expect(Object.keys(response.body.data.conversations[0]).sort()).toEqual([
+      'conversationId',
+      'lastMessage',
+      'matchId',
+      'participant',
+      'status',
+      'unreadCount'
+    ]);
+    expect(Object.keys(response.body.data.conversations[0].participant).sort()).toEqual(['firstName', 'userId']);
+    expect(Object.keys(response.body.data.conversations[0].lastMessage).sort()).toEqual([
+      'content',
+      'createdAt',
+      'id',
+      'mediaUrl',
+      'messageType',
+      'senderId'
+    ]);
+    expect(JSON.stringify(response.body)).not.toContain('hidden-bio');
+    expect(JSON.stringify(response.body)).not.toContain('hidden-occupation');
+    expect(JSON.stringify(response.body)).not.toContain(caller.email ?? 'missing-email');
+  });
+
+  it('returns an empty inbox', async () => {
+    const catalogGender = await gender();
+    const caller = await buildUser({ genderId: catalogGender.id });
+
+    const response = await listInbox(caller.id, { limit: '7' });
+    expect(response.status).toBe(200);
+    expect(response.body.message).toBe('Conversations retrieved.');
+    expect(response.body.data).toEqual({
+      conversations: [],
+      pagination: { limit: 7, nextCursor: null, hasMore: false }
+    });
+  });
+
+  it('orders by last_message_at descending with nulls last and pages without gaps', async () => {
+    const catalogGender = await gender();
+    const caller = await buildUser({ genderId: catalogGender.id });
+    const newest = '00000000-0000-4000-8000-000000000006';
+    const tieHigh = '00000000-0000-4000-8000-000000000004';
+    const tieLow = '00000000-0000-4000-8000-000000000002';
+    const nullHigh = '00000000-0000-4000-8000-000000000005';
+    const nullLow = '00000000-0000-4000-8000-000000000003';
+    const noon = new Date('2026-10-12T12:00:00.000Z');
+    const later = new Date('2026-10-12T13:00:00.000Z');
+    const specs = [
+      { id: newest, lastMessageAt: later },
+      { id: tieHigh, lastMessageAt: noon },
+      { id: tieLow, lastMessageAt: noon },
+      { id: nullHigh, lastMessageAt: null },
+      { id: nullLow, lastMessageAt: null }
+    ];
+    for (const spec of specs) {
+      const target = await inboxPeer(catalogGender.id);
+      await openInboxThread({
+        callerId: caller.id,
+        targetId: target.id,
+        conversationId: spec.id,
+        lastMessageAt: spec.lastMessageAt
+      });
+    }
+
+    const expected = [newest, tieHigh, tieLow, nullHigh, nullLow];
+    const full = await listInbox(caller.id, { limit: '10' });
+    expect(full.status).toBe(200);
+    expect(full.body.data.conversations.map((item: { conversationId: string }) => item.conversationId)).toEqual(expected);
+    expect(full.body.data.pagination).toEqual({ limit: 10, nextCursor: null, hasMore: false });
+
+    const repeated = await listInbox(caller.id, { limit: '10' });
+    expect(repeated.body.data.conversations.map((item: { conversationId: string }) => item.conversationId)).toEqual(
+      expected
+    );
+
+    const seen: string[] = [];
+    let cursor: string | undefined;
+    while (seen.length < 8) {
+      const page = await listInbox(caller.id, cursor ? { limit: '1', cursor } : { limit: '1' });
+      expect(page.status).toBe(200);
+      expect(page.body.data.pagination.limit).toBe(1);
+      const items = page.body.data.conversations as Array<{ conversationId: string }>;
+      expect(items).toHaveLength(page.body.data.pagination.hasMore || seen.length < expected.length ? 1 : 0);
+      if (items.length === 0) {
+        expect(page.body.data.pagination).toEqual({ limit: 1, nextCursor: null, hasMore: false });
+        break;
+      }
+      seen.push(items[0].conversationId);
+      if (!page.body.data.pagination.hasMore) {
+        expect(page.body.data.pagination.nextCursor).toBeNull();
+        break;
+      }
+      expect(typeof page.body.data.pagination.nextCursor).toBe('string');
+      const stored = await Conversation.findByPk(items[0].conversationId);
+      expect(page.body.data.pagination.nextCursor).toBe(
+        encodeInboxCursor(stored?.lastMessageAt ?? null, items[0].conversationId)
+      );
+      cursor = page.body.data.pagination.nextCursor;
+    }
+    expect(seen).toEqual(expected);
+
+    const tieStored = await Conversation.findByPk(tieHigh);
+    const tieCursor = encodeInboxCursor(tieStored?.lastMessageAt ?? null, tieHigh);
+    const afterTie = await listInbox(caller.id, { cursor: tieCursor, limit: '10' });
+    expect(afterTie.status).toBe(200);
+    expect(afterTie.body.data.conversations.map((item: { conversationId: string }) => item.conversationId)).toEqual([
+      tieLow,
+      nullHigh,
+      nullLow
+    ]);
+
+    const nullCursor = encodeInboxCursor(null, nullHigh);
+    const afterNull = await listInbox(caller.id, { cursor: nullCursor, limit: '10' });
+    expect(afterNull.status).toBe(200);
+    expect(afterNull.body.data.conversations.map((item: { conversationId: string }) => item.conversationId)).toEqual([
+      nullLow
+    ]);
+
+    const beforeNulls = encodeInboxCursor(null, 'ffffffff-ffff-4fff-bfff-ffffffffffff');
+    const onlyNulls = await listInbox(caller.id, { cursor: beforeNulls, limit: '10' });
+    expect(onlyNulls.body.data.conversations.map((item: { conversationId: string }) => item.conversationId)).toEqual([
+      nullHigh,
+      nullLow
+    ]);
+  });
+
+  it('uses a default limit of 20 and accepts an explicit limit through 50', async () => {
+    const catalogGender = await gender();
+    const caller = await buildUser({ genderId: catalogGender.id });
+    const ids: string[] = [];
+    for (let index = 0; index < 51; index += 1) {
+      const target = await inboxPeer(catalogGender.id);
+      const thread = await openInboxThread({
+        callerId: caller.id,
+        targetId: target.id,
+        lastMessageAt: new Date(Date.UTC(2026, 0, 1, 0, 0, index))
+      });
+      ids.push(thread.conversation.id);
+    }
+    const newestFirst = [...ids].reverse();
+
+    const defaults = await listInbox(caller.id);
+    expect(defaults.status).toBe(200);
+    expect(defaults.body.data.conversations).toHaveLength(20);
+    expect(defaults.body.data.pagination.limit).toBe(20);
+    expect(defaults.body.data.pagination.hasMore).toBe(true);
+    expect(typeof defaults.body.data.pagination.nextCursor).toBe('string');
+    expect(defaults.body.data.conversations.map((item: { conversationId: string }) => item.conversationId)).toEqual(
+      newestFirst.slice(0, 20)
+    );
+
+    const page = await listInbox(caller.id, { limit: '50' });
+    expect(page.status).toBe(200);
+    expect(page.body.data.conversations).toHaveLength(50);
+    expect(page.body.data.pagination).toMatchObject({ hasMore: true, limit: 50 });
+    const next = await listInbox(caller.id, { limit: '50', cursor: page.body.data.pagination.nextCursor });
+    expect(next.status).toBe(200);
+    expect(next.body.data.conversations).toHaveLength(1);
+    expect(next.body.data.pagination).toEqual({ limit: 50, nextCursor: null, hasMore: false });
+    expect(
+      [...page.body.data.conversations, ...next.body.data.conversations].map(
+        (item: { conversationId: string }) => item.conversationId
+      )
+    ).toEqual(newestFirst);
+
+    const one = await listInbox(caller.id, { limit: '1' });
+    expect(one.body.data.conversations).toHaveLength(1);
+    expect(one.body.data.pagination.limit).toBe(1);
+    expect(one.body.data.conversations[0].conversationId).toBe(newestFirst[0]);
+  }, 60000);
+
+  it('rejects invalid limits, cursors, and unsupported query parameters', async () => {
+    const catalogGender = await gender();
+    const caller = await buildUser({ genderId: catalogGender.id });
+    const target = await inboxPeer(catalogGender.id);
+    const conversationId = '00000000-0000-4000-8000-000000000010';
+    await openInboxThread({
+      callerId: caller.id,
+      targetId: target.id,
+      conversationId,
+      lastMessageAt: new Date('2026-10-12T10:00:00.000Z')
+    });
+
+    for (const limit of ['0', '-1', '51', '1.5', 'abc', '01']) {
+      const response = await listInbox(caller.id, { limit });
+      expect(response.status).toBe(400);
+      expect(response.body.error.code).toBe('VALIDATION_ERROR');
+      expect(response.body.error.message).toBe('Validation failed');
+      expect(response.body.error.details).toEqual([{ field: 'limit', message: 'Limit must be an integer from 1 to 50.' }]);
+    }
+
+    const unsupported = await listInbox(caller.id, { sort: 'desc' });
+    expect(unsupported.status).toBe(400);
+    expect(unsupported.body.error.code).toBe('VALIDATION_ERROR');
+    expect(unsupported.body.error.details).toEqual([{ field: 'sort', message: 'Unsupported query parameter.' }]);
+
+    const malformed = await listInbox(caller.id, { cursor: '@@@' });
+    expect(malformed.status).toBe(400);
+    expect(malformed.body.error.details).toEqual([
+      { field: 'cursor', message: 'Cursor must be a base64-encoded JSON object with lastMessageAt and conversationId.' }
+    ]);
+
+    const notJson = await listInbox(caller.id, { cursor: Buffer.from('not-json', 'utf8').toString('base64') });
+    expect(notJson.status).toBe(400);
+    expect(notJson.body.error.details[0].field).toBe('cursor');
+
+    const badTime = await listInbox(caller.id, {
+      cursor: Buffer.from(
+        JSON.stringify({ lastMessageAt: '2026-02-31T00:00:00.000Z', conversationId }),
+        'utf8'
+      ).toString('base64')
+    });
+    expect(badTime.status).toBe(400);
+    expect(badTime.body.error.details).toEqual([
+      { field: 'cursor.lastMessageAt', message: 'Cursor lastMessageAt must be a valid date-time or null.' }
+    ]);
+
+    const badId = await listInbox(caller.id, {
+      cursor: Buffer.from(
+        JSON.stringify({ lastMessageAt: '2026-10-12T10:00:00.000Z', conversationId: 'not-a-uuid' }),
+        'utf8'
+      ).toString('base64')
+    });
+    expect(badId.status).toBe(400);
+    expect(badId.body.error.details).toEqual([
+      { field: 'cursor.conversationId', message: 'Cursor conversationId must be a valid UUID.' }
+    ]);
+
+    const missingField = await listInbox(caller.id, {
+      cursor: Buffer.from(JSON.stringify({ lastMessageAt: null }), 'utf8').toString('base64')
+    });
+    expect(missingField.status).toBe(400);
+    expect(missingField.body.error.details).toEqual([
+      { field: 'cursor.conversationId', message: 'Cursor conversationId is required.' }
+    ]);
+
+    const extraField = await listInbox(caller.id, {
+      cursor: Buffer.from(
+        JSON.stringify({ lastMessageAt: null, conversationId, extra: true }),
+        'utf8'
+      ).toString('base64')
+    });
+    expect(extraField.status).toBe(400);
+    expect(extraField.body.error.details).toEqual([{ field: 'cursor.extra', message: 'Unsupported cursor field.' }]);
+
+    const historyCursor = await listInbox(caller.id, {
+      cursor: Buffer.from(
+        JSON.stringify({ createdAt: '2026-10-12T10:00:00.000Z', id: conversationId }),
+        'utf8'
+      ).toString('base64')
+    });
+    expect(historyCursor.status).toBe(400);
+    expect(historyCursor.body.error.code).toBe('VALIDATION_ERROR');
+    expect(historyCursor.body.error.details).toEqual([
+      { field: 'cursor.createdAt', message: 'Unsupported cursor field.' },
+      { field: 'cursor.id', message: 'Unsupported cursor field.' },
+      { field: 'cursor.lastMessageAt', message: 'Cursor lastMessageAt is required.' },
+      { field: 'cursor.conversationId', message: 'Cursor conversationId is required.' }
+    ]);
+  });
+
+  it('returns only active conversations with active matches for either participant', async () => {
+    const catalogGender = await gender();
+    const caller = await buildUser({ genderId: catalogGender.id });
+    await Profile.update({ firstName: 'Casey' }, { where: { userId: caller.id } });
+    const target = await inboxPeer(catalogGender.id, 'Alex');
+    const eligible = await openInboxThread({
+      callerId: caller.id,
+      targetId: target.id,
+      lastMessageAt: new Date('2026-10-12T12:00:00.000Z')
+    });
+    const closedTarget = await inboxPeer(catalogGender.id);
+    await openInboxThread({
+      callerId: caller.id,
+      targetId: closedTarget.id,
+      conversationStatus: 'CLOSED',
+      lastMessageAt: new Date('2026-10-12T13:00:00.000Z')
+    });
+    const unmatchedTarget = await inboxPeer(catalogGender.id);
+    await openInboxThread({
+      callerId: caller.id,
+      targetId: unmatchedTarget.id,
+      matchStatus: 'UNMATCHED',
+      lastMessageAt: new Date('2026-10-12T14:00:00.000Z')
+    });
+    const undoneTarget = await inboxPeer(catalogGender.id);
+    await openInboxThread({
+      callerId: caller.id,
+      targetId: undoneTarget.id,
+      matchStatus: 'UNDONE',
+      lastMessageAt: new Date('2026-10-12T15:00:00.000Z')
+    });
+    const outsider = await buildUser({ genderId: catalogGender.id });
+    const stranger = await inboxPeer(catalogGender.id);
+    const foreign = await openInboxThread({
+      callerId: outsider.id,
+      targetId: stranger.id,
+      lastMessageAt: new Date('2026-10-12T16:00:00.000Z')
+    });
+
+    const asCaller = await listInbox(caller.id);
+    expect(asCaller.status).toBe(200);
+    expect(asCaller.body.data.conversations.map((item: { conversationId: string }) => item.conversationId)).toEqual([
+      eligible.conversation.id
+    ]);
+    expect(asCaller.body.data.conversations[0].participant).toEqual({ userId: target.id, firstName: 'Alex' });
+    expect(asCaller.body.data.conversations[0].matchId).toBe(eligible.match.id);
+    expect(asCaller.body.data.conversations.map((item: { conversationId: string }) => item.conversationId)).not.toContain(
+      foreign.conversation.id
+    );
+
+    const asOutsider = await listInbox(outsider.id);
+    expect(asOutsider.status).toBe(200);
+    expect(asOutsider.body.data.conversations.map((item: { conversationId: string }) => item.conversationId)).toEqual([
+      foreign.conversation.id
+    ]);
+    expect(asOutsider.body.data.conversations[0].participant.userId).toBe(stranger.id);
+  });
+
+  it('shows the same conversation to both match participants', async () => {
+    const catalogGender = await gender();
+    const left = await buildUser({ genderId: catalogGender.id });
+    const right = await buildUser({ genderId: catalogGender.id });
+    await Profile.update({ firstName: 'Left' }, { where: { userId: left.id } });
+    await Profile.update({ firstName: 'Right' }, { where: { userId: right.id } });
+    const { match, conversation } = await openInboxThread({
+      callerId: left.id,
+      targetId: right.id,
+      lastMessageAt: new Date('2026-10-12T12:00:00.000Z')
+    });
+    await match.reload();
+
+    const asLeft = await listInbox(left.id);
+    const asRight = await listInbox(right.id);
+    expect(asLeft.status).toBe(200);
+    expect(asRight.status).toBe(200);
+    expect(asLeft.body.data.conversations[0].conversationId).toBe(conversation.id);
+    expect(asRight.body.data.conversations[0].conversationId).toBe(conversation.id);
+    expect(asLeft.body.data.conversations[0].participant).toEqual({ userId: right.id, firstName: 'Right' });
+    expect(asRight.body.data.conversations[0].participant).toEqual({ userId: left.id, firstName: 'Left' });
+    expect([match.userOneId, match.userTwoId].sort()).toEqual([left.id, right.id].sort());
+  });
+
+  it('omits a blocked pair and keeps the other threads', async () => {
+    const catalogGender = await gender();
+    const caller = await buildUser({ genderId: catalogGender.id });
+    const blockedByCaller = await inboxPeer(catalogGender.id, 'Blocked');
+    const blockedByOther = await inboxPeer(catalogGender.id, 'Blocker');
+    const visible = await inboxPeer(catalogGender.id, 'Visible');
+    const callerBlocked = await openInboxThread({
+      callerId: caller.id,
+      targetId: blockedByCaller.id,
+      lastMessageAt: new Date('2026-10-12T15:00:00.000Z')
+    });
+    const otherBlocked = await openInboxThread({
+      callerId: caller.id,
+      targetId: blockedByOther.id,
+      lastMessageAt: new Date('2026-10-12T14:00:00.000Z')
+    });
+    const kept = await openInboxThread({
+      callerId: caller.id,
+      targetId: visible.id,
+      lastMessageAt: new Date('2026-10-12T13:00:00.000Z')
+    });
+    await Block.create({
+      blockerId: caller.id,
+      blockedId: blockedByCaller.id,
+      reason: null,
+      createdAt: new Date()
+    });
+    await Block.create({
+      blockerId: blockedByOther.id,
+      blockedId: caller.id,
+      reason: null,
+      createdAt: new Date()
+    });
+
+    const response = await listInbox(caller.id);
+    expect(response.status).toBe(200);
+    expect(response.body.data.conversations.map((item: { conversationId: string }) => item.conversationId)).toEqual([
+      kept.conversation.id
+    ]);
+    expect(response.body.data.conversations[0].participant).toEqual({ userId: visible.id, firstName: 'Visible' });
+
+    await callerBlocked.conversation.reload();
+    await otherBlocked.conversation.reload();
+    expect(callerBlocked.conversation.status).toBe('ACTIVE');
+    expect(otherBlocked.conversation.status).toBe('ACTIVE');
+  });
+
+  it('selects the latest non-deleted message and returns null when none are visible', async () => {
+    const catalogGender = await gender();
+    const caller = await buildUser({ genderId: catalogGender.id });
+    const tieTarget = await inboxPeer(catalogGender.id);
+    const emptyTarget = await inboxPeer(catalogGender.id);
+    const deletedTarget = await inboxPeer(catalogGender.id);
+    const replacedTarget = await inboxPeer(catalogGender.id);
+    const shared = new Date('2026-10-12T12:00:00.000Z');
+    const tieThread = await openInboxThread({
+      callerId: caller.id,
+      targetId: tieTarget.id,
+      lastMessageAt: new Date('2026-10-12T16:00:00.000Z')
+    });
+    const lowId = '00000000-0000-4000-8000-000000000001';
+    const highId = '00000000-0000-4000-8000-000000000002';
+    await insertHistoryMessage({
+      id: lowId,
+      conversationId: tieThread.conversation.id,
+      senderId: caller.id,
+      content: 'tie-low',
+      createdAt: shared
+    });
+    await insertHistoryMessage({
+      id: highId,
+      conversationId: tieThread.conversation.id,
+      senderId: tieTarget.id,
+      content: 'tie-high',
+      createdAt: shared
+    });
+
+    const emptyThread = await openInboxThread({
+      callerId: caller.id,
+      targetId: emptyTarget.id,
+      lastMessageAt: new Date('2026-10-12T15:00:00.000Z')
+    });
+
+    const deletedThread = await openInboxThread({
+      callerId: caller.id,
+      targetId: deletedTarget.id,
+      lastMessageAt: new Date('2026-10-12T14:00:00.000Z')
+    });
+    const removedOnly = await insertHistoryMessage({
+      conversationId: deletedThread.conversation.id,
+      senderId: deletedTarget.id,
+      content: 'gone',
+      createdAt: new Date('2026-10-12T14:00:00.000Z')
+    });
+    await removedOnly.destroy();
+
+    const replacedThread = await openInboxThread({
+      callerId: caller.id,
+      targetId: replacedTarget.id,
+      lastMessageAt: new Date('2026-10-12T13:00:00.000Z')
+    });
+    const storageKey = `private/${randomUUID()}/secret-object`;
+    const kept = await insertHistoryMessage({
+      conversationId: replacedThread.conversation.id,
+      senderId: replacedTarget.id,
+      content: 'kept',
+      createdAt: new Date('2026-10-12T11:00:00.000Z')
+    });
+    const removedNewest = await insertHistoryMessage({
+      conversationId: replacedThread.conversation.id,
+      senderId: replacedTarget.id,
+      content: null,
+      createdAt: new Date('2026-10-12T12:30:00.000Z'),
+      messageType: 'IMAGE',
+      mediaStorageKey: storageKey
+    });
+    await removedNewest.destroy();
+
+    const response = await listInbox(caller.id);
+    expect(response.status).toBe(200);
+    const byId = new Map(
+      (response.body.data.conversations as Array<{ conversationId: string; lastMessage: unknown; unreadCount: number }>).map(
+        (item) => [item.conversationId, item]
+      )
+    );
+    expect(byId.get(tieThread.conversation.id)?.lastMessage).toEqual({
+      id: highId,
+      senderId: tieTarget.id,
+      messageType: 'TEXT',
+      content: 'tie-high',
+      createdAt: shared.toISOString(),
+      mediaUrl: null
+    });
+    expect(byId.get(emptyThread.conversation.id)?.lastMessage).toBeNull();
+    expect(byId.get(emptyThread.conversation.id)?.unreadCount).toBe(0);
+    expect(byId.get(deletedThread.conversation.id)?.lastMessage).toBeNull();
+    expect(byId.get(deletedThread.conversation.id)?.unreadCount).toBe(0);
+    expect(byId.get(replacedThread.conversation.id)?.lastMessage).toEqual({
+      id: kept.id,
+      senderId: replacedTarget.id,
+      messageType: 'TEXT',
+      content: 'kept',
+      createdAt: kept.createdAt.toISOString(),
+      mediaUrl: null
+    });
+    expect(JSON.stringify(response.body)).not.toContain(storageKey);
+    expect(JSON.stringify(response.body)).not.toContain('gone');
+  });
+
+  it('counts every incoming unread message type and ignores own, read, and deleted rows', async () => {
+    const catalogGender = await gender();
+    const caller = await buildUser({ genderId: catalogGender.id });
+    const target = await inboxPeer(catalogGender.id, 'Alex');
+    const otherTarget = await inboxPeer(catalogGender.id, 'Blake');
+    const thread = await openInboxThread({
+      callerId: caller.id,
+      targetId: target.id,
+      lastMessageAt: new Date('2026-10-12T18:00:00.000Z')
+    });
+    const otherThread = await openInboxThread({
+      callerId: caller.id,
+      targetId: otherTarget.id,
+      lastMessageAt: new Date('2026-10-12T17:00:00.000Z')
+    });
+    const base = new Date('2026-10-12T10:00:00.000Z').getTime();
+    const types = ['TEXT', 'IMAGE', 'GIF', 'VIDEO', 'VOICE'] as const;
+    const storageKey = `private/${randomUUID()}/unread-secret`;
+    for (let index = 0; index < types.length; index += 1) {
+      const messageType = types[index];
+      await insertHistoryMessage({
+        conversationId: thread.conversation.id,
+        senderId: target.id,
+        content: messageType === 'TEXT' ? 'incoming' : null,
+        createdAt: new Date(base + index * 1000),
+        messageType,
+        mediaStorageKey: messageType === 'TEXT' ? null : storageKey
+      });
+    }
+    await insertHistoryMessage({
+      conversationId: thread.conversation.id,
+      senderId: caller.id,
+      content: 'mine',
+      createdAt: new Date(base + 6000)
+    });
+    const readImage = await insertHistoryMessage({
+      conversationId: thread.conversation.id,
+      senderId: target.id,
+      content: null,
+      createdAt: new Date(base + 7000),
+      messageType: 'IMAGE',
+      readAt: new Date(base + 8000),
+      mediaStorageKey: storageKey
+    });
+    const deletedUnread = await insertHistoryMessage({
+      conversationId: thread.conversation.id,
+      senderId: target.id,
+      content: null,
+      createdAt: new Date(base + 9000),
+      messageType: 'VOICE',
+      mediaStorageKey: storageKey
+    });
+    await deletedUnread.destroy();
+    await insertHistoryMessage({
+      conversationId: otherThread.conversation.id,
+      senderId: otherTarget.id,
+      content: 'other-thread',
+      createdAt: new Date(base + 1000)
+    });
+
+    const response = await listInbox(caller.id);
+    expect(response.status).toBe(200);
+    const primary = response.body.data.conversations.find(
+      (item: { conversationId: string }) => item.conversationId === thread.conversation.id
+    );
+    const secondary = response.body.data.conversations.find(
+      (item: { conversationId: string }) => item.conversationId === otherThread.conversation.id
+    );
+    expect(primary.unreadCount).toBe(5);
+    expect(primary.lastMessage).toEqual({
+      id: readImage.id,
+      senderId: target.id,
+      messageType: 'IMAGE',
+      content: null,
+      createdAt: readImage.createdAt.toISOString(),
+      mediaUrl: null
+    });
+    expect(secondary.unreadCount).toBe(1);
+    expect(secondary.lastMessage).toMatchObject({ messageType: 'TEXT', content: 'other-thread', mediaUrl: null });
+    expect(JSON.stringify(response.body)).not.toContain(storageKey);
+  });
+
+  it('rejects a missing token, an invalid token, a deleted account, an admin, a suspended user, and a banned user', async () => {
+    const missing = await request(app).get('/api/v1/conversations');
+    expect(missing.status).toBe(401);
+    expect(missing.body.error.code).toBe('AUTH_REQUIRED');
+
+    const invalid = await request(app).get('/api/v1/conversations').set({ Authorization: 'Bearer not-a-token' });
+    expect(invalid.status).toBe(401);
+    expect(invalid.body.error.code).toBe('INVALID_TOKEN');
+
+    const deleted = await User.create({
+      email: `deleted-${randomUUID()}@example.com`,
+      passwordHash: PASSWORD_HASH,
+      role: 'USER',
+      status: 'ACTIVE',
+      emailVerified: true,
+      phoneVerified: false
+    });
+    await deleted.destroy();
+    const deletedResponse = await listInbox(deleted.id);
+    expect(deletedResponse.status).toBe(401);
+    expect(deletedResponse.body.error.code).toBe('INVALID_TOKEN');
+
+    const admin = await User.create({
+      email: `admin-${randomUUID()}@example.com`,
+      passwordHash: PASSWORD_HASH,
+      role: 'ADMIN',
+      status: 'ACTIVE',
+      emailVerified: true,
+      phoneVerified: false
+    });
+    const forbidden = await request(app).get('/api/v1/conversations').set(authHeader(admin.id, 'ADMIN'));
+    expect(forbidden.status).toBe(403);
+    expect(forbidden.body.error.code).toBe('FORBIDDEN');
+
+    const suspended = await User.create({
+      email: `suspended-${randomUUID()}@example.com`,
+      passwordHash: PASSWORD_HASH,
+      role: 'USER',
+      status: 'SUSPENDED',
+      emailVerified: true,
+      phoneVerified: false
+    });
+    const suspendedResponse = await listInbox(suspended.id);
+    expect(suspendedResponse.status).toBe(403);
+    expect(suspendedResponse.body.error.code).toBe('ACCOUNT_SUSPENDED');
+
+    const banned = await User.create({
+      email: `banned-${randomUUID()}@example.com`,
+      passwordHash: PASSWORD_HASH,
+      role: 'USER',
+      status: 'BANNED',
+      emailVerified: true,
+      phoneVerified: false
+    });
+    const bannedResponse = await listInbox(banned.id);
+    expect(bannedResponse.status).toBe(403);
+    expect(bannedResponse.body.error.code).toBe('ACCOUNT_BANNED');
+  });
+
+  it('rejects an unverified caller and an incomplete profile', async () => {
+    const catalogGender = await gender();
+    const emailCaller = await buildUser({ genderId: catalogGender.id, emailVerified: false });
+    const emailResponse = await listInbox(emailCaller.id);
+    expect(emailResponse.status).toBe(403);
+    expect(emailResponse.body.error.code).toBe('EMAIL_NOT_VERIFIED');
+
+    const phoneCaller = await buildUser({ genderId: catalogGender.id, phoneOnly: true, emailVerified: false });
+    const phoneResponse = await listInbox(phoneCaller.id);
+    expect(phoneResponse.status).toBe(403);
+    expect(phoneResponse.body.error.code).toBe('PHONE_NOT_VERIFIED');
+
+    const incomplete = await buildUser({ genderId: catalogGender.id, complete: false });
+    const incompleteResponse = await listInbox(incomplete.id);
+    expect(incompleteResponse.status).toBe(400);
+    expect(incompleteResponse.body.error.code).toBe('PROFILE_INCOMPLETE');
+
+    const missingPreferences = await buildUser({ genderId: catalogGender.id, preferences: false });
+    const preferencesResponse = await listInbox(missingPreferences.id);
+    expect(preferencesResponse.status).toBe(400);
+    expect(preferencesResponse.body.error.code).toBe('PROFILE_INCOMPLETE');
+
+    const missingLocation = await buildUser({ genderId: catalogGender.id, point: null });
+    const locationResponse = await listInbox(missingLocation.id);
+    expect(locationResponse.status).toBe(400);
+    expect(locationResponse.body.error.code).toBe('PROFILE_INCOMPLETE');
+  });
+
+  it('does not write rows or emit socket events', async () => {
+    const { caller, target, match, conversation } = await activeThread();
+    const readAt = new Date('2026-10-12T10:01:00.000Z');
+    const createdAt = new Date('2026-10-12T10:00:00.000Z');
+    const message = await insertHistoryMessage({
+      conversationId: conversation.id,
+      senderId: target.id,
+      content: 'steady',
+      createdAt,
+      readAt
+    });
+    await conversation.update({ lastMessageAt: createdAt });
+    await sequelize.query(
+      `UPDATE conversations SET last_message_at = :createdAt WHERE id = CAST(:id AS uuid)`,
+      { replacements: { id: conversation.id, createdAt } }
+    );
+    await seedTextUsage(caller.id, 4);
+    await UserCreditBalance.create({
+      userId: caller.id,
+      creditType: 'SUPER_LIKE',
+      balance: 3,
+      ...timestamps()
+    });
+    await CreditTransaction.create({
+      userId: caller.id,
+      creditType: 'SUPER_LIKE',
+      delta: -1,
+      reason: 'CONSUMPTION',
+      createdAt: new Date()
+    });
+
+    const beforeMessages = await Message.findAll({ paranoid: false });
+    const beforeUsage = await UsageRecord.count();
+    const beforeBlocks = await Block.count();
+    await conversation.reload();
+    await match.reload();
+    const beforeConversation = conversation.toJSON();
+    const beforeMatch = match.toJSON();
+    const socket = attachFakeSocket();
+
+    try {
+      const response = await listInbox(caller.id);
+      expect(response.status).toBe(200);
+      expect(response.body.data.conversations).toHaveLength(1);
+      expect(response.body.data.conversations[0].unreadCount).toBe(0);
+      expect(socket.emit).not.toHaveBeenCalled();
+    } finally {
+      socket.detach();
+    }
+
+    const afterMessages = await Message.findAll({ paranoid: false });
+    expect(afterMessages.map((row) => row.toJSON())).toEqual(beforeMessages.map((row) => row.toJSON()));
+    expect(await UsageRecord.count()).toBe(beforeUsage);
+    expect(await textMessageUsageCount(caller.id)).toBe(4);
+    expect(await textMessageUsageCount(target.id)).toBe(0);
+    expect(await UserCreditBalance.count()).toBe(1);
+    expect(await CreditTransaction.count()).toBe(1);
+    expect(await Block.count()).toBe(beforeBlocks);
+    await conversation.reload();
+    await match.reload();
+    expect(conversation.toJSON()).toEqual(beforeConversation);
+    expect(match.toJSON()).toEqual(beforeMatch);
+    const stored = await Message.findByPk(message.id);
+    expect(stored?.readAt?.toISOString()).toBe(readAt.toISOString());
+    expect(stored?.deletedAt).toBeNull();
   });
 });

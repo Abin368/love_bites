@@ -6,12 +6,15 @@ import * as chatController from './chat.controller';
 import {
   markReadBodySchema,
   sendTextMessageSchema,
+  validateListInboxQuery,
   validateListMessagesQuery,
   validateMarkReadRequest,
   validateUnreadCountQuery
 } from './chat.validator';
 
 const router = Router();
+
+router.get('/', authenticate, requireRole('USER'), validateListInboxQuery, chatController.listConversations);
 
 router.get(
   '/:conversationId/unread-count',

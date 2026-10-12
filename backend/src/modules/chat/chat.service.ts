@@ -16,11 +16,14 @@ import {
 } from '../likes/likes.data-access';
 import { findUserById } from '../users/users.data-access';
 import {
+  countInboxUnreadMessages,
   countIncomingUnreadMessages,
   findConversationWithMatch,
   hasBidirectionalBlock,
   insertTextMessage,
   listConversationMessages,
+  listInboxConversations,
+  listInboxLatestMessages,
   lockConversationById,
   lockMatchById,
   markIncomingMessagesRead,
@@ -32,6 +35,10 @@ import type {
   GetUnreadCountInput,
   GetUnreadCountResult,
   HistoryMessage,
+  InboxConversation,
+  InboxLastMessage,
+  ListConversationsInput,
+  ListConversationsResult,
   ListMessagesInput,
   ListMessagesResult,
   MarkMessagesReadInput,
@@ -39,7 +46,7 @@ import type {
   SendTextMessageInput,
   SendTextMessageResult
 } from './chat.types';
-import { conversationIdSchema, encodeHistoryCursor } from './chat.validator';
+import { conversationIdSchema, encodeHistoryCursor, encodeInboxCursor } from './chat.validator';
 
 const RESOURCE_NOT_FOUND_MESSAGE = 'Resource not found';
 const CONVERSATION_CLOSED_MESSAGE = 'Conversation is closed due to unmatch or safety block.';
@@ -89,6 +96,32 @@ async function rejectUnverified(userId: string): Promise<never> {
 
 function incomplete(): ValidationError {
   return new ValidationError('Onboarding is incomplete.', [], 'PROFILE_INCOMPLETE');
+}
+
+function asDate(value: Date | string): Date {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    throw new Error('Inbox query returned an invalid timestamp.');
+  }
+  return date;
+}
+
+function asNullableDate(value: Date | string | null): Date | null {
+  if (value === null) {
+    return null;
+  }
+  return asDate(value);
+}
+
+function asUnreadCount(value: number | string | undefined): number {
+  if (value === undefined) {
+    return 0;
+  }
+  const unreadCount = typeof value === 'number' ? value : Number(value);
+  if (!Number.isInteger(unreadCount) || unreadCount < 0) {
+    throw new Error('Unread count query returned an invalid value.');
+  }
+  return unreadCount;
 }
 
 function toHistoryMessage(message: {
@@ -211,6 +244,62 @@ export async function getUnreadCount(input: GetUnreadCountInput): Promise<GetUnr
 
   return {
     unreadCount: await countIncomingUnreadMessages(conversationId, senderId)
+  };
+}
+
+export async function listConversations(input: ListConversationsInput): Promise<ListConversationsResult> {
+  if (!input.isVerified) {
+    await rejectUnverified(input.callerId);
+  }
+
+  const context = await findViewerDiscoveryContext(input.callerId);
+  if (!context || !context.isProfileComplete || !context.hasLocation || !context.hasDatingPreferences) {
+    throw incomplete();
+  }
+
+  const rows = await listInboxConversations(input.callerId, input.limit + 1, input.cursor);
+  const hasMore = rows.length > input.limit;
+  const page = hasMore ? rows.slice(0, input.limit) : rows;
+  const conversationIds = page.map((row) => row.conversationId);
+  const previews =
+    conversationIds.length === 0 ? [] : await listInboxLatestMessages(conversationIds);
+  const unreadRows =
+    conversationIds.length === 0 ? [] : await countInboxUnreadMessages(input.callerId, conversationIds);
+
+  const previewByConversation = new Map(previews.map((row) => [row.conversationId.toLowerCase(), row]));
+  const unreadByConversation = new Map(unreadRows.map((row) => [row.conversationId.toLowerCase(), row.unreadCount]));
+  const conversations: InboxConversation[] = page.map((row) => {
+    const preview = previewByConversation.get(row.conversationId.toLowerCase());
+    const lastMessage: InboxLastMessage | null = preview
+      ? {
+          id: preview.id,
+          senderId: preview.senderId,
+          messageType: preview.messageType,
+          content: preview.content,
+          createdAt: asDate(preview.createdAt),
+          mediaUrl: null
+        }
+      : null;
+
+    return {
+      conversationId: row.conversationId,
+      matchId: row.matchId,
+      status: 'ACTIVE',
+      participant: {
+        userId: row.participantId,
+        firstName: row.firstName
+      },
+      lastMessage,
+      unreadCount: asUnreadCount(unreadByConversation.get(row.conversationId.toLowerCase()))
+    };
+  });
+  const last = page[page.length - 1];
+
+  return {
+    conversations,
+    nextCursor: hasMore && last ? encodeInboxCursor(asNullableDate(last.lastMessageAt), last.conversationId) : null,
+    hasMore,
+    limit: input.limit
   };
 }
 

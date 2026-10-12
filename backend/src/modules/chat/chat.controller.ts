@@ -2,8 +2,8 @@ import { Response } from 'express';
 import { deliverReadReceipt } from '../../socket/chat.socket';
 import { asyncHandler } from '../../utils/async-handler';
 import * as chatService from './chat.service';
-import type { HistoryMessage } from './chat.types';
-import type { ListMessagesQuery, SendTextMessageBody } from './chat.validator';
+import type { HistoryMessage, InboxConversation } from './chat.types';
+import type { ListInboxQuery, ListMessagesQuery, SendTextMessageBody } from './chat.validator';
 
 function send(res: Response, status: number, data: unknown, message: string): void {
   res.status(status).json({ success: true, data, message });
@@ -77,6 +77,53 @@ export const getUnreadCount = asyncHandler(async (req, res) => {
   });
 
   send(res, 200, { unreadCount: result.unreadCount }, 'Unread count retrieved.');
+});
+
+function inboxItem(conversation: InboxConversation) {
+  return {
+    conversationId: conversation.conversationId,
+    matchId: conversation.matchId,
+    status: conversation.status,
+    participant: {
+      userId: conversation.participant.userId,
+      firstName: conversation.participant.firstName
+    },
+    lastMessage: conversation.lastMessage
+      ? {
+          id: conversation.lastMessage.id,
+          senderId: conversation.lastMessage.senderId,
+          messageType: conversation.lastMessage.messageType,
+          content: conversation.lastMessage.content,
+          createdAt: conversation.lastMessage.createdAt,
+          mediaUrl: null
+        }
+      : null,
+    unreadCount: conversation.unreadCount
+  };
+}
+
+export const listConversations = asyncHandler(async (req, res) => {
+  const query = res.locals.listInboxQuery as ListInboxQuery;
+  const result = await chatService.listConversations({
+    callerId: req.user!.id,
+    isVerified: req.user!.isVerified,
+    limit: query.limit,
+    cursor: query.cursor
+  });
+
+  send(
+    res,
+    200,
+    {
+      conversations: result.conversations.map(inboxItem),
+      pagination: {
+        limit: result.limit,
+        nextCursor: result.nextCursor,
+        hasMore: result.hasMore
+      }
+    },
+    'Conversations retrieved.'
+  );
 });
 
 export const listMessages = asyncHandler(async (req, res) => {

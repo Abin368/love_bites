@@ -167,6 +167,135 @@ export function validateListMessagesQuery(req: Request, res: Response, next: Nex
   }
 }
 
+const INBOX_CURSOR_MALFORMED_MESSAGE =
+  'Cursor must be a base64-encoded JSON object with lastMessageAt and conversationId.';
+const INBOX_CURSOR_TIME_MESSAGE = 'Cursor lastMessageAt must be a valid date-time or null.';
+const INBOX_CURSOR_ID_MESSAGE = 'Cursor conversationId must be a valid UUID.';
+
+export interface InboxCursor {
+  lastMessageAt: string | null;
+  conversationId: string;
+}
+
+export interface ListInboxQuery {
+  limit: number;
+  cursor: InboxCursor | null;
+}
+
+export function encodeInboxCursor(lastMessageAt: Date | null, conversationId: string): string {
+  return Buffer.from(
+    JSON.stringify({
+      lastMessageAt: lastMessageAt === null ? null : lastMessageAt.toISOString(),
+      conversationId: conversationId.toLowerCase()
+    }),
+    'utf8'
+  ).toString('base64');
+}
+
+function parseInboxCursor(value: unknown): { cursor?: InboxCursor; details: ErrorDetail[] } {
+  if (typeof value !== 'string' || !isCanonicalBase64(value)) {
+    return { details: [{ field: 'cursor', message: INBOX_CURSOR_MALFORMED_MESSAGE }] };
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(Buffer.from(value, 'base64').toString('utf8'));
+  } catch {
+    return { details: [{ field: 'cursor', message: INBOX_CURSOR_MALFORMED_MESSAGE }] };
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { details: [{ field: 'cursor', message: INBOX_CURSOR_MALFORMED_MESSAGE }] };
+  }
+
+  const record = parsed as Record<string, unknown>;
+  const details: ErrorDetail[] = [];
+  for (const key of Object.keys(record)) {
+    if (key !== 'lastMessageAt' && key !== 'conversationId') {
+      details.push({ field: `cursor.${key}`, message: 'Unsupported cursor field.' });
+    }
+  }
+
+  let lastMessageAt: string | null | undefined;
+  if (!Object.prototype.hasOwnProperty.call(record, 'lastMessageAt')) {
+    details.push({ field: 'cursor.lastMessageAt', message: 'Cursor lastMessageAt is required.' });
+  } else if (record.lastMessageAt === null) {
+    lastMessageAt = null;
+  } else if (typeof record.lastMessageAt !== 'string' || !cursorDateTimeSchema.safeParse(record.lastMessageAt).success) {
+    details.push({ field: 'cursor.lastMessageAt', message: INBOX_CURSOR_TIME_MESSAGE });
+  } else {
+    const instant = new Date(record.lastMessageAt);
+    if (Number.isNaN(instant.getTime())) {
+      details.push({ field: 'cursor.lastMessageAt', message: INBOX_CURSOR_TIME_MESSAGE });
+    } else {
+      lastMessageAt = record.lastMessageAt;
+    }
+  }
+
+  let conversationId: string | undefined;
+  if (!Object.prototype.hasOwnProperty.call(record, 'conversationId')) {
+    details.push({ field: 'cursor.conversationId', message: 'Cursor conversationId is required.' });
+  } else if (typeof record.conversationId !== 'string' || !cursorIdSchema.safeParse(record.conversationId).success) {
+    details.push({ field: 'cursor.conversationId', message: INBOX_CURSOR_ID_MESSAGE });
+  } else {
+    conversationId = record.conversationId.toLowerCase();
+  }
+
+  if (details.length > 0 || lastMessageAt === undefined || !conversationId) {
+    return { details };
+  }
+
+  return { cursor: { lastMessageAt, conversationId }, details: [] };
+}
+
+export function parseListInboxQuery(input: unknown): ListInboxQuery {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw new ValidationError('Validation failed', [{ field: 'query', message: 'Query parameters are invalid.' }]);
+  }
+
+  const query = input as Record<string, unknown>;
+  const details: ErrorDetail[] = [];
+  for (const key of Object.keys(query)) {
+    if (key !== 'limit' && key !== 'cursor') {
+      details.push({ field: key, message: 'Unsupported query parameter.' });
+    }
+  }
+
+  let limit = 20;
+  if (Object.prototype.hasOwnProperty.call(query, 'limit')) {
+    const parsedLimit = parseLimit(query.limit);
+    if (parsedLimit.detail) {
+      details.push(parsedLimit.detail);
+    } else if (parsedLimit.limit !== undefined) {
+      limit = parsedLimit.limit;
+    }
+  }
+
+  let cursor: InboxCursor | null = null;
+  if (Object.prototype.hasOwnProperty.call(query, 'cursor')) {
+    const parsedCursor = parseInboxCursor(query.cursor);
+    details.push(...parsedCursor.details);
+    if (parsedCursor.cursor) {
+      cursor = parsedCursor.cursor;
+    }
+  }
+
+  if (details.length > 0) {
+    throw new ValidationError('Validation failed', details);
+  }
+
+  return { limit, cursor };
+}
+
+export function validateListInboxQuery(req: Request, res: Response, next: NextFunction): void {
+  try {
+    res.locals.listInboxQuery = parseListInboxQuery(req.query);
+    next();
+  } catch (error) {
+    next(error);
+  }
+}
+
 export const markReadBodySchema = z.object({}).strict();
 
 export function validateMarkReadRequest(req: Request, _res: Response, next: NextFunction): void {

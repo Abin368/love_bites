@@ -1,5 +1,5 @@
 import type { MessageType } from '../../database/models/message.model';
-import type { HistoryCursor } from './chat.validator';
+import type { HistoryCursor, InboxCursor } from './chat.validator';
 
 export interface SendTextMessageInput {
   callerId: string;
@@ -90,4 +90,39 @@ export interface ConversationMatchLookup {
   matchStatus: string;
   userOneId: string;
   userTwoId: string;
+}
+
+export interface ListConversationsInput {
+  callerId: string;
+  isVerified: boolean;
+  limit: number;
+  cursor: InboxCursor | null;
+}
+
+export interface InboxLastMessage {
+  id: string;
+  senderId: string;
+  messageType: MessageType;
+  content: string | null;
+  createdAt: Date;
+  mediaUrl: null;
+}
+
+export interface InboxConversation {
+  conversationId: string;
+  matchId: string;
+  status: 'ACTIVE';
+  participant: {
+    userId: string;
+    firstName: string;
+  };
+  lastMessage: InboxLastMessage | null;
+  unreadCount: number;
+}
+
+export interface ListConversationsResult {
+  conversations: InboxConversation[];
+  nextCursor: string | null;
+  hasMore: boolean;
+  limit: number;
 }
