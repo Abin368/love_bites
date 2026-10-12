@@ -144,6 +144,28 @@ WHERE conversation_id = CAST(:conversationId AS uuid)
 RETURNING read_at AS "readAt"
 `;
 
+const COUNT_INCOMING_UNREAD_SQL = `
+SELECT COUNT(*)::integer AS "unreadCount"
+FROM messages
+WHERE conversation_id = CAST(:conversationId AS uuid)
+  AND sender_id = CAST(:senderId AS uuid)
+  AND read_at IS NULL
+  AND deleted_at IS NULL
+`;
+
+export async function countIncomingUnreadMessages(conversationId: string, senderId: string): Promise<number> {
+  const rows = await sequelize.query<{ unreadCount: number | string }>(COUNT_INCOMING_UNREAD_SQL, {
+    replacements: { conversationId, senderId },
+    type: QueryTypes.SELECT
+  });
+  const value = rows[0]?.unreadCount;
+  const unreadCount = typeof value === 'number' ? value : Number(value);
+  if (!Number.isInteger(unreadCount) || unreadCount < 0) {
+    throw new Error('Unread count query returned an invalid value.');
+  }
+  return unreadCount;
+}
+
 export async function markIncomingMessagesRead(
   conversationId: string,
   senderId: string,

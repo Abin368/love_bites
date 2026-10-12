@@ -48,6 +48,16 @@ export interface ListMessagesResult {
   limit: number;
 }
 
+export interface GetUnreadCountInput {
+  callerId: string;
+  isVerified: boolean;
+  conversationId: string;
+}
+
+export interface GetUnreadCountResult {
+  unreadCount: number;
+}
+
 export interface MarkMessagesReadInput {
   callerId: string;
   isVerified: boolean;

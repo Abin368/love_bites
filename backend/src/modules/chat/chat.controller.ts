@@ -69,6 +69,16 @@ export const markMessagesRead = asyncHandler(async (req, res) => {
   send(res, 200, { readAt: result.readAt }, 'Messages marked as read.');
 });
 
+export const getUnreadCount = asyncHandler(async (req, res) => {
+  const result = await chatService.getUnreadCount({
+    callerId: req.user!.id,
+    isVerified: req.user!.isVerified,
+    conversationId: req.params.conversationId
+  });
+
+  send(res, 200, { unreadCount: result.unreadCount }, 'Unread count retrieved.');
+});
+
 export const listMessages = asyncHandler(async (req, res) => {
   const query = res.locals.listMessagesQuery as ListMessagesQuery;
   const result = await chatService.listMessages({

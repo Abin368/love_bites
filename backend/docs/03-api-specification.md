@@ -113,8 +113,9 @@ Live routes that require `Authorization: Bearer <accessToken>`:
 * `DELETE /api/v1/matches/:matchId`.
 * `POST /api/v1/conversations/:conversationId/messages`.
 * `GET /api/v1/conversations/:conversationId/messages`.
+* `GET /api/v1/conversations/:conversationId/unread-count`.
 
-Those profile, onboarding, photo, discovery, unmatch, and message routes also require role `USER`. `requireVerified` is not applied on the route. An unverified `USER` may call profile, onboarding, and photo routes. Discovery, PASS, LIKE, SUPER LIKE, UNDO, UNMATCH, send message, and message history check verification in the service and return `403 EMAIL_NOT_VERIFIED` or `403 PHONE_NOT_VERIFIED`. Any other role, including `ADMIN`, receives `403 FORBIDDEN`. Suspended and banned accounts are rejected with `403` by the authentication middleware.
+Those profile, onboarding, photo, discovery, unmatch, and message routes also require role `USER`. `requireVerified` is not applied on the route. An unverified `USER` may call profile, onboarding, and photo routes. Discovery, PASS, LIKE, SUPER LIKE, UNDO, UNMATCH, send message, message history, and the conversation unread count check verification in the service and return `403 EMAIL_NOT_VERIFIED` or `403 PHONE_NOT_VERIFIED`. Any other role, including `ADMIN`, receives `403 FORBIDDEN`. Suspended and banned accounts are rejected with `403` by the authentication middleware.
 
 There is no live admin API yet. `requireRole('ADMIN')` exists for later routes.
 
@@ -1649,6 +1650,35 @@ Photo objects returned after confirm, list, and patch are `{ "id", "url", "displ
 
 ---
 
+### 24.4 Get Conversation Unread Count
+**Implemented (Phase 6 Slice 8).** Read-only count of unread incoming messages in one conversation. This route does not send a message, mark anything read, consume quota, change conversation or match status, write Redis, or emit a Socket.IO event. `GET /api/v1/conversations` and `GET /api/v1/conversations/:conversationId` remain unimplemented.
+
+* **Method & Path:** `GET /api/v1/conversations/:conversationId/unread-count`
+* **Auth:** `Authorization: Bearer <accessToken>` and role `USER`. Middleware is `authenticate`, `requireRole('USER')`, then empty-query validation. `requireVerified` is not on the route. The service checks verification and returns `403 EMAIL_NOT_VERIFIED` or `403 PHONE_NOT_VERIFIED`. A non-`USER` role is `403 FORBIDDEN`.
+* **Incomplete caller:** `400 PROFILE_INCOMPLETE`, same discovery rule as history. Message: `Onboarding is incomplete.`
+* **Path `conversationId`:** required UUID. A bad value is `400 VALIDATION_ERROR`. Message: `Validation failed`. `details` is `[{ "field": "conversationId", "message": "Conversation id must be a valid UUID." }]`.
+* **Query:** none. Any query parameter, including history `limit` and `cursor`, is `400 VALIDATION_ERROR`. Detail field is the parameter name. Message: `Unsupported query parameter.`
+* **Body:** none.
+* **Who can read the count:** either `user_one_id` or `user_two_id` on the match that backs the conversation. The same rules as section 24.1 apply. The client does not send a sender id or a recipient id.
+* **Not found:** `404 RESOURCE_NOT_FOUND`. Message: `Resource not found`. Covers a missing conversation id, a conversation whose match the caller does not belong to, and an `ACTIVE` conversation whose match is not `ACTIVE`. The response does not reveal whether the id exists and does not return `unreadCount: 0` for those cases.
+* **Closed conversation:** a participant receives the retained unread count when `conversations.status = 'CLOSED'`, including after unmatch or undo, unless a block exists. The route does not return `CONVERSATION_CLOSED` and does not reopen the conversation or match.
+* **Block:** either direction returns `409 BLOCKED_USER`, including when the conversation is `CLOSED`. Message: `Interaction prohibited due to an active safety block.` The block check is not skipped for a closed conversation. Authorization runs before the count query.
+* **Other participant:** the route does not filter on the other account's status.
+* **Count:** one integer. A row contributes only when it belongs to this conversation, `sender_id` is the other participant, `read_at IS NULL`, and `deleted_at IS NULL`. Every stored `message_type` counts. The caller's own rows do not count, even when `read_at` is null. Soft-deleted rows do not count. There is no `message_type` filter. History pagination does not cap the count.
+* **Query:** parameterized `COUNT(*)::integer` on `messages`, using `idx_messages_unread_count`. PostgreSQL is read on each request. No cached counter and no Redis key. Slice 8 adds no column, index, or table.
+* **Read-only:** no insert, update, or delete. `read_at`, `updated_at`, `deleted_at`, `last_message_at`, conversation status, match status, `usage_records`, and credits stay unchanged. No Socket.IO event is emitted. `PATCH /conversations/:conversationId/read` still returns only `readAt`. After that update commits, the next count request sees the new `read_at` values.
+* **Success Response (`200 OK`):** Message: `Unread count retrieved.`
+  ```json
+  {
+    "success": true,
+    "data": { "unreadCount": 2 },
+    "message": "Unread count retrieved."
+  }
+  ```
+  `unreadCount` is an integer, including `0`. The body does not include message ids, a cursor, quota, or conversation status.
+
+---
+
 ## 25. Block APIs
 
 ### 25.1 Block a User
@@ -1972,7 +2002,7 @@ Photo objects returned after confirm, list, and patch are `{ "id", "url", "displ
 
 ## 32. Realtime / Socket.IO Events Specification
 
-**Phase 6 Slices 1, 4, 6, and 7 cover the socket foundation, TEXT send/receive, read receipts, and typing indicators.** Socket.IO is attached to the Express HTTP server with `@socket.io/redis-adapter`. `chat:message:send` persists through `chat.service.sendTextMessage` and then emits `chat:message:new` to the recipient user room. HTTP `POST /api/v1/conversations/:conversationId/messages` does not emit that event. `PATCH /api/v1/conversations/:conversationId/read` emits `chat:message:read` to the other participant's user room after commit, and only when at least one incoming message was newly marked. `chat:typing:start` and `chat:typing:stop` relay an ephemeral indicator to that same personal room. Conversation rooms are not joined. `DELETE /api/v1/matches/:matchId` still does not emit `match:unmatch`. HTTP routes keep working when Socket.IO did not start.
+**Phase 6 Slices 1, 4, 6, and 7 cover the socket foundation, TEXT send/receive, read receipts, and typing indicators.** Socket.IO is attached to the Express HTTP server with `@socket.io/redis-adapter`. `chat:message:send` persists through `chat.service.sendTextMessage` and then emits `chat:message:new` to the recipient user room. HTTP `POST /api/v1/conversations/:conversationId/messages` does not emit that event. `PATCH /api/v1/conversations/:conversationId/read` emits `chat:message:read` to the other participant's user room after commit, and only when at least one incoming message was newly marked. `GET /api/v1/conversations/:conversationId/unread-count` does not emit a count event and does not change `chat:message:new` or `chat:message:read`. `chat:typing:start` and `chat:typing:stop` relay an ephemeral indicator to that same personal room. Conversation rooms are not joined. `DELETE /api/v1/matches/:matchId` still does not emit `match:unmatch`. HTTP routes keep working when Socket.IO did not start.
 
 ### 32.0 Implemented foundation
 * **Handshake:** Client connects with `auth: { token: "<access JWT>" }`. The token is the same access JWT used by HTTP `Authorization: Bearer`. Refresh tokens are not accepted.
@@ -2106,6 +2136,7 @@ Rate limits are enforced using Redis sliding-window algorithms:
 | **Matches list** | `matches`, `conversations`. `GET /matches` is not mounted. |
 | **Messages** (`POST /conversations/:conversationId/messages` and `chat:message:send`, implemented) | `messages`, `conversations`, `matches`, `users`, `blocks`, `usage_records`, `subscriptions`, `plans`. The Redis adapter delivers `chat:message:new` only. Redis does not store the message or the text quota. No `notifications` row is written. |
 | **Read receipts** (`PATCH /conversations/:conversationId/read`, implemented) | `messages` only. Sets `read_at` and `updated_at` to `CURRENT_TIMESTAMP` on unread incoming rows from the other participant. Does not change `conversations`, matches, likes, `usage_records`, or credits. No notification row and no Redis idempotency key. The Redis adapter delivers `chat:message:read` to `user:{otherParticipantId}` only after commit, and only when at least one row changed. |
+| **Unread count** (`GET /conversations/:conversationId/unread-count`, implemented) | Reads `messages`, `conversations`, `matches`, `blocks`, and the profile context used by history. Counts non-deleted incoming rows with `read_at IS NULL` through `idx_messages_unread_count`. Writes no row, no Redis key, and no socket event. |
 | **Typing** (`chat:typing:start`, `chat:typing:stop`, implemented) | Reads `conversations`, `matches`, `blocks`, `users`, and the profile context used by send. Writes no row and no Redis key. Process memory on the socket's node holds one active conversation and one timer per socket. The Redis adapter delivers the recipient event only. |
 | **Safety** (`/blocks`, `/reports`) | `blocks`, `reports` |
 | **Notifications** | `notifications` |

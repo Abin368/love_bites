@@ -467,7 +467,7 @@ Implement swipe action mechanics (`LIKE`, `PASS`, `SUPER_LIKE`), daily action qu
 
 ## 10. Phase 6 — Chat and Realtime Messaging
 
-**Partly complete (2026-10-09).** Slice 1 Socket.IO foundation, Slice 2 TEXT message persistence, Slice 3 free text-message quota, Slice 4 realtime TEXT send/receive, Slice 5 message history, Slice 6 read receipts, and Slice 7 typing indicators are implemented. Conversation rooms and media are not.
+**Partly complete (2026-10-12).** Slice 1 Socket.IO foundation, Slice 2 TEXT message persistence, Slice 3 free text-message quota, Slice 4 realtime TEXT send/receive, Slice 5 message history, Slice 6 read receipts, Slice 7 typing indicators, and Slice 8 conversation unread counts are implemented. Conversation rooms, the inbox list, and media are not.
 
 ### 10.1 Objectives
 Build real-time messaging using Socket.IO backed by PostgreSQL persistence, enforce message authorization, manage unread counters, support tiered media attachments, and provide cursor-based history pagination.
@@ -502,6 +502,8 @@ Build real-time messaging using Socket.IO backed by PostgreSQL persistence, enfo
    * A `CLOSED` conversation is `CONVERSATION_CLOSED`. Recipient delivery is `user:{otherParticipantId}` with `{ conversationId, senderId }`.
    * One process-local timer per socket expires after five seconds. Repeated starts reauthorize and refresh that timer without a second start event. Stop, timeout, disconnect, a conversation switch, and a failed reauthorization emit one stop.
    * Ten start authorizations per socket per 10 seconds. The next start is `RATE_LIMITED` and does not query. No migration, Redis key, or conversation room.
+8. **Conversation unread count — Implemented (Slice 8):**
+   * `GET /api/v1/conversations/:conversationId/unread-count`: One integer for a participant. The gates match message history, including a closed conversation and either-direction blocks. The count is incoming rows of every stored type with `read_at IS NULL` and `deleted_at IS NULL`. The caller's own rows are excluded. The read uses `idx_messages_unread_count` and does not write, cache, or emit a socket event. No migration. `GET /api/v1/conversations` remains unimplemented.
 
 ---
 
@@ -800,7 +802,7 @@ To maintain strict adherence to dependency constraints, development should follo
 | **Likes, Passes, Super Like** | Discovery, subscriptions for Premium | `likes`, `usage_records`, `matches`, `conversations`, `user_credit_balances`, `credit_transactions` | `POST /discovery/:userId/pass`, `POST /discovery/:userId/like`, `POST /discovery/:userId/super-like` | PostgreSQL integration: pass 11, like 20, super like 22 |
 | **Unmatch** | Likes Module | `matches`, `conversations` | `DELETE /matches/:matchId` | Implemented. PostgreSQL integration: 13 passed. No Redis, quota, or credit change. `GET /matches` is not implemented. |
 | **Premium Undo** | Likes, Matches, Premium subscription | `likes`, `matches`, `conversations`, `subscriptions`, `plans` | `POST /discovery/undo` | PostgreSQL integration: 14 passed. No Redis idempotency. |
-| **Chat & Messaging**| Matches Module, S3, Socket.IO | `conversations`, `messages`, `usage_records` | `POST /conversations/:conversationId/messages`, `GET /conversations/:conversationId/messages`, `PATCH /conversations/:conversationId/read`, `chat:message:send`, `chat:typing:start`, `chat:typing:stop` | Slices 2–7: TEXT send, free `DAILY_TEXT_MESSAGES` quota (20/UTC day), realtime TEXT delivery, cursor-paginated history, read receipts, and ephemeral typing indicators. Media and rooms remain. |
+| **Chat & Messaging**| Matches Module, S3, Socket.IO | `conversations`, `messages`, `usage_records` | `POST /conversations/:conversationId/messages`, `GET /conversations/:conversationId/messages`, `GET /conversations/:conversationId/unread-count`, `PATCH /conversations/:conversationId/read`, `chat:message:send`, `chat:typing:start`, `chat:typing:stop` | Slices 2–8: TEXT send, free `DAILY_TEXT_MESSAGES` quota (20/UTC day), realtime TEXT delivery, cursor-paginated history, read receipts, ephemeral typing indicators, and a per-conversation unread count. Inbox, media, and rooms remain. |
 | **Blocks & Safety** | Users, Matches, Chat | `blocks` | `/blocks`, `/blocks/:userId` | Integration (Bidirectional Isolation) |
 | **Reports** | Users, Safety | `reports` | `/reports` | Integration (Report Submission) |
 | **Notifications** | Matches, Chat, Likes | `notifications` | `GET /notifications`, Socket.IO events | Integration (Event Delivery) |

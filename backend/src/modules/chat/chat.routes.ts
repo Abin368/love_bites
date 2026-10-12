@@ -3,9 +3,23 @@ import { authenticate } from '../../middleware/auth.middleware';
 import { requireRole } from '../../middleware/role.middleware';
 import { validate } from '../../middleware/validate.middleware';
 import * as chatController from './chat.controller';
-import { markReadBodySchema, sendTextMessageSchema, validateListMessagesQuery, validateMarkReadRequest } from './chat.validator';
+import {
+  markReadBodySchema,
+  sendTextMessageSchema,
+  validateListMessagesQuery,
+  validateMarkReadRequest,
+  validateUnreadCountQuery
+} from './chat.validator';
 
 const router = Router();
+
+router.get(
+  '/:conversationId/unread-count',
+  authenticate,
+  requireRole('USER'),
+  validateUnreadCountQuery,
+  chatController.getUnreadCount
+);
 
 router.get(
   '/:conversationId/messages',

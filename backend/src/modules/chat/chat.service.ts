@@ -16,6 +16,7 @@ import {
 } from '../likes/likes.data-access';
 import { findUserById } from '../users/users.data-access';
 import {
+  countIncomingUnreadMessages,
   findConversationWithMatch,
   hasBidirectionalBlock,
   insertTextMessage,
@@ -28,6 +29,8 @@ import {
 import type {
   AuthorizeTypingInput,
   AuthorizeTypingResult,
+  GetUnreadCountInput,
+  GetUnreadCountResult,
   HistoryMessage,
   ListMessagesInput,
   ListMessagesResult,
@@ -178,6 +181,37 @@ export async function sendTextMessage(input: SendTextMessageInput): Promise<Send
       recipientId
     };
   });
+}
+
+export async function getUnreadCount(input: GetUnreadCountInput): Promise<GetUnreadCountResult> {
+  const conversationId = parseConversationId(input.conversationId);
+
+  if (!input.isVerified) {
+    await rejectUnverified(input.callerId);
+  }
+
+  const context = await findViewerDiscoveryContext(input.callerId);
+  if (!context || !context.isProfileComplete || !context.hasLocation || !context.hasDatingPreferences) {
+    throw incomplete();
+  }
+
+  const loaded = await findConversationWithMatch(conversationId);
+  if (!loaded || !participates(loaded.userOneId, loaded.userTwoId, input.callerId)) {
+    throw resourceNotFound();
+  }
+
+  if (loaded.conversationStatus === 'ACTIVE' && loaded.matchStatus !== 'ACTIVE') {
+    throw resourceNotFound();
+  }
+
+  const senderId = otherParticipant(loaded.userOneId, loaded.userTwoId, input.callerId);
+  if (await hasBidirectionalBlock(input.callerId, senderId)) {
+    throw new ConflictError(BLOCKED_USER_MESSAGE, [], 'BLOCKED_USER');
+  }
+
+  return {
+    unreadCount: await countIncomingUnreadMessages(conversationId, senderId)
+  };
 }
 
 export async function listMessages(input: ListMessagesInput): Promise<ListMessagesResult> {

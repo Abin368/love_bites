@@ -666,7 +666,7 @@ Records established mutual matches between pairs of users. To eliminate duplicat
 ### 11.1 `conversations`
 
 #### Purpose
-Represents the chat channel established for a specific match. `uq_conversations_match` enforces one conversation per match. LIKE and SUPER LIKE create the row with `status = 'ACTIVE'` when they create the match. When Undo moves that match to `UNDONE`, the `ACTIVE` conversation becomes `CLOSED` and `closed_at` is set. When UNMATCH moves that match to `UNMATCHED`, the same close happens. The conversation row and its messages stay. UNMATCH and UNDO do not change `last_message_at`. `POST /api/v1/conversations/:conversationId/messages` and Socket.IO `chat:message:send` set `last_message_at` to the new message `created_at` when a TEXT message is persisted. Both paths use the same tables. Slice 4 adds no columns, indexes, or tables. Slice 5 reads history through the existing `idx_messages_conversation_history` index and adds no columns, indexes, or tables. `GET /api/v1/conversations/:conversationId/messages` returns non-deleted rows for one conversation ordered by `created_at DESC, id DESC`. It does not change `read_at` or `last_message_at`. Slice 6 marks incoming messages read through the existing `messages.read_at` column and `idx_messages_unread_count` index. It adds no columns, indexes, or tables, and it does not change `last_message_at`, conversation status, or `closed_at`. Inbox list is not implemented. Realtime delivery is not stored in Redis.
+Represents the chat channel established for a specific match. `uq_conversations_match` enforces one conversation per match. LIKE and SUPER LIKE create the row with `status = 'ACTIVE'` when they create the match. When Undo moves that match to `UNDONE`, the `ACTIVE` conversation becomes `CLOSED` and `closed_at` is set. When UNMATCH moves that match to `UNMATCHED`, the same close happens. The conversation row and its messages stay. UNMATCH and UNDO do not change `last_message_at`. `POST /api/v1/conversations/:conversationId/messages` and Socket.IO `chat:message:send` set `last_message_at` to the new message `created_at` when a TEXT message is persisted. Both paths use the same tables. Slice 4 adds no columns, indexes, or tables. Slice 5 reads history through the existing `idx_messages_conversation_history` index and adds no columns, indexes, or tables. `GET /api/v1/conversations/:conversationId/messages` returns non-deleted rows for one conversation ordered by `created_at DESC, id DESC`. It does not change `read_at` or `last_message_at`. Slice 6 marks incoming messages read through the existing `messages.read_at` column and `idx_messages_unread_count` index. It adds no columns, indexes, or tables, and it does not change `last_message_at`, conversation status, or `closed_at`. Slice 8 counts unread incoming rows with that same index and adds no columns, indexes, or tables. `GET /api/v1/conversations/:conversationId/unread-count` does not change `read_at` or `last_message_at`. Inbox list is not implemented. Realtime delivery is not stored in Redis.
 
 #### Columns
 | Column | Type | Nullable | Default | Description |
@@ -712,7 +712,7 @@ Stores chat messages exchanged within an active conversation. Supports text mess
 | `media_storage_key`| `VARCHAR(512)` | `YES` | `NULL` | S3 object key for private media attachments. |
 | `media_mime_type`| `VARCHAR(50)` | `YES` | `NULL` | Attachment MIME type (e.g., `'image/jpeg'`, `'audio/aac'`). |
 | `media_file_size`| `INTEGER` | `YES` | `NULL` | Attachment size in bytes. |
-| `read_at` | `TIMESTAMPTZ` | `YES` | `NULL` | Timestamp when the other participant read the message. Null means unread. `PATCH /api/v1/conversations/:conversationId/read` sets this, and `updated_at`, to PostgreSQL `CURRENT_TIMESTAMP` for unread incoming rows only. Slice 6 adds no migration. |
+| `read_at` | `TIMESTAMPTZ` | `YES` | `NULL` | Timestamp when the other participant read the message. Null means unread. `PATCH /api/v1/conversations/:conversationId/read` sets this, and `updated_at`, to PostgreSQL `CURRENT_TIMESTAMP` for unread incoming rows only. `GET /api/v1/conversations/:conversationId/unread-count` counts rows where this is null, the sender is the other participant, and `deleted_at` is null. Slice 6 and Slice 8 add no migration. |
 | `created_at` | `TIMESTAMPTZ` | `NO` | `CURRENT_TIMESTAMP` | Message creation timestamp. |
 | `updated_at` | `TIMESTAMPTZ` | `NO` | `CURRENT_TIMESTAMP` | Modification timestamp. |
 | `deleted_at` | `TIMESTAMPTZ` | `YES` | `NULL` | Soft deletion timestamp for message deletion. |
@@ -732,7 +732,7 @@ Stores chat messages exchanged within an active conversation. Supports text mess
 * `CREATE INDEX idx_messages_conversation_history ON messages (conversation_id, created_at DESC) WHERE deleted_at IS NULL;`  
   *Optimizes cursor-based pagination of chat conversation threads.*
 * `CREATE INDEX idx_messages_unread_count ON messages (conversation_id, sender_id, read_at) WHERE read_at IS NULL AND deleted_at IS NULL;`  
-  *Accelerates unread badge calculation across user dialogs.*
+  *Supports the per-conversation unread count. `GET /api/v1/conversations/:conversationId/unread-count` filters on `conversation_id`, the other participant's `sender_id`, `read_at IS NULL`, and `deleted_at IS NULL`. Slice 8 adds no index.*
 
 ---
 

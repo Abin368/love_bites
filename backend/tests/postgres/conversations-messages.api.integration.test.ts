@@ -232,13 +232,17 @@ function markRead(callerId: string, conversationId: string, body?: unknown) {
   return body === undefined ? pending : pending.send(body);
 }
 
+function getUnreadCount(callerId: string, conversationId: string) {
+  return request(app).get(`/api/v1/conversations/${conversationId}/unread-count`).set(authHeader(callerId));
+}
+
 async function insertHistoryMessage(input: {
   conversationId: string;
   senderId: string;
   content: string | null;
   createdAt: Date;
   id?: string;
-  messageType?: 'TEXT' | 'IMAGE';
+  messageType?: 'TEXT' | 'IMAGE' | 'GIF' | 'VIDEO' | 'VOICE';
   readAt?: Date | null;
   mediaStorageKey?: string | null;
 }): Promise<Message> {
@@ -1999,5 +2003,644 @@ describe('PATCH /api/v1/conversations/:conversationId/read', () => {
     expect(storedSecond?.updatedAt.toISOString()).toBe(stamps[0]);
     expect(storedAlready?.readAt?.toISOString()).toBe(original.toISOString());
     expect(storedOwn?.readAt).toBeNull();
+  });
+});
+
+describe('GET /api/v1/conversations/:conversationId/unread-count', () => {
+  it('returns zero when an active conversation has no incoming unread messages', async () => {
+    const { caller, target, conversation } = await activeThread();
+
+    const empty = await getUnreadCount(caller.id, conversation.id);
+    expect(empty.status).toBe(200);
+    expect(empty.body).toEqual({
+      success: true,
+      data: { unreadCount: 0 },
+      message: 'Unread count retrieved.'
+    });
+
+    const asTarget = await getUnreadCount(target.id, conversation.id);
+    expect(asTarget.status).toBe(200);
+    expect(asTarget.body.data).toEqual({ unreadCount: 0 });
+  });
+
+  it('counts one incoming unread message', async () => {
+    const { caller, target, conversation } = await activeThread();
+    await insertHistoryMessage({
+      conversationId: conversation.id,
+      senderId: target.id,
+      content: 'hello',
+      createdAt: new Date('2026-10-12T10:00:00.000Z')
+    });
+
+    const response = await getUnreadCount(caller.id, conversation.id);
+    expect(response.status).toBe(200);
+    expect(response.body.data).toEqual({ unreadCount: 1 });
+    expect(response.body.message).toBe('Unread count retrieved.');
+  });
+
+  it("excludes the caller's own messages when read_at is null", async () => {
+    const { caller, target, conversation } = await activeThread();
+    await insertHistoryMessage({
+      conversationId: conversation.id,
+      senderId: caller.id,
+      content: 'mine',
+      createdAt: new Date('2026-10-12T10:00:00.000Z')
+    });
+    await insertHistoryMessage({
+      conversationId: conversation.id,
+      senderId: target.id,
+      content: 'theirs',
+      createdAt: new Date('2026-10-12T10:01:00.000Z')
+    });
+
+    const response = await getUnreadCount(caller.id, conversation.id);
+    expect(response.status).toBe(200);
+    expect(response.body.data).toEqual({ unreadCount: 1 });
+
+    const asTarget = await getUnreadCount(target.id, conversation.id);
+    expect(asTarget.status).toBe(200);
+    expect(asTarget.body.data).toEqual({ unreadCount: 1 });
+  });
+
+  it('excludes incoming messages that already have read_at', async () => {
+    const { caller, target, conversation } = await activeThread();
+    await insertHistoryMessage({
+      conversationId: conversation.id,
+      senderId: target.id,
+      content: 'seen',
+      createdAt: new Date('2026-10-12T10:00:00.000Z'),
+      readAt: new Date('2026-10-12T10:05:00.000Z')
+    });
+
+    const response = await getUnreadCount(caller.id, conversation.id);
+    expect(response.status).toBe(200);
+    expect(response.body.data).toEqual({ unreadCount: 0 });
+  });
+
+  it('excludes soft-deleted incoming messages', async () => {
+    const { caller, target, conversation } = await activeThread();
+    const kept = await insertHistoryMessage({
+      conversationId: conversation.id,
+      senderId: target.id,
+      content: 'kept',
+      createdAt: new Date('2026-10-12T10:00:00.000Z')
+    });
+    const removed = await insertHistoryMessage({
+      conversationId: conversation.id,
+      senderId: target.id,
+      content: 'removed',
+      createdAt: new Date('2026-10-12T10:01:00.000Z')
+    });
+    await removed.destroy();
+
+    const response = await getUnreadCount(caller.id, conversation.id);
+    expect(response.status).toBe(200);
+    expect(response.body.data).toEqual({ unreadCount: 1 });
+
+    const storedKept = await Message.findByPk(kept.id);
+    const storedRemoved = await Message.findByPk(removed.id, { paranoid: false });
+    expect(storedKept?.readAt).toBeNull();
+    expect(storedKept?.deletedAt).toBeNull();
+    expect(storedRemoved?.readAt).toBeNull();
+    expect(storedRemoved?.deletedAt).toBeInstanceOf(Date);
+    expect(storedRemoved?.content).toBe('removed');
+  });
+
+  it('counts multiple incoming unread messages', async () => {
+    const { caller, target, conversation } = await activeThread();
+    await insertHistoryMessage({
+      conversationId: conversation.id,
+      senderId: target.id,
+      content: 'one',
+      createdAt: new Date('2026-10-12T10:00:00.000Z')
+    });
+    await insertHistoryMessage({
+      conversationId: conversation.id,
+      senderId: target.id,
+      content: 'two',
+      createdAt: new Date('2026-10-12T10:01:00.000Z')
+    });
+    await insertHistoryMessage({
+      conversationId: conversation.id,
+      senderId: target.id,
+      content: 'three',
+      createdAt: new Date('2026-10-12T10:02:00.000Z'),
+      readAt: new Date('2026-10-12T10:03:00.000Z')
+    });
+
+    const response = await getUnreadCount(caller.id, conversation.id);
+    expect(response.status).toBe(200);
+    expect(response.body.data).toEqual({ unreadCount: 2 });
+  });
+
+  it('counts every stored message type, including IMAGE, GIF, VIDEO, and VOICE', async () => {
+    const { caller, target, conversation } = await activeThread();
+    const createdAt = new Date('2026-10-12T10:00:00.000Z');
+    await insertHistoryMessage({
+      conversationId: conversation.id,
+      senderId: target.id,
+      content: 'text',
+      createdAt
+    });
+    for (const messageType of ['IMAGE', 'GIF', 'VIDEO', 'VOICE'] as const) {
+      await insertHistoryMessage({
+        conversationId: conversation.id,
+        senderId: target.id,
+        content: null,
+        createdAt,
+        messageType,
+        mediaStorageKey: `private/${randomUUID()}/${messageType.toLowerCase()}`
+      });
+    }
+    await insertHistoryMessage({
+      conversationId: conversation.id,
+      senderId: target.id,
+      content: null,
+      createdAt,
+      messageType: 'IMAGE',
+      readAt: new Date('2026-10-12T10:05:00.000Z'),
+      mediaStorageKey: `private/${randomUUID()}/seen`
+    });
+    await insertHistoryMessage({
+      conversationId: conversation.id,
+      senderId: caller.id,
+      content: 'own',
+      createdAt
+    });
+
+    const response = await getUnreadCount(caller.id, conversation.id);
+    expect(response.status).toBe(200);
+    expect(response.body.data).toEqual({ unreadCount: 5 });
+  });
+
+  it('keeps unread counts separated by conversation', async () => {
+    const first = await activeThread();
+    const second = await activeThread();
+    await insertHistoryMessage({
+      conversationId: first.conversation.id,
+      senderId: first.target.id,
+      content: 'a1',
+      createdAt: new Date('2026-10-12T10:00:00.000Z')
+    });
+    await insertHistoryMessage({
+      conversationId: first.conversation.id,
+      senderId: first.target.id,
+      content: 'a2',
+      createdAt: new Date('2026-10-12T10:01:00.000Z')
+    });
+    await insertHistoryMessage({
+      conversationId: first.conversation.id,
+      senderId: first.caller.id,
+      content: 'from-caller',
+      createdAt: new Date('2026-10-12T10:02:00.000Z')
+    });
+    await insertHistoryMessage({
+      conversationId: second.conversation.id,
+      senderId: second.target.id,
+      content: 'b1',
+      createdAt: new Date('2026-10-12T10:03:00.000Z')
+    });
+
+    const firstCaller = await getUnreadCount(first.caller.id, first.conversation.id);
+    const firstTarget = await getUnreadCount(first.target.id, first.conversation.id);
+    const secondCaller = await getUnreadCount(second.caller.id, second.conversation.id);
+    expect(firstCaller.status).toBe(200);
+    expect(firstCaller.body.data).toEqual({ unreadCount: 2 });
+    expect(firstTarget.status).toBe(200);
+    expect(firstTarget.body.data).toEqual({ unreadCount: 1 });
+    expect(secondCaller.status).toBe(200);
+    expect(secondCaller.body.data).toEqual({ unreadCount: 1 });
+  });
+
+  it('hides unknown and foreign conversations with the same not-found response', async () => {
+    const { caller, target, genderId, conversation } = await activeThread();
+    const outsider = await buildUser({ genderId, point: north(3) });
+    await insertHistoryMessage({
+      conversationId: conversation.id,
+      senderId: target.id,
+      content: 'hidden',
+      createdAt: new Date('2026-10-12T10:00:00.000Z')
+    });
+
+    const missing = await getUnreadCount(caller.id, randomUUID());
+    expect(missing.status).toBe(404);
+    expect(missing.body.error.code).toBe('RESOURCE_NOT_FOUND');
+    expect(missing.body.error.message).toBe('Resource not found');
+
+    const foreign = await getUnreadCount(outsider.id, conversation.id);
+    expect(foreign.status).toBe(404);
+    expect(foreign.body.error.code).toBe('RESOURCE_NOT_FOUND');
+    expect(foreign.body.error.message).toBe('Resource not found');
+    expect(foreign.body.error.details).toEqual(missing.body.error.details);
+  });
+
+  it('hides an active conversation whose match is not active', async () => {
+    const { caller, target, conversation } = await activeThread();
+    const inactiveMatch = await insertMatch(caller.id, target.id, 'UNMATCHED');
+    const inconsistent = await insertConversation(inactiveMatch.id, 'ACTIVE', null, null);
+    await insertHistoryMessage({
+      conversationId: inconsistent.id,
+      senderId: target.id,
+      content: 'inconsistent',
+      createdAt: new Date('2026-10-12T10:00:00.000Z')
+    });
+
+    const hidden = await getUnreadCount(caller.id, inconsistent.id);
+    expect(hidden.status).toBe(404);
+    expect(hidden.body.error.code).toBe('RESOURCE_NOT_FOUND');
+    expect(hidden.body.error.message).toBe('Resource not found');
+
+    const visible = await getUnreadCount(caller.id, conversation.id);
+    expect(visible.status).toBe(200);
+    expect(visible.body.data).toEqual({ unreadCount: 0 });
+  });
+
+  it('rejects a block in either direction, including after the conversation is closed', async () => {
+    const outgoing = await activeThread();
+    await insertHistoryMessage({
+      conversationId: outgoing.conversation.id,
+      senderId: outgoing.target.id,
+      content: 'from target',
+      createdAt: new Date('2026-10-12T10:00:00.000Z')
+    });
+    await Block.create({
+      blockerId: outgoing.caller.id,
+      blockedId: outgoing.target.id,
+      reason: null,
+      createdAt: new Date()
+    });
+    const callerBlocked = await getUnreadCount(outgoing.target.id, outgoing.conversation.id);
+    expect(callerBlocked.status).toBe(409);
+    expect(callerBlocked.body.error.code).toBe('BLOCKED_USER');
+    expect(callerBlocked.body.error.message).toBe('Interaction prohibited due to an active safety block.');
+
+    const incoming = await activeThread();
+    await insertHistoryMessage({
+      conversationId: incoming.conversation.id,
+      senderId: incoming.target.id,
+      content: 'from target',
+      createdAt: new Date('2026-10-12T10:01:00.000Z')
+    });
+    await Block.create({
+      blockerId: incoming.target.id,
+      blockedId: incoming.caller.id,
+      reason: null,
+      createdAt: new Date()
+    });
+    const recipientBlocked = await getUnreadCount(incoming.caller.id, incoming.conversation.id);
+    expect(recipientBlocked.status).toBe(409);
+    expect(recipientBlocked.body.error.code).toBe('BLOCKED_USER');
+
+    const closed = await activeThread();
+    await insertHistoryMessage({
+      conversationId: closed.conversation.id,
+      senderId: closed.target.id,
+      content: 'kept',
+      createdAt: new Date('2026-10-12T10:02:00.000Z')
+    });
+    const unmatch = await request(app).delete(`/api/v1/matches/${closed.match.id}`).set(authHeader(closed.caller.id));
+    expect(unmatch.status).toBe(200);
+    await Block.create({
+      blockerId: closed.caller.id,
+      blockedId: closed.target.id,
+      reason: null,
+      createdAt: new Date()
+    });
+    const closedBlocked = await getUnreadCount(closed.caller.id, closed.conversation.id);
+    expect(closedBlocked.status).toBe(409);
+    expect(closedBlocked.body.error.code).toBe('BLOCKED_USER');
+    await closed.conversation.reload();
+    expect(closed.conversation.status).toBe('CLOSED');
+  });
+
+  it('returns the retained unread count for a closed conversation when no block exists', async () => {
+    const unmatched = await activeThread();
+    await insertHistoryMessage({
+      conversationId: unmatched.conversation.id,
+      senderId: unmatched.target.id,
+      content: 'still unread',
+      createdAt: new Date('2026-10-12T10:00:00.000Z')
+    });
+    await insertHistoryMessage({
+      conversationId: unmatched.conversation.id,
+      senderId: unmatched.caller.id,
+      content: 'own',
+      createdAt: new Date('2026-10-12T10:01:00.000Z')
+    });
+    const unmatch = await request(app)
+      .delete(`/api/v1/matches/${unmatched.match.id}`)
+      .set(authHeader(unmatched.caller.id));
+    expect(unmatch.status).toBe(200);
+
+    const afterUnmatch = await getUnreadCount(unmatched.caller.id, unmatched.conversation.id);
+    expect(afterUnmatch.status).toBe(200);
+    expect(afterUnmatch.body.data).toEqual({ unreadCount: 1 });
+    await unmatched.conversation.reload();
+    await unmatched.match.reload();
+    expect(unmatched.conversation.status).toBe('CLOSED');
+    expect(unmatched.match.status).toBe('UNMATCHED');
+
+    const undone = await activeThread();
+    await insertHistoryMessage({
+      conversationId: undone.conversation.id,
+      senderId: undone.target.id,
+      content: 'one',
+      createdAt: new Date('2026-10-12T11:00:00.000Z')
+    });
+    await insertHistoryMessage({
+      conversationId: undone.conversation.id,
+      senderId: undone.target.id,
+      content: 'two',
+      createdAt: new Date('2026-10-12T11:01:00.000Z')
+    });
+    await undone.match.update({ status: 'UNDONE' });
+    await undone.conversation.update({ status: 'CLOSED', closedAt: new Date('2026-10-12T11:02:00.000Z') });
+
+    const afterUndo = await getUnreadCount(undone.caller.id, undone.conversation.id);
+    expect(afterUndo.status).toBe(200);
+    expect(afterUndo.body.data).toEqual({ unreadCount: 2 });
+  });
+
+  it('reflects a read receipt on the next count request', async () => {
+    const { caller, target, conversation } = await activeThread();
+    await insertHistoryMessage({
+      conversationId: conversation.id,
+      senderId: target.id,
+      content: 'one',
+      createdAt: new Date('2026-10-12T10:00:00.000Z')
+    });
+    await insertHistoryMessage({
+      conversationId: conversation.id,
+      senderId: target.id,
+      content: 'two',
+      createdAt: new Date('2026-10-12T10:01:00.000Z')
+    });
+    await insertHistoryMessage({
+      conversationId: conversation.id,
+      senderId: caller.id,
+      content: 'own',
+      createdAt: new Date('2026-10-12T10:02:00.000Z')
+    });
+
+    const before = await getUnreadCount(caller.id, conversation.id);
+    expect(before.status).toBe(200);
+    expect(before.body.data).toEqual({ unreadCount: 2 });
+
+    const marked = await markRead(caller.id, conversation.id);
+    expect(marked.status).toBe(200);
+    expect(typeof marked.body.data.readAt).toBe('string');
+
+    const after = await getUnreadCount(caller.id, conversation.id);
+    expect(after.status).toBe(200);
+    expect(after.body.data).toEqual({ unreadCount: 0 });
+  });
+
+  it('keeps a repeated read receipt idempotent and the count at zero', async () => {
+    const { caller, target, conversation } = await activeThread();
+    const original = new Date('2026-10-12T09:00:00.000Z');
+    const already = await insertHistoryMessage({
+      conversationId: conversation.id,
+      senderId: target.id,
+      content: 'seen',
+      createdAt: new Date('2026-10-12T08:00:00.000Z'),
+      readAt: original
+    });
+    const unread = await insertHistoryMessage({
+      conversationId: conversation.id,
+      senderId: target.id,
+      content: 'new',
+      createdAt: new Date('2026-10-12T08:05:00.000Z')
+    });
+
+    const first = await markRead(caller.id, conversation.id);
+    expect(first.status).toBe(200);
+    const markedAt = first.body.data.readAt as string;
+    const afterFirst = await getUnreadCount(caller.id, conversation.id);
+    expect(afterFirst.body.data).toEqual({ unreadCount: 0 });
+
+    const second = await markRead(caller.id, conversation.id);
+    expect(second.status).toBe(200);
+    expect(second.body).toEqual({
+      success: true,
+      data: { readAt: null },
+      message: 'Messages marked as read.'
+    });
+    const afterSecond = await getUnreadCount(caller.id, conversation.id);
+    expect(afterSecond.status).toBe(200);
+    expect(afterSecond.body.data).toEqual({ unreadCount: 0 });
+
+    const storedAlready = await Message.findByPk(already.id);
+    const storedUnread = await Message.findByPk(unread.id);
+    expect(storedAlready?.readAt?.toISOString()).toBe(original.toISOString());
+    expect(storedUnread?.readAt?.toISOString()).toBe(markedAt);
+  });
+
+  it('rejects unsupported query parameters, including history pagination fields', async () => {
+    const { caller, conversation } = await activeThread();
+
+    for (const query of [{ sort: 'desc' }, { limit: '20' }, { cursor: 'abc' }]) {
+      const response = await request(app)
+        .get(`/api/v1/conversations/${conversation.id}/unread-count`)
+        .query(query)
+        .set(authHeader(caller.id));
+      expect(response.status).toBe(400);
+      expect(response.body.error.code).toBe('VALIDATION_ERROR');
+      expect(response.body.error.message).toBe('Validation failed');
+      expect(response.body.error.details).toEqual([
+        { field: Object.keys(query)[0], message: 'Unsupported query parameter.' }
+      ]);
+    }
+  });
+
+  it('rejects an invalid conversation id', async () => {
+    const { caller } = await activeThread();
+    const response = await getUnreadCount(caller.id, 'not-a-uuid');
+    expect(response.status).toBe(400);
+    expect(response.body.error.code).toBe('VALIDATION_ERROR');
+    expect(response.body.error.message).toBe('Validation failed');
+    expect(response.body.error.details).toEqual([
+      { field: 'conversationId', message: 'Conversation id must be a valid UUID.' }
+    ]);
+  });
+
+  it('rejects a missing token, an invalid token, a deleted account, an admin, a suspended user, and a banned user', async () => {
+    const { conversation } = await activeThread();
+
+    const missing = await request(app).get(`/api/v1/conversations/${conversation.id}/unread-count`);
+    expect(missing.status).toBe(401);
+    expect(missing.body.error.code).toBe('AUTH_REQUIRED');
+
+    const invalid = await request(app)
+      .get(`/api/v1/conversations/${conversation.id}/unread-count`)
+      .set({ Authorization: 'Bearer not-a-token' });
+    expect(invalid.status).toBe(401);
+    expect(invalid.body.error.code).toBe('INVALID_TOKEN');
+
+    const deleted = await User.create({
+      email: `deleted-${randomUUID()}@example.com`,
+      passwordHash: PASSWORD_HASH,
+      role: 'USER',
+      status: 'ACTIVE',
+      emailVerified: true,
+      phoneVerified: false
+    });
+    await deleted.destroy();
+    const deletedResponse = await getUnreadCount(deleted.id, conversation.id);
+    expect(deletedResponse.status).toBe(401);
+    expect(deletedResponse.body.error.code).toBe('INVALID_TOKEN');
+
+    const admin = await User.create({
+      email: `admin-${randomUUID()}@example.com`,
+      passwordHash: PASSWORD_HASH,
+      role: 'ADMIN',
+      status: 'ACTIVE',
+      emailVerified: true,
+      phoneVerified: false
+    });
+    const forbidden = await request(app)
+      .get(`/api/v1/conversations/${conversation.id}/unread-count`)
+      .set(authHeader(admin.id, 'ADMIN'));
+    expect(forbidden.status).toBe(403);
+    expect(forbidden.body.error.code).toBe('FORBIDDEN');
+
+    const suspended = await User.create({
+      email: `suspended-${randomUUID()}@example.com`,
+      passwordHash: PASSWORD_HASH,
+      role: 'USER',
+      status: 'SUSPENDED',
+      emailVerified: true,
+      phoneVerified: false
+    });
+    const suspendedResponse = await getUnreadCount(suspended.id, conversation.id);
+    expect(suspendedResponse.status).toBe(403);
+    expect(suspendedResponse.body.error.code).toBe('ACCOUNT_SUSPENDED');
+
+    const banned = await User.create({
+      email: `banned-${randomUUID()}@example.com`,
+      passwordHash: PASSWORD_HASH,
+      role: 'USER',
+      status: 'BANNED',
+      emailVerified: true,
+      phoneVerified: false
+    });
+    const bannedResponse = await getUnreadCount(banned.id, conversation.id);
+    expect(bannedResponse.status).toBe(403);
+    expect(bannedResponse.body.error.code).toBe('ACCOUNT_BANNED');
+  });
+
+  it('rejects an unverified caller and an incomplete profile', async () => {
+    const catalogGender = await gender();
+    const target = await buildUser({ genderId: catalogGender.id });
+    const emailCaller = await buildUser({ genderId: catalogGender.id, emailVerified: false });
+    const emailMatch = await insertMatch(emailCaller.id, target.id, 'ACTIVE');
+    const emailConversation = await insertConversation(emailMatch.id, 'ACTIVE', null, null);
+    const emailResponse = await getUnreadCount(emailCaller.id, emailConversation.id);
+    expect(emailResponse.status).toBe(403);
+    expect(emailResponse.body.error.code).toBe('EMAIL_NOT_VERIFIED');
+
+    const phoneCaller = await buildUser({ genderId: catalogGender.id, phoneOnly: true, emailVerified: false });
+    const phoneMatch = await insertMatch(phoneCaller.id, target.id, 'ACTIVE');
+    const phoneConversation = await insertConversation(phoneMatch.id, 'ACTIVE', null, null);
+    const phoneResponse = await getUnreadCount(phoneCaller.id, phoneConversation.id);
+    expect(phoneResponse.status).toBe(403);
+    expect(phoneResponse.body.error.code).toBe('PHONE_NOT_VERIFIED');
+
+    const incomplete = await buildUser({ genderId: catalogGender.id, complete: false });
+    const incompleteMatch = await insertMatch(incomplete.id, target.id, 'ACTIVE');
+    const incompleteConversation = await insertConversation(incompleteMatch.id, 'ACTIVE', null, null);
+    const incompleteResponse = await getUnreadCount(incomplete.id, incompleteConversation.id);
+    expect(incompleteResponse.status).toBe(400);
+    expect(incompleteResponse.body.error.code).toBe('PROFILE_INCOMPLETE');
+
+    const missingPreferences = await buildUser({ genderId: catalogGender.id, preferences: false });
+    const preferencesMatch = await insertMatch(missingPreferences.id, target.id, 'ACTIVE');
+    const preferencesConversation = await insertConversation(preferencesMatch.id, 'ACTIVE', null, null);
+    const preferencesResponse = await getUnreadCount(missingPreferences.id, preferencesConversation.id);
+    expect(preferencesResponse.status).toBe(400);
+    expect(preferencesResponse.body.error.code).toBe('PROFILE_INCOMPLETE');
+
+    const missingLocation = await buildUser({ genderId: catalogGender.id, point: null });
+    const locationMatch = await insertMatch(missingLocation.id, target.id, 'ACTIVE');
+    const locationConversation = await insertConversation(locationMatch.id, 'ACTIVE', null, null);
+    const locationResponse = await getUnreadCount(missingLocation.id, locationConversation.id);
+    expect(locationResponse.status).toBe(400);
+    expect(locationResponse.body.error.code).toBe('PROFILE_INCOMPLETE');
+  });
+
+  it('does not change messages, quota, last_message_at, or conversation and match state', async () => {
+    const { caller, target, match, conversation } = await activeThread();
+    const readAt = new Date('2026-10-12T10:01:00.000Z');
+    const createdAt = new Date('2026-10-12T10:00:00.000Z');
+    const message = await insertHistoryMessage({
+      conversationId: conversation.id,
+      senderId: target.id,
+      content: 'steady',
+      createdAt,
+      readAt
+    });
+    await conversation.update({ lastMessageAt: createdAt });
+    await seedTextUsage(caller.id, 4);
+    await UserCreditBalance.create({
+      userId: caller.id,
+      creditType: 'SUPER_LIKE',
+      balance: 3,
+      ...timestamps()
+    });
+    await CreditTransaction.create({
+      userId: caller.id,
+      creditType: 'SUPER_LIKE',
+      delta: -1,
+      reason: 'CONSUMPTION',
+      createdAt: new Date()
+    });
+
+    const beforeMessages = await Message.findAll({ paranoid: false });
+    const beforeUsage = await UsageRecord.count();
+    await conversation.reload();
+    await match.reload();
+    const beforeConversation = conversation.toJSON();
+    const beforeMatch = match.toJSON();
+
+    const response = await getUnreadCount(caller.id, conversation.id);
+    expect(response.status).toBe(200);
+    expect(response.body.data).toEqual({ unreadCount: 0 });
+
+    const afterMessages = await Message.findAll({ paranoid: false });
+    expect(afterMessages.map((row) => row.toJSON())).toEqual(beforeMessages.map((row) => row.toJSON()));
+    expect(await UsageRecord.count()).toBe(beforeUsage);
+    expect(await textMessageUsageCount(caller.id)).toBe(4);
+    expect(await textMessageUsageCount(target.id)).toBe(0);
+    expect(await UserCreditBalance.count()).toBe(1);
+    expect(await CreditTransaction.count()).toBe(1);
+    await conversation.reload();
+    await match.reload();
+    expect(conversation.toJSON()).toEqual(beforeConversation);
+    expect(match.toJSON()).toEqual(beforeMatch);
+    const stored = await Message.findByPk(message.id);
+    expect(stored?.readAt?.toISOString()).toBe(readAt.toISOString());
+    expect(stored?.deletedAt).toBeNull();
+  });
+
+  it('returns the full unread count regardless of history page size', async () => {
+    const { caller, target, conversation } = await activeThread();
+    const createdAt = new Date('2026-10-12T10:00:00.000Z');
+    for (let index = 0; index < 21; index += 1) {
+      await insertHistoryMessage({
+        conversationId: conversation.id,
+        senderId: target.id,
+        content: `message-${index}`,
+        createdAt: new Date(createdAt.getTime() + index * 1000)
+      });
+    }
+
+    const history = await listMessages(caller.id, conversation.id, { limit: '1' });
+    expect(history.status).toBe(200);
+    expect(history.body.data.items).toHaveLength(1);
+    expect(history.body.data.pagination.limit).toBe(1);
+    expect(history.body.data.pagination.hasMore).toBe(true);
+
+    const response = await getUnreadCount(caller.id, conversation.id);
+    expect(response.status).toBe(200);
+    expect(response.body.data).toEqual({ unreadCount: 21 });
   });
 });
