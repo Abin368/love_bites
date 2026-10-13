@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { healthRoutes } from './health.routes';
 import { authRoutes } from '../modules/auth/auth.routes';
+import { chatRoutes } from '../modules/chat/chat.routes';
 import { discoveryRoutes } from '../modules/discovery/discovery.routes';
 import { matchesRoutes } from '../modules/likes/matches.routes';
 import { genderRoutes } from '../modules/genders/genders.routes';
@@ -15,6 +16,7 @@ const router = Router();
 // Base health route under /api/v1
 router.use('/health', healthRoutes);
 router.use('/auth', authRoutes);
+router.use('/conversations', chatRoutes);
 router.use('/discovery', discoveryRoutes);
 router.use('/matches', matchesRoutes);
 router.use('/onboarding', onboardingRoutes);

@@ -467,10 +467,10 @@ Implement swipe action mechanics (`LIKE`, `PASS`, `SUPER_LIKE`), daily action qu
 
 ## 10. Phase 6 — Chat and Realtime Messaging
 
-**Partly complete (2026-10-08).** Slice 1 Socket.IO foundation is implemented. Message persistence, quotas, conversation rooms, chat events, history, read receipts, and media are not.
+**Partly complete (2026-10-13).** Slice 1 Socket.IO foundation, Slice 2 TEXT message persistence, Slice 3 free text-message quota, Slice 4 realtime TEXT send/receive, Slice 5 message history, Slice 6 read receipts, Slice 7 typing indicators, Slice 8 conversation unread counts, Slice 9 conversation inbox, and Slice 10 conversation details are implemented. Conversation rooms and media are not.
 
 ### 10.1 Objectives
-Build real-time messaging using Socket.IO backed by PostgreSQL persistence, enforce 6-step message authorization, manage unread counters, support tiered media attachments, and provide cursor-based history pagination.
+Build real-time messaging using Socket.IO backed by PostgreSQL persistence, enforce message authorization, manage unread counters, support tiered media attachments, and provide cursor-based history pagination.
 
 ### 10.2 Implementation Steps
 1. **Socket.IO Server Initialization (`src/socket/socket.server.ts`) — Implemented (Slice 1):**
@@ -478,20 +478,36 @@ Build real-time messaging using Socket.IO backed by PostgreSQL persistence, enfo
    * `socket.auth.ts`: Middleware validates JWT access token on handshake, reloads the user from PostgreSQL, and binds `socket.data.user` to the live `AuthenticatedUser`.
    * Automatically join user private room: `user:{userId}`.
    * No conversation rooms, chat events, or message persistence in this slice. Redis is required for the realtime foundation. CI starts a Redis 7 service for adapter tests.
-2. **6-Step Message Authorization Verification (`chat.service.ts`) — Not implemented:**
-   * **Step 1:** Verify sender authentication (`req.user.id`).
-   * **Step 2:** Verify conversation exists and sender is a participant of the backing match.
-   * **Step 3:** Verify backing match is strictly `status = 'ACTIVE'`.
-   * **Step 4:** Verify no active bidirectional safety block exists.
-   * **Step 5 (Entitlement Check):** Free tier is restricted strictly to `TEXT` messages. Rich media (`IMAGE`, `GIF`, `VIDEO`, `VOICE`) requires `CHAT_MEDIA` entitlement (throws `403 PREMIUM_REQUIRED` for Free users).
-   * **Step 6 (Quota Check):** Free tier enforced at maximum **20 outgoing text messages/day** via `usage_records`. Premium users get unlimited messages.
-3. **Message Persistence & Realtime Broadcast — Not implemented:**
-   * Persist message in PostgreSQL `messages` table (`conversation_id`, `sender_id`, `message_type`, `content`, `media_storage_key`).
-   * Update `conversations.last_message_at = CURRENT_TIMESTAMP`.
-   * Broadcast `chat:message:new` event to conversation room `conversation:{conversationId}` and emit push/in-app alert to recipient.
-4. **Message History & Read Receipts — Not implemented:**
-   * `GET /api/v1/conversations/:conversationId/messages`: Cursor-paginated history sorted by `created_at DESC`.
-   * `PATCH /api/v1/conversations/:conversationId/read`: Updates `read_at = CURRENT_TIMESTAMP` for unread messages and emits `chat:message:read` Socket.IO event.
+2. **Message Authorization + TEXT Persistence (`chat.service.ts`) — Implemented (Slice 2):**
+   * **Route:** `POST /api/v1/conversations/:conversationId/messages` with `authenticate` and `requireRole('USER')`.
+   * **Steps 1–4:** authentication, participant check, active match and active conversation, bidirectional block check.
+   * **Persistence:** insert `messages.message_type = 'TEXT'`, set `conversations.last_message_at` to the message `created_at` inside one transaction with `lockLikeUsers`.
+3. **Free Text Message Quota — Implemented (Slice 3):**
+   * Free callers consume metric `DAILY_TEXT_MESSAGES` (limit 20 per UTC calendar day) via atomic `usage_records` upsert after authorization and inside the same transaction as the message write.
+   * Premium callers use `hasActivePremium` in that transaction, skip usage writes, and return `remainingDailyMessages: null`.
+   * Exhausted free quota is `429 DAILY_LIMIT_REACHED` with message `You have reached your daily limit of 20 text messages.`
+   * PostgreSQL is the quota source of truth. Redis is not used for this product quota. No migration.
+   * **Not in Slice 3:** media entitlement, Socket.IO broadcast, history, or read receipts.
+4. **Realtime TEXT send/receive — Implemented (Slice 4):**
+   * `chat:message:send` validates a strict TEXT payload, reloads the current account, and calls `chat.service.sendTextMessage`.
+   * The success acknowledgement matches the HTTP message data, including `remainingDailyMessages`. Failures use the existing error codes and do not disconnect the socket.
+   * After commit, `chat:message:new` is emitted only to `user:{recipientUserId}`. HTTP `POST` does not emit it.
+   * No conversation room, join event, idempotency key, offline queue, or schema change. Read receipts are Slice 6.
+5. **Message History — Implemented (Slice 5):**
+   * `GET /api/v1/conversations/:conversationId/messages`: Cursor-paginated history for a participant. `limit` defaults to 20 and maxes at 50. Order is `created_at DESC, id DESC`. A `CLOSED` conversation still returns retained messages. A block in either direction is `409 BLOCKED_USER`. The read does not change `read_at`, `last_message_at`, quota, or emit a socket event.
+6. **Read receipts — Implemented (Slice 6):**
+   * `PATCH /api/v1/conversations/:conversationId/read`: A participant marks unread incoming messages, of every stored type, with one PostgreSQL `CURRENT_TIMESTAMP`. Already-read rows, the caller's own rows, and soft-deleted rows stay unchanged. A closed conversation is allowed unless a block exists. The call does not reopen the conversation, consume `DAILY_TEXT_MESSAGES`, or change `last_message_at`. After commit, and only when at least one row changed, `chat:message:read` goes to `user:{otherParticipantId}`. No conversation room and no client socket command. No migration.
+7. **Typing indicators — Implemented (Slice 7):**
+   * `chat:typing:start` and `chat:typing:stop` accept exactly `{ conversationId }`. `chat.service.authorizeTyping` applies the send authorization rules and does not write a message, quota, or `last_message_at`.
+   * A `CLOSED` conversation is `CONVERSATION_CLOSED`. Recipient delivery is `user:{otherParticipantId}` with `{ conversationId, senderId }`.
+   * One process-local timer per socket expires after five seconds. Repeated starts reauthorize and refresh that timer without a second start event. Stop, timeout, disconnect, a conversation switch, and a failed reauthorization emit one stop.
+   * Ten start authorizations per socket per 10 seconds. The next start is `RATE_LIMITED` and does not query. No migration, Redis key, or conversation room.
+8. **Conversation unread count — Implemented (Slice 8):**
+   * `GET /api/v1/conversations/:conversationId/unread-count`: One integer for a participant. The gates match message history, including a closed conversation and either-direction blocks. The count is incoming rows of every stored type with `read_at IS NULL` and `deleted_at IS NULL`. The caller's own rows are excluded. The read uses `idx_messages_unread_count` and does not write, cache, or emit a socket event. No migration.
+9. **Conversation inbox — Implemented (Slice 9):**
+   * `GET /api/v1/conversations`: Cursor-paginated inbox for a verified `USER` with a complete profile, location, and dating preferences. Returns `ACTIVE` conversations whose match is `ACTIVE`. A block in either direction omits that conversation only. Order is `last_message_at DESC NULLS LAST, id DESC`. `lastMessage` is the latest non-deleted message, or `null`. `unreadCount` uses the Slice 8 predicate for the page. `limit` defaults to 20 and maxes at 50. The read does not write, cache, or emit a socket event. No migration.
+10. **Conversation details — Implemented (Slice 10):**
+   * `GET /api/v1/conversations/:conversationId`: One conversation for a verified `USER` with a complete profile, location, and dating preferences. Authorization matches message history. A participant may read a `CLOSED` conversation, including after unmatch or undo. An `ACTIVE` conversation whose match is not `ACTIVE` is `404 RESOURCE_NOT_FOUND`. A missing other-participant profile is the same 404. A block in either direction is `409 BLOCKED_USER`. The body is the stored status, match id, other participant `userId` and `firstName`, and the Slice 8 unread count. No message preview, write, cache, socket event, or migration.
 
 ---
 
@@ -790,7 +806,7 @@ To maintain strict adherence to dependency constraints, development should follo
 | **Likes, Passes, Super Like** | Discovery, subscriptions for Premium | `likes`, `usage_records`, `matches`, `conversations`, `user_credit_balances`, `credit_transactions` | `POST /discovery/:userId/pass`, `POST /discovery/:userId/like`, `POST /discovery/:userId/super-like` | PostgreSQL integration: pass 11, like 20, super like 22 |
 | **Unmatch** | Likes Module | `matches`, `conversations` | `DELETE /matches/:matchId` | Implemented. PostgreSQL integration: 13 passed. No Redis, quota, or credit change. `GET /matches` is not implemented. |
 | **Premium Undo** | Likes, Matches, Premium subscription | `likes`, `matches`, `conversations`, `subscriptions`, `plans` | `POST /discovery/undo` | PostgreSQL integration: 14 passed. No Redis idempotency. |
-| **Chat & Messaging**| Matches Module, S3, Socket.IO | `conversations`, `messages`, `usage_records` | `/conversations/*`, `/messages/*`, Socket.IO events | Integration + E2E (6-Step Auth, Quotas) |
+| **Chat & Messaging**| Matches Module, S3, Socket.IO | `conversations`, `messages`, `usage_records` | `POST /conversations/:conversationId/messages`, `GET /conversations/:conversationId/messages`, `GET /conversations/:conversationId/unread-count`, `PATCH /conversations/:conversationId/read`, `chat:message:send`, `chat:typing:start`, `chat:typing:stop` | Slices 2–8: TEXT send, free `DAILY_TEXT_MESSAGES` quota (20/UTC day), realtime TEXT delivery, cursor-paginated history, read receipts, ephemeral typing indicators, and a per-conversation unread count. Inbox, media, and rooms remain. |
 | **Blocks & Safety** | Users, Matches, Chat | `blocks` | `/blocks`, `/blocks/:userId` | Integration (Bidirectional Isolation) |
 | **Reports** | Users, Safety | `reports` | `/reports` | Integration (Report Submission) |
 | **Notifications** | Matches, Chat, Likes | `notifications` | `GET /notifications`, Socket.IO events | Integration (Event Delivery) |

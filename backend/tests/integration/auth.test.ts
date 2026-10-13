@@ -65,12 +65,26 @@ jest.mock('../../src/modules/profile-photos/profile-photos.data-access', () => (
 jest.mock('../../src/modules/likes/likes.data-access', () => ({
   DAILY_LIKE_PASS_METRIC: 'DAILY_LIKE_PASS',
   FREE_DAILY_LIKE_PASS_LIMIT: 10,
+  DAILY_TEXT_MESSAGES_METRIC: 'DAILY_TEXT_MESSAGES',
+  FREE_DAILY_TEXT_MESSAGES_LIMIT: 20,
   currentUtcDayWindow: () => ({ periodStart: new Date(0), periodEnd: new Date(0) }),
   isActivePairConflict: () => false,
   findPassTarget: async () => null,
   hasActivePremium: async () => false,
   incrementDailyLikePass: async () => null,
+  incrementDailyTextMessages: async () => null,
+  lockLikeUsers: async () => undefined,
   insertPass: async () => undefined
+}));
+jest.mock('../../src/modules/chat/chat.data-access', () => ({
+  findConversationWithMatch: async () => null,
+  lockMatchById: async () => undefined,
+  lockConversationById: async () => undefined,
+  hasBidirectionalBlock: async () => false,
+  insertTextMessage: async () => {
+    throw new Error('chat data access is not used by authentication tests');
+  },
+  updateConversationLastMessageAt: async () => false
 }));
 
 import { app } from '../../src/app';

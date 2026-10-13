@@ -269,7 +269,7 @@ modules/likes/
 ```
 *Note: Optional files (e.g., `*.constants.ts`) should only be created when explicitly needed.*
 
-Implemented modules today are `auth`, `users`, `profiles`, `profile-photos`, `genders`, `interests`, `relationship-intentions`, `onboarding`, `discovery`, and `likes`. Discovery routes mount the like, pass, super-like, and undo handlers. There is no `passes` table and no separate `likes.routes.ts`. Chat, notifications, safety, subscriptions, payments, entitlements, matches, and admin modules are not implemented as HTTP modules. Their tables exist from Phase 1.
+Implemented modules today are `auth`, `users`, `profiles`, `profile-photos`, `genders`, `interests`, `relationship-intentions`, `onboarding`, `discovery`, `likes`, and `chat`. Discovery routes mount the like, pass, super-like, and undo handlers. There is no `passes` table and no separate `likes.routes.ts`. Chat mounts `GET /conversations`, `GET /conversations/:conversationId`, `POST /conversations/:conversationId/messages`, `GET /conversations/:conversationId/messages`, `GET /conversations/:conversationId/unread-count`, and `PATCH /conversations/:conversationId/read`. Notifications, safety, subscriptions, payments, entitlements, match list, and admin modules are not implemented as HTTP modules. Their tables exist from Phase 1.
 
 ---
 
@@ -505,34 +505,40 @@ The live LIKE and SUPER LIKE transaction locks both users in canonical id order,
 
 The live route is `matches.routes` → `likes.controller.unmatch` → `likes.service.unmatch` → `likes.data-access` → one PostgreSQL transaction. The service reuses `lockLikeUsers` and `closeActiveConversation`. There is no repository layer.
 
-Historical `UNDONE` and `UNMATCHED` rows stay in place. `uq_matches_single_active_pair` allows a later `ACTIVE` row for the same pair. Rematch is not implemented and does not revive the old row. There is no match list API and no chat API. The match diagram's notification and Socket.IO steps are not implemented. `match:unmatch` is future scope.
+Historical `UNDONE` and `UNMATCHED` rows stay in place. `uq_matches_single_active_pair` allows a later `ACTIVE` row for the same pair. Rematch is not implemented and does not revive the old row. There is no match list API. TEXT send exists under `/conversations/:conversationId/messages`. The match diagram's notification and Socket.IO steps are not implemented. `match:unmatch` is future scope.
 
 ---
 
 ## 16. Chat & Realtime Architecture
 
-**Not implemented as a chat API.** LIKE and SUPER LIKE create an `ACTIVE` conversation row. Undo of that LIKE sets the conversation to `CLOSED`. No message routes exist. Phase 6 Slice 1 mounted the Socket.IO foundation only. The rules below remain the planned chat contract.
+**Phase 6 Slices 2–10 implement TEXT send, realtime delivery, message history, read receipts, typing indicators, per-conversation unread counts, the conversation inbox, and conversation details.** LIKE and SUPER LIKE create an `ACTIVE` conversation row. Undo or UNMATCH closes it. `POST /api/v1/conversations/:conversationId/messages` and `chat:message:send` both call `chat.service.sendTextMessage`, which authorizes the participant, enforces Free `DAILY_TEXT_MESSAGES` (20 / UTC day) or Premium unlimited, persists a `TEXT` message, and updates `last_message_at`. After the socket transaction commits, the server emits `chat:message:new` to `user:{recipientUserId}` only. The HTTP send route does not emit that event. `GET /api/v1/conversations/:conversationId/messages` calls `chat.service.listMessages`. It is read-only, cursor-paginated, and does not emit a socket event. A closed conversation remains readable to a participant unless a block exists. `GET /api/v1/conversations/:conversationId/unread-count` calls `chat.service.getUnreadCount`. It uses the history authorization rules and returns one integer for incoming rows of every stored type with `read_at IS NULL` and `deleted_at IS NULL`. It does not write, cache, or emit a socket event. `PATCH /api/v1/conversations/:conversationId/read` calls `chat.service.markMessagesRead`. It uses the history authorization rules, including closed conversations and either-direction blocks. After commit, and only when at least one incoming row was newly marked, it emits `chat:message:read` to `user:{otherParticipantId}`. `chat:typing:start` calls `chat.service.authorizeTyping`, which uses the send gates and writes nothing. A closed conversation rejects typing. The indicator is one process-local timer per socket and is delivered only to `user:{otherParticipantId}`. `GET /api/v1/conversations` calls `chat.service.listConversations`. It returns a cursor-paginated list of `ACTIVE` conversations whose match is `ACTIVE`, omits a blocked pair without failing the rest of the list, and does not write or emit a socket event. `GET /api/v1/conversations/:conversationId` calls `chat.service.getConversationDetails`. It uses the history authorization rules, including a closed conversation and either-direction blocks. An `ACTIVE` conversation with a non-`ACTIVE` match, a missing conversation, a non-participant, and a missing other-participant profile are `404 RESOURCE_NOT_FOUND`. The body is the stored conversation status, match id, the other participant's user id and first name, and the incoming unread count. It does not return messages, write, or emit a socket event. Media and conversation rooms are not implemented.
 
-### Messaging Rules
-* Unrestricted messaging: Either participant in an active match can send the first message.
-* Messaging Quotas:
-  * **Free Users:** Max 20 text messages/day. Attachments prohibited.
-  * **Premium Users:** Unlimited text messages, images, GIFs, videos, and voice messages.
+### Messaging Rules (live Slices 2–3)
+* Either participant of an `ACTIVE` match with an `ACTIVE` conversation can send TEXT.
+* Empty and whitespace-only content are accepted and stored as submitted.
+* Free tier: Max 20 sent TEXT messages per UTC calendar day. Attachments prohibited. Exhausted quota is `429 DAILY_LIMIT_REACHED`.
+* Premium tier: Unlimited TEXT. No `DAILY_TEXT_MESSAGES` usage write. `remainingDailyMessages` is `null`.
+* Bidirectional blocks reject send with `409 BLOCKED_USER`.
+* Closed conversations reject send with `404 CONVERSATION_CLOSED`.
+* Product quota source of truth is PostgreSQL `usage_records`. Redis is not used for message quota.
 
-### Hybrid Persistence Flow
-Realtime messaging uses Socket.IO for low-latency transport, backed by PostgreSQL for message history. **Redis does NOT store permanent messages.**
+### Planned later
+* Premium media attachments.
+* `chat:message:new` after an HTTP send. Slice 4 does not emit from `POST /messages`.
+
+### Persistence and delivery
+HTTP and `chat:message:send` share one service transaction. The socket acknowledgement returns the HTTP message data to the sender. `chat:message:new` goes to the recipient user room after commit and omits `remainingDailyMessages`. **Redis does NOT store permanent messages or the free text quota.** It only fans the recipient event across instances. There is no chat idempotency key and no offline replay.
 
 ```
-Client A                  Server Node                 PostgreSQL               Client B
+Client A                  Server Node                 PostgreSQL              Client B
    |                           |                           |                      |
-   |--- socket.emit('msg') --->|                           |                      |
-   |                           |-- Verify Entitlement ---->|                      |
+   |-- chat:message:send ----->|                           |                      |
+   |                           |-- Authorize + lock users ->|                      |
+   |                           |-- Premium / quota upsert ->|                      |
    |                           |-- INSERT Message Record ->|                      |
-   |                           |   (status = 'sent')       |                      |
-   |<-- Ack ('sent') ----------|                           |                      |
-   |                           |-- Publish via Redis Adapter ------------------->|
-   |                           |                           |  (Socket Event)      |
-   |                           |------------------------------------------------->|
+   |                           |-- UPDATE last_message_at ->|                      |
+   |<-- acknowledgement -------|                           |                      |
+   |                           |-- chat:message:new ----------------------------->|
 ```
 
 ---
@@ -704,14 +710,14 @@ Sessions, discovery caching, daily LIKE/PASS counters (those are `usage_records`
 
 ## 23. Realtime Architecture
 
-**Phase 6 Slice 1 foundation is implemented.** `src/socket/socket.server.ts` attaches Socket.IO to the HTTP server created in `src/server.ts`. `src/socket/socket.auth.ts` authenticates the handshake. Chat application events and conversation rooms are not implemented.
+**Phase 6 Slices 1, 4, 6, and 7 are implemented.** `src/socket/socket.server.ts` attaches Socket.IO to the HTTP server created in `src/server.ts`. `src/socket/socket.auth.ts` authenticates the handshake. `src/socket/chat.socket.ts` handles `chat:message:send` after the user room join, emits `chat:message:read` from the HTTP read-receipt route, and relays `chat:typing:start` / `chat:typing:stop`. Conversation rooms are not implemented. There is no client `chat:message:read` listener.
 
 * Framework: Socket.IO initialized over the Express HTTP server.
-* Cluster Distribution: `@socket.io/redis-adapter` uses duplicated `ioredis` pub/sub clients from the existing Redis configuration.
+* Cluster Distribution: `@socket.io/redis-adapter` uses duplicated `ioredis` pub/sub clients from the existing Redis configuration. Recipient delivery uses that adapter. Message rows stay in PostgreSQL.
 * Room Topology:
-  * Personal User Room: `user:{userId}` — auto-joined on connect from `socket.data.user.id`.
-  * Match Conversation Room: `conversation:{conversationId}` — planned. Not joined in Slice 1.
-* Connection Middleware: Validates the access JWT, reloads the user from PostgreSQL, rejects deleted/suspended/banned/non-`USER` accounts, and stores `AuthenticatedUser` on `socket.data.user`.
+  * Personal User Room: `user:{userId}` — auto-joined on connect from `socket.data.user.id`. `chat:message:new`, `chat:message:read`, and typing events target the other participant's user room only. Typing state stays on the node that owns the socket. The Redis adapter still forwards the emit.
+  * Match Conversation Room: `conversation:{conversationId}` — not joined. No join event.
+* Connection Middleware: Validates the access JWT, reloads the user from PostgreSQL, rejects deleted/suspended/banned/non-`USER` accounts, and stores `AuthenticatedUser` on `socket.data.user`. Each send reloads that account again before calling the chat service.
 
 ---
 
