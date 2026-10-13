@@ -1,7 +1,9 @@
 import { randomUUID } from 'crypto';
+import { UniqueConstraintError } from 'sequelize';
 import { sequelize } from '../../config/database';
 import { redis } from '../../config/redis';
 import { photoStorage } from '../../integrations/storage/s3.provider';
+import { StorageObjectMissingError } from '../../integrations/storage/storage.interface';
 import {
   ConflictError,
   ForbiddenError,
@@ -22,8 +24,10 @@ import {
   countInboxUnreadMessages,
   countIncomingUnreadMessages,
   findConversationWithMatch,
+  findMessageById,
   findProfileFirstName,
   hasBidirectionalBlock,
+  insertMediaMessage,
   insertTextMessage,
   listConversationMessages,
   listInboxConversations,
@@ -36,7 +40,10 @@ import {
 import type {
   AuthorizeTypingInput,
   AuthorizeTypingResult,
+  ChatMediaType,
   ChatMediaUploadReservation,
+  ConfirmMediaUploadInput,
+  ConfirmMediaUploadResult,
   ConversationDetails,
   CreateMediaUploadUrlInput,
   GetConversationDetailsInput,
@@ -55,7 +62,7 @@ import type {
   SendTextMessageInput,
   SendTextMessageResult
 } from './chat.types';
-import { conversationIdSchema, encodeHistoryCursor, encodeInboxCursor } from './chat.validator';
+import { conversationIdSchema, encodeHistoryCursor, encodeInboxCursor, isAllowedChatMedia } from './chat.validator';
 
 const RESOURCE_NOT_FOUND_MESSAGE = 'Resource not found';
 const CONVERSATION_CLOSED_MESSAGE = 'Conversation is closed due to unmatch or safety block.';
@@ -63,6 +70,10 @@ const BLOCKED_USER_MESSAGE = 'Interaction prohibited due to an active safety blo
 const DAILY_TEXT_LIMIT_MESSAGE = 'You have reached your daily limit of 20 text messages.';
 const PREMIUM_REQUIRED_MESSAGE = 'Feature requires an active Premium subscription.';
 const MEDIA_UPLOAD_TTL_SECONDS = 300;
+const MEDIA_NOT_UPLOADED_MESSAGE = 'Uploaded media was not found.';
+const MEDIA_SIZE_MISMATCH_MESSAGE = 'Uploaded media size does not match the reservation.';
+const MEDIA_MIME_MISMATCH_MESSAGE = 'Uploaded media type does not match the reservation.';
+const MEDIA_CONFIRM_IN_PROGRESS_MESSAGE = 'Media confirmation is already in progress.';
 
 function buildChatMediaStorageKey(conversationId: string, uploadId: string): string {
   return `chat-media/${conversationId}/${uploadId}`;
@@ -321,6 +332,303 @@ export async function createMediaUploadUrl(input: CreateMediaUploadUrlInput): Pr
     storageKey,
     expiresInSeconds: MEDIA_UPLOAD_TTL_SECONDS
   };
+}
+
+function parseUploadId(uploadId: string): string {
+  const parsed = conversationIdSchema.safeParse(uploadId);
+  if (!parsed.success) {
+    throw new ValidationError('Validation failed', [
+      { field: 'uploadId', message: 'Upload id must be a valid UUID.' }
+    ]);
+  }
+  return parsed.data.toLowerCase();
+}
+
+function isUuid(value: string): boolean {
+  return conversationIdSchema.safeParse(value).success;
+}
+
+function integerFileSize(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isInteger(value)) {
+    return value;
+  }
+  if (typeof value === 'string' && /^(0|[1-9]\d*)$/.test(value)) {
+    const parsed = Number(value);
+    return Number.isSafeInteger(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function readReservation(
+  raw: string,
+  uploadId: string,
+  callerId: string,
+  conversationId: string
+): ChatMediaUploadReservation | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return null;
+  }
+
+  const record = parsed as Record<string, unknown>;
+  if (typeof record.uploadId !== 'string' || !isUuid(record.uploadId)) {
+    return null;
+  }
+  if (typeof record.userId !== 'string' || !isUuid(record.userId)) {
+    return null;
+  }
+  if (typeof record.conversationId !== 'string' || !isUuid(record.conversationId)) {
+    return null;
+  }
+
+  const reservedUploadId = record.uploadId.toLowerCase();
+  const reservedUserId = record.userId.toLowerCase();
+  const reservedConversationId = record.conversationId.toLowerCase();
+  if (
+    reservedUploadId !== uploadId ||
+    reservedUserId !== callerId.toLowerCase() ||
+    reservedConversationId !== conversationId
+  ) {
+    return null;
+  }
+
+  const storageKey = buildChatMediaStorageKey(conversationId, uploadId);
+  if (record.storageKey !== storageKey) {
+    return null;
+  }
+  if (typeof record.mediaType !== 'string' || typeof record.mimeType !== 'string') {
+    return null;
+  }
+  const fileSizeBytes = integerFileSize(record.fileSizeBytes);
+  if (fileSizeBytes === null || !isAllowedChatMedia(record.mediaType, record.mimeType, fileSizeBytes)) {
+    return null;
+  }
+
+  return {
+    uploadId: reservedUploadId,
+    userId: reservedUserId,
+    conversationId: reservedConversationId,
+    storageKey,
+    mediaType: record.mediaType as ChatMediaType,
+    mimeType: record.mimeType,
+    fileSizeBytes
+  };
+}
+
+function isReplayableMediaMessage(
+  message: {
+    senderId: string;
+    conversationId: string;
+    messageType: string;
+    content: string | null;
+    mediaStorageKey: string | null;
+    mediaMimeType: string | null;
+    mediaFileSize: number | string | null;
+  },
+  callerId: string,
+  conversationId: string,
+  uploadId: string
+): boolean {
+  const fileSizeBytes = integerFileSize(message.mediaFileSize);
+  if (message.senderId.toLowerCase() !== callerId.toLowerCase()) {
+    return false;
+  }
+  if (message.conversationId.toLowerCase() !== conversationId) {
+    return false;
+  }
+  if (message.mediaStorageKey !== buildChatMediaStorageKey(conversationId, uploadId)) {
+    return false;
+  }
+  if (message.content !== null || message.mediaMimeType === null || fileSizeBytes === null) {
+    return false;
+  }
+  return isAllowedChatMedia(message.messageType, message.mediaMimeType, fileSizeBytes);
+}
+
+function presentConfirmedMessage(
+  message: {
+    id: string;
+    conversationId: string;
+    senderId: string;
+    messageType: string;
+    readAt: Date | string | null;
+    createdAt: Date | string;
+  },
+  created: boolean,
+  recipientId: string | null
+): ConfirmMediaUploadResult {
+  return {
+    created,
+    recipientId,
+    id: message.id,
+    conversationId: message.conversationId,
+    senderId: message.senderId,
+    messageType: message.messageType as ChatMediaType,
+    content: null,
+    mediaUrl: null,
+    readAt: message.readAt === null ? null : asDate(message.readAt),
+    createdAt: asDate(message.createdAt)
+  };
+}
+
+function isMessagesPrimaryKeyConflict(error: unknown): boolean {
+  if (!(error instanceof UniqueConstraintError)) {
+    return false;
+  }
+  const parent = error.parent as { constraint?: string; code?: string; detail?: string } | undefined;
+  if (parent?.constraint === 'messages_pkey') {
+    return true;
+  }
+  return parent?.code === '23505' && typeof parent.detail === 'string' && /\(id\)/.test(parent.detail);
+}
+
+async function findReplay(
+  uploadId: string,
+  callerId: string,
+  conversationId: string
+): Promise<ConfirmMediaUploadResult | null> {
+  const existing = await findMessageById(uploadId);
+  if (!existing || !isReplayableMediaMessage(existing, callerId, conversationId, uploadId)) {
+    return null;
+  }
+  return presentConfirmedMessage(existing, false, null);
+}
+
+async function deleteChatMediaReservation(uploadId: string): Promise<void> {
+  try {
+    await redis.del(chatMediaReservationKey(uploadId));
+  } catch {
+    // The message is already committed. A later replay reads PostgreSQL.
+  }
+}
+
+function verifiedMediaMetadata(
+  head: { contentLength?: number; contentType?: string },
+  reservation: ChatMediaUploadReservation
+): { contentLength: number; contentType: string } {
+  const contentLength = head.contentLength;
+  const contentType = head.contentType;
+  if (typeof contentLength !== 'number' || !Number.isInteger(contentLength) || contentLength !== reservation.fileSizeBytes) {
+    throw new ConflictError(MEDIA_SIZE_MISMATCH_MESSAGE, [], 'MEDIA_SIZE_MISMATCH');
+  }
+  if (contentType !== reservation.mimeType) {
+    throw new ConflictError(MEDIA_MIME_MISMATCH_MESSAGE, [], 'MEDIA_MIME_MISMATCH');
+  }
+  return { contentLength, contentType };
+}
+
+export async function confirmMediaUpload(input: ConfirmMediaUploadInput): Promise<ConfirmMediaUploadResult> {
+  const conversationId = parseConversationId(input.conversationId);
+  const uploadId = parseUploadId(input.uploadId);
+
+  if (!input.isVerified) {
+    await rejectUnverified(input.callerId);
+  }
+
+  const context = await findViewerDiscoveryContext(input.callerId);
+  if (!context || !context.isProfileComplete || !context.hasLocation || !context.hasDatingPreferences) {
+    throw incomplete();
+  }
+
+  const rawReservation = await redis.get(chatMediaReservationKey(uploadId));
+  const reservation = rawReservation
+    ? readReservation(rawReservation, uploadId, input.callerId, conversationId)
+    : null;
+  if (!reservation) {
+    const replay = await findReplay(uploadId, input.callerId, conversationId);
+    if (replay) {
+      return replay;
+    }
+    throw resourceNotFound();
+  }
+
+  let head: { contentLength?: number; contentType?: string };
+  try {
+    head = await photoStorage.headObject({ storageKey: reservation.storageKey });
+  } catch (error) {
+    if (error instanceof StorageObjectMissingError) {
+      throw new NotFoundError(MEDIA_NOT_UPLOADED_MESSAGE, [], 'MEDIA_NOT_UPLOADED');
+    }
+    throw error;
+  }
+  const verified = verifiedMediaMetadata(head, reservation);
+
+  try {
+    const inserted = await sequelize.transaction(async (transaction) => {
+      const loaded = await findConversationWithMatch(conversationId, transaction);
+      if (!loaded || !participates(loaded.userOneId, loaded.userTwoId, input.callerId)) {
+        throw resourceNotFound();
+      }
+
+      await lockLikeUsers(loaded.userOneId, loaded.userTwoId, transaction);
+      await lockMatchById(loaded.matchId, transaction);
+      await lockConversationById(conversationId, transaction);
+
+      const locked = await findConversationWithMatch(conversationId, transaction);
+      if (!locked || !participates(locked.userOneId, locked.userTwoId, input.callerId)) {
+        throw resourceNotFound();
+      }
+
+      if (locked.conversationStatus === 'CLOSED') {
+        throw conversationClosed();
+      }
+
+      if (locked.matchStatus !== 'ACTIVE') {
+        throw resourceNotFound();
+      }
+
+      const recipientId = otherParticipant(locked.userOneId, locked.userTwoId, input.callerId);
+      if (await hasBidirectionalBlock(input.callerId, recipientId, transaction)) {
+        throw new ConflictError(BLOCKED_USER_MESSAGE, [], 'BLOCKED_USER');
+      }
+
+      const premium = await hasActivePremium(input.callerId, transaction);
+      if (!premium) {
+        throw new ForbiddenError(PREMIUM_REQUIRED_MESSAGE, [], 'PREMIUM_REQUIRED');
+      }
+
+      const message = await insertMediaMessage(
+        {
+          id: uploadId,
+          conversationId,
+          senderId: input.callerId,
+          messageType: reservation.mediaType,
+          mediaStorageKey: reservation.storageKey,
+          mediaMimeType: verified.contentType,
+          mediaFileSize: verified.contentLength
+        },
+        transaction
+      );
+      const updated = await updateConversationLastMessageAt(conversationId, message.createdAt, transaction);
+      if (!updated) {
+        throw conversationClosed();
+      }
+
+      return { message, recipientId };
+    });
+
+    await deleteChatMediaReservation(uploadId);
+    return presentConfirmedMessage(inserted.message, true, inserted.recipientId);
+  } catch (error) {
+    if (!isMessagesPrimaryKeyConflict(error)) {
+      throw error;
+    }
+
+    const replay = await findReplay(uploadId, input.callerId, conversationId);
+    if (replay) {
+      return replay;
+    }
+    const existing = await findMessageById(uploadId);
+    if (!existing) {
+      throw new ConflictError(MEDIA_CONFIRM_IN_PROGRESS_MESSAGE, [], 'CONFLICT');
+    }
+    throw resourceNotFound();
+  }
 }
 
 function asConversationStatus(status: string): ConversationDetails['status'] {

@@ -5,6 +5,7 @@ import { validate } from '../../middleware/validate.middleware';
 import * as chatController from './chat.controller';
 import {
   markReadBodySchema,
+  mediaConfirmSchema,
   mediaUploadUrlSchema,
   sendTextMessageSchema,
   validateConversationIdParam,
@@ -49,6 +50,15 @@ router.post(
   validateConversationIdParam,
   validate(mediaUploadUrlSchema),
   chatController.createMediaUploadUrl
+);
+
+router.post(
+  '/:conversationId/media-confirm',
+  authenticate,
+  requireRole('USER'),
+  validateConversationIdParam,
+  validate(mediaConfirmSchema),
+  chatController.confirmMediaUpload
 );
 
 router.patch(

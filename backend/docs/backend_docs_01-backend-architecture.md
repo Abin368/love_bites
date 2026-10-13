@@ -269,7 +269,7 @@ modules/likes/
 ```
 *Note: Optional files (e.g., `*.constants.ts`) should only be created when explicitly needed.*
 
-Implemented modules today are `auth`, `users`, `profiles`, `profile-photos`, `genders`, `interests`, `relationship-intentions`, `onboarding`, `discovery`, `likes`, and `chat`. Discovery routes mount the like, pass, super-like, and undo handlers. There is no `passes` table and no separate `likes.routes.ts`. Chat mounts `GET /conversations`, `GET /conversations/:conversationId`, `POST /conversations/:conversationId/messages`, `GET /conversations/:conversationId/messages`, `GET /conversations/:conversationId/unread-count`, and `PATCH /conversations/:conversationId/read`. Notifications, safety, subscriptions, payments, entitlements, match list, and admin modules are not implemented as HTTP modules. Their tables exist from Phase 1.
+Implemented modules today are `auth`, `users`, `profiles`, `profile-photos`, `genders`, `interests`, `relationship-intentions`, `onboarding`, `discovery`, `likes`, and `chat`. Discovery routes mount the like, pass, super-like, and undo handlers. There is no `passes` table and no separate `likes.routes.ts`. Chat mounts `GET /conversations`, `GET /conversations/:conversationId`, `POST /conversations/:conversationId/messages`, `POST /conversations/:conversationId/media-upload-url`, `POST /conversations/:conversationId/media-confirm`, `GET /conversations/:conversationId/messages`, `GET /conversations/:conversationId/unread-count`, and `PATCH /conversations/:conversationId/read`. Notifications, safety, subscriptions, payments, entitlements, match list, and admin modules are not implemented as HTTP modules. Their tables exist from Phase 1.
 
 ---
 
@@ -710,7 +710,7 @@ Sessions, discovery caching, daily LIKE/PASS counters (those are `usage_records`
 
 ## 23. Realtime Architecture
 
-**Phase 6 Slices 1, 4, 6, and 7 are implemented.** `src/socket/socket.server.ts` attaches Socket.IO to the HTTP server created in `src/server.ts`. `src/socket/socket.auth.ts` authenticates the handshake. `src/socket/chat.socket.ts` handles `chat:message:send` after the user room join, emits `chat:message:read` from the HTTP read-receipt route, and relays `chat:typing:start` / `chat:typing:stop`. Conversation rooms are not implemented. There is no client `chat:message:read` listener.
+**Phase 6 Slices 1, 4, 6, and 7 are implemented.** `src/socket/socket.server.ts` attaches Socket.IO to the HTTP server created in `src/server.ts`. `src/socket/socket.auth.ts` authenticates the handshake. `src/socket/chat.socket.ts` handles `chat:message:send` after the user room join, emits `chat:message:read` from the HTTP read-receipt route, emits `chat:message:new` from media confirmation after a new commit, and relays `chat:typing:start` / `chat:typing:stop`. HTTP TEXT send does not emit. Conversation rooms are not implemented. There is no client `chat:message:read` listener.
 
 * Framework: Socket.IO initialized over the Express HTTP server.
 * Cluster Distribution: `@socket.io/redis-adapter` uses duplicated `ioredis` pub/sub clients from the existing Redis configuration. Recipient delivery uses that adapter. Message rows stay in PostgreSQL.

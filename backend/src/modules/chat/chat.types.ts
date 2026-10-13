@@ -19,6 +19,26 @@ export interface MediaUploadUrlResult {
   expiresInSeconds: number;
 }
 
+export interface ConfirmMediaUploadInput {
+  callerId: string;
+  isVerified: boolean;
+  conversationId: string;
+  uploadId: string;
+}
+
+export interface ConfirmMediaUploadResult {
+  created: boolean;
+  recipientId: string | null;
+  id: string;
+  conversationId: string;
+  senderId: string;
+  messageType: ChatMediaType;
+  content: null;
+  mediaUrl: null;
+  readAt: Date | null;
+  createdAt: Date;
+}
+
 export interface ChatMediaUploadReservation {
   uploadId: string;
   userId: string;

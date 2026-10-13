@@ -1,9 +1,15 @@
 import { Response } from 'express';
-import { deliverReadReceipt } from '../../socket/chat.socket';
+import { deliverChatMessage, deliverReadReceipt } from '../../socket/chat.socket';
 import { asyncHandler } from '../../utils/async-handler';
 import * as chatService from './chat.service';
 import type { HistoryMessage, InboxConversation } from './chat.types';
-import type { ListInboxQuery, ListMessagesQuery, MediaUploadUrlBody, SendTextMessageBody } from './chat.validator';
+import type {
+  ListInboxQuery,
+  ListMessagesQuery,
+  MediaConfirmBody,
+  MediaUploadUrlBody,
+  SendTextMessageBody
+} from './chat.validator';
 
 function send(res: Response, status: number, data: unknown, message: string): void {
   res.status(status).json({ success: true, data, message });
@@ -30,6 +36,44 @@ export const createMediaUploadUrl = asyncHandler(async (req, res) => {
       expiresInSeconds: result.expiresInSeconds
     },
     'Upload URL created.'
+  );
+});
+
+export const confirmMediaUpload = asyncHandler(async (req, res) => {
+  const body = req.body as MediaConfirmBody;
+  const result = await chatService.confirmMediaUpload({
+    callerId: req.user!.id,
+    isVerified: req.user!.isVerified,
+    conversationId: req.params.conversationId,
+    uploadId: body.uploadId
+  });
+
+  if (result.created && result.recipientId) {
+    deliverChatMessage({
+      id: result.id,
+      conversationId: result.conversationId,
+      senderId: result.senderId,
+      recipientId: result.recipientId,
+      messageType: result.messageType,
+      content: result.content,
+      createdAt: result.createdAt
+    });
+  }
+
+  send(
+    res,
+    result.created ? 201 : 200,
+    {
+      id: result.id,
+      conversationId: result.conversationId,
+      senderId: result.senderId,
+      messageType: result.messageType,
+      content: result.content,
+      mediaUrl: result.mediaUrl,
+      readAt: result.readAt,
+      createdAt: result.createdAt
+    },
+    'Message sent.'
   );
 });
 

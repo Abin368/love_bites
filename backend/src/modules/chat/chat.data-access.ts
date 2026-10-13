@@ -3,7 +3,7 @@ import { sequelize } from '../../config/database';
 import { Conversation } from '../../database/models/conversation.model';
 import { Message, MessageAttributes } from '../../database/models/message.model';
 import type { MessageType } from '../../database/models/message.model';
-import type { ConversationMatchLookup } from './chat.types';
+import type { ChatMediaType, ConversationMatchLookup } from './chat.types';
 import type { HistoryCursor, InboxCursor } from './chat.validator';
 
 const CONVERSATION_MATCH_SQL = `
@@ -132,6 +132,41 @@ export async function insertTextMessage(
     },
     { transaction }
   );
+}
+
+export async function insertMediaMessage(
+  input: {
+    id: string;
+    conversationId: string;
+    senderId: string;
+    messageType: ChatMediaType;
+    mediaStorageKey: string;
+    mediaMimeType: string;
+    mediaFileSize: number;
+  },
+  transaction: Transaction
+): Promise<Message> {
+  const now = new Date();
+  return Message.create(
+    {
+      id: input.id,
+      conversationId: input.conversationId,
+      senderId: input.senderId,
+      messageType: input.messageType,
+      content: null,
+      mediaStorageKey: input.mediaStorageKey,
+      mediaMimeType: input.mediaMimeType,
+      mediaFileSize: input.mediaFileSize,
+      readAt: null,
+      createdAt: now,
+      updatedAt: now
+    },
+    { transaction }
+  );
+}
+
+export async function findMessageById(id: string): Promise<Message | null> {
+  return Message.findByPk(id);
 }
 
 const MARK_INCOMING_READ_SQL = `

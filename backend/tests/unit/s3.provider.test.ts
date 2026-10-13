@@ -1,21 +1,29 @@
 describe('private S3 photo storage', () => {
   const putInputs: Array<Record<string, unknown>> = [];
   const getInputs: Array<Record<string, unknown>> = [];
+  const headInputs: Array<Record<string, unknown>> = [];
   const signed: Array<{ expiresIn?: number }> = [];
+  const send = jest.fn();
 
   beforeEach(() => {
     jest.resetModules();
     putInputs.length = 0;
     getInputs.length = 0;
+    headInputs.length = 0;
     signed.length = 0;
+    send.mockReset();
     jest.doMock('@aws-sdk/client-s3', () => ({
-      S3Client: jest.fn().mockImplementation(() => ({ send: jest.fn() })),
+      S3Client: jest.fn().mockImplementation(() => ({ send })),
       PutObjectCommand: jest.fn().mockImplementation((input: Record<string, unknown>) => {
         putInputs.push(input);
         return { input };
       }),
       GetObjectCommand: jest.fn().mockImplementation((input: Record<string, unknown>) => {
         getInputs.push(input);
+        return { input };
+      }),
+      HeadObjectCommand: jest.fn().mockImplementation((input: Record<string, unknown>) => {
+        headInputs.push(input);
         return { input };
       })
     }));
@@ -68,6 +76,94 @@ describe('private S3 photo storage', () => {
     });
     expect(getInputs[0]).not.toHaveProperty('ACL');
     expect(signed.map((item) => item.expiresIn)).toEqual([300, 3600]);
+  });
+
+  it('returns head metadata for the configured bucket and key', async () => {
+    const { photoStorage } = await loadProvider({
+      AWS_REGION: 'us-east-1',
+      AWS_S3_BUCKET_NAME: 'private-test-bucket'
+    });
+    send.mockResolvedValue({ ContentLength: 2048, ContentType: 'image/png' });
+
+    const head = await photoStorage.headObject({ storageKey: 'chat-media/conversation/upload' });
+
+    expect(head).toEqual({ contentLength: 2048, contentType: 'image/png' });
+    expect(headInputs).toEqual([{ Bucket: 'private-test-bucket', Key: 'chat-media/conversation/upload' }]);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it('maps a missing object without leaking the provider message', async () => {
+    const { photoStorage } = await loadProvider({
+      AWS_REGION: 'us-east-1',
+      AWS_S3_BUCKET_NAME: 'private-test-bucket'
+    });
+    send.mockRejectedValue(
+      Object.assign(new Error('The specified key does not exist. secret-bucket-arn'), {
+        name: 'NotFound',
+        $metadata: { httpStatusCode: 404 }
+      })
+    );
+
+    await expect(photoStorage.headObject({ storageKey: 'chat-media/conversation/missing' })).rejects.toMatchObject({
+      name: 'StorageObjectMissingError',
+      message: 'Stored object was not found.'
+    });
+  });
+
+  it('treats access denied, including a 403 named NotFound, as a sanitized storage error', async () => {
+    const { photoStorage } = await loadProvider({
+      AWS_REGION: 'us-east-1',
+      AWS_S3_BUCKET_NAME: 'private-test-bucket'
+    });
+    send.mockRejectedValueOnce(
+      Object.assign(new Error('AccessDenied arn:aws:s3:::secret-bucket'), {
+        name: 'AccessDenied',
+        $metadata: { httpStatusCode: 403 }
+      })
+    );
+
+    await expect(photoStorage.headObject({ storageKey: 'chat-media/conversation/denied' })).rejects.toMatchObject({
+      errorCode: 'STORAGE_ACCESS_DENIED',
+      message: 'Media storage could not be accessed.'
+    });
+
+    send.mockRejectedValueOnce(
+      Object.assign(new Error('NotFound hidden-arn'), {
+        name: 'NotFound',
+        $metadata: { httpStatusCode: 403 }
+      })
+    );
+    await expect(photoStorage.headObject({ storageKey: 'chat-media/conversation/denied' })).rejects.toMatchObject({
+      errorCode: 'STORAGE_ACCESS_DENIED'
+    });
+  });
+
+  it('sanitizes transient storage failures', async () => {
+    const { photoStorage } = await loadProvider({
+      AWS_REGION: 'us-east-1',
+      AWS_S3_BUCKET_NAME: 'private-test-bucket'
+    });
+    send.mockRejectedValue(
+      Object.assign(new Error('SlowDown secret-request-id'), {
+        name: 'SlowDown',
+        $metadata: { httpStatusCode: 503 }
+      })
+    );
+
+    await expect(photoStorage.headObject({ storageKey: 'chat-media/conversation/retry' })).rejects.toMatchObject({
+      errorCode: 'STORAGE_UNAVAILABLE',
+      message: 'Media storage is temporarily unavailable.'
+    });
+  });
+
+  it('does not head an object when photo storage is not configured', async () => {
+    const { photoStorage } = await loadProvider({});
+    await expect(photoStorage.headObject({ storageKey: 'chat-media/conversation/upload' })).rejects.toMatchObject({
+      errorCode: 'STORAGE_NOT_CONFIGURED',
+      message: 'Photo storage is not configured.'
+    });
+    expect(send).not.toHaveBeenCalled();
+    expect(headInputs).toHaveLength(0);
   });
 
   it('does not sign when photo storage is not configured', async () => {

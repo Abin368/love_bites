@@ -114,11 +114,12 @@ Live routes that require `Authorization: Bearer <accessToken>`:
 * `GET /api/v1/conversations`.
 * `POST /api/v1/conversations/:conversationId/messages`.
 * `POST /api/v1/conversations/:conversationId/media-upload-url`.
+* `POST /api/v1/conversations/:conversationId/media-confirm`.
 * `GET /api/v1/conversations/:conversationId/messages`.
 * `GET /api/v1/conversations/:conversationId/unread-count`.
 * `GET /api/v1/conversations/:conversationId`.
 
-Those profile, onboarding, photo, discovery, unmatch, and message routes also require role `USER`. `requireVerified` is not applied on the route. An unverified `USER` may call profile, onboarding, and photo routes. Discovery, PASS, LIKE, SUPER LIKE, UNDO, UNMATCH, the conversation inbox, conversation details, send message, media upload URL, message history, and the conversation unread count check verification in the service and return `403 EMAIL_NOT_VERIFIED` or `403 PHONE_NOT_VERIFIED`. Any other role, including `ADMIN`, receives `403 FORBIDDEN`. Suspended and banned accounts are rejected with `403` by the authentication middleware.
+Those profile, onboarding, photo, discovery, unmatch, and message routes also require role `USER`. `requireVerified` is not applied on the route. An unverified `USER` may call profile, onboarding, and photo routes. Discovery, PASS, LIKE, SUPER LIKE, UNDO, UNMATCH, the conversation inbox, conversation details, send message, media upload URL, media confirmation, message history, and the conversation unread count check verification in the service and return `403 EMAIL_NOT_VERIFIED` or `403 PHONE_NOT_VERIFIED`. Any other role, including `ADMIN`, receives `403 FORBIDDEN`. Suspended and banned accounts are rejected with `403` by the authentication middleware.
 
 There is no live admin API yet. `requireRole('ADMIN')` exists for later routes.
 
@@ -207,6 +208,12 @@ All failed HTTP requests return a standardized, machine-parseable JSON error env
 | `PHOTO_CONFLICT` | 409 | Photo order or primary photo conflicts with an existing photo. |
 | `PHOTO_REQUIRED` | 409 | A completed profile cannot delete its only active photo. |
 | `PREMIUM_REQUIRED` | 403 | Feature requires an active Premium subscription. |
+| `MEDIA_NOT_UPLOADED` | 404 | The reserved chat object is not in S3. Message: `Uploaded media was not found.` |
+| `MEDIA_SIZE_MISMATCH` | 409 | HeadObject `ContentLength` is missing or does not equal the reserved size. |
+| `MEDIA_MIME_MISMATCH` | 409 | HeadObject `ContentType` is missing or does not equal the reserved MIME type. |
+| `STORAGE_NOT_CONFIGURED` | 500 | `AWS_REGION` or `AWS_S3_BUCKET_NAME` is missing. Message: `Photo storage is not configured.` |
+| `STORAGE_ACCESS_DENIED` | 500 | S3 denied the metadata read, including a 403 that might hide a missing key. Message: `Media storage could not be accessed.` |
+| `STORAGE_UNAVAILABLE` | 500 | S3 throttled, timed out, or otherwise failed transiently. Message: `Media storage is temporarily unavailable.` |
 | `FORBIDDEN` | 403 | Insufficient role permissions or resource access denied. |
 | `RESOURCE_NOT_FOUND` | 404 | Target entity does not exist or is soft-deleted. |
 | `USER_NOT_FOUND` | 404 | Target user profile not found. |
@@ -1656,7 +1663,7 @@ Photo objects returned after confirm, list, and patch are `{ "id", "url", "displ
 ---
 
 ### 24.2 Send a Message
-**Implemented (Phase 6 Slice 2 TEXT persistence + Slice 3 free text quota).** TEXT only. This HTTP route stays persistence-only. It does not emit `chat:message:new`. Realtime send and recipient delivery are `chat:message:send` / `chat:message:new` in section 32. History retrieval is section 24.1. Read receipts are section 24.3. Media types are not implemented.
+**Implemented (Phase 6 Slice 2 TEXT persistence + Slice 3 free text quota).** TEXT only. This HTTP route stays persistence-only. It does not emit `chat:message:new`. Realtime send and recipient delivery are `chat:message:send` / `chat:message:new` in section 32. History retrieval is section 24.1. Read receipts are section 24.3. Media confirmation is section 24.6 and does not use this route.
 
 * **Method & Path:** `POST /api/v1/conversations/:conversationId/messages`
 * **Auth:** `Authorization: Bearer <accessToken>` and role `USER`. Middleware is `authenticate` and `requireRole('USER')`. `requireVerified` is not on the route. The service checks verification and returns `403 EMAIL_NOT_VERIFIED` or `403 PHONE_NOT_VERIFIED`. A non-`USER` role is `403 FORBIDDEN`.
@@ -1759,7 +1766,7 @@ Photo objects returned after confirm, list, and patch are `{ "id", "url", "displ
 ---
 
 ### 24.5 Request a Chat Media Upload URL
-**Implemented (Phase 6 media slice 1).** Issues a private S3 `PutObject` presigned URL for a future media message. This route does not confirm the upload, insert a `messages` row, change `last_message_at`, write `usage_records`, or emit a Socket.IO event. Confirmation and media-message persistence are not implemented. History and inbox still return `mediaUrl: null`. `POST /conversations/:conversationId/messages` and `chat:message:send` remain TEXT-only.
+**Implemented (Phase 6 media slice 1).** Issues a private S3 `PutObject` presigned URL for a future media message. This route does not confirm the upload, insert a `messages` row, change `last_message_at`, write `usage_records`, or emit a Socket.IO event. Confirmation is section 24.6. History and inbox still return `mediaUrl: null`. `POST /conversations/:conversationId/messages` and `chat:message:send` remain TEXT-only.
 
 * **Method & Path:** `POST /api/v1/conversations/:conversationId/media-upload-url`
 * **Auth:** `Authorization: Bearer <accessToken>` and role `USER`. Middleware is `authenticate`, `requireRole('USER')`, conversation-id validation, then strict body validation. `requireVerified` is not on the route. The service checks verification and returns `403 EMAIL_NOT_VERIFIED` or `403 PHONE_NOT_VERIFIED`. A non-`USER` role is `403 FORBIDDEN`.
@@ -1799,7 +1806,43 @@ Photo objects returned after confirm, list, and patch are `{ "id", "url", "displ
     "message": "Upload URL created."
   }
   ```
-  `data` does not include a message id, `mediaUrl`, `remainingDailyMessages`, the bucket name, MIME type, or file size. `storageKey` is returned so the client can echo it later. Confirmation must match the server reservation and must not trust this key by itself.
+  `data` does not include a message id, `mediaUrl`, `remainingDailyMessages`, the bucket name, MIME type, or file size. `storageKey` identifies the private object. Confirmation does not accept it back. The server reads the key from the reservation.
+
+---
+
+### 24.6 Confirm a Chat Media Upload
+**Implemented (Phase 6 media slice 2).** Confirms a reserved private object and inserts one media message. No caption, download URL, malware scan, or transcoding. `HeadObject` checks stored metadata only. It does not prove the bytes match the MIME type. `POST /conversations/:conversationId/messages` and `chat:message:send` stay TEXT-only and HTTP TEXT still does not emit.
+
+* **Method & Path:** `POST /api/v1/conversations/:conversationId/media-confirm`
+* **Auth:** `Authorization: Bearer <accessToken>` and role `USER`. Middleware is `authenticate`, `requireRole('USER')`, conversation-id validation, then strict body validation. Verification is checked in the service: `403 EMAIL_NOT_VERIFIED` or `403 PHONE_NOT_VERIFIED`. A non-`USER` role is `403 FORBIDDEN`.
+* **Incomplete caller:** `400 PROFILE_INCOMPLETE`. Message: `Onboarding is incomplete.`
+* **Path `conversationId`:** required UUID. A bad value is `400 VALIDATION_ERROR` with field `conversationId`.
+* **Body:** strict JSON with exactly `uploadId`, a UUID. It is lowercased before use. Unknown properties, including `storageKey`, `mimeType`, `fileSizeBytes`, `senderId`, `filename`, and `caption`, are `400 VALIDATION_ERROR`.
+* **Reservation:** Redis `chat-media:upload:{uploadId}`. It must be JSON with a matching upload id, caller, and conversation, the canonical key `chat-media/{conversationId}/{uploadId}`, and a `mediaType`, `mimeType`, and `fileSizeBytes` allowed by the section 24.5 allowlist. A missing, expired, malformed, or mismatched reservation does not call S3. The response is `404 RESOURCE_NOT_FOUND`, message `Resource not found`, unless a matching media row already exists for this caller, conversation, and canonical key.
+* **S3:** `HeadObject` on the private bucket and canonical key, before the database transaction. `ContentLength` must be an integer equal to `fileSizeBytes`. `ContentType` must equal `mimeType`. A smaller size is still a mismatch. Missing length is `409 MEDIA_SIZE_MISMATCH`. Missing or different type is `409 MEDIA_MIME_MISMATCH`. A 404 / `NotFound` is `404 MEDIA_NOT_UPLOADED`, message `Uploaded media was not found.` A 403 / `AccessDenied` is `500 STORAGE_ACCESS_DENIED` and is not treated as a missing object. Other provider failures are `500 STORAGE_UNAVAILABLE`. Missing bucket configuration stays `500 STORAGE_NOT_CONFIGURED`. Provider text is not returned. Failures leave the reservation in place.
+* **Reauthorization:** one transaction, same lock order as TEXT send: non-locking load, `lockLikeUsers`, lock match, lock conversation, re-read. Closed conversation: `404 CONVERSATION_CLOSED`. Inactive or missing match, or a non-participant: `404 RESOURCE_NOT_FOUND`. Either-direction block: `409 BLOCKED_USER`. `hasActivePremium` inside the transaction. A lapsed Premium subscription is `403 PREMIUM_REQUIRED`, message `Feature requires an active Premium subscription.` This route does not call `incrementDailyTextMessages`.
+* **Insert:** `messages.id` is the upload id. `content` is null. `media_storage_key` is the canonical key. `media_mime_type` and `media_file_size` are the verified S3 values. `read_at` is null. `last_message_at` is set to the new row's `created_at` in the same transaction. No migration. The primary key is the idempotency constraint.
+* **Replay:** `200 OK` with the same message body when the row already belongs to this caller, conversation, and canonical key. No second insert, no `last_message_at` write, and no socket event. A primary-key race reloads after rollback. If that row matches, the response is `200`. If it does not match, `404 RESOURCE_NOT_FOUND`. If the winning row is not visible yet, `409 CONFLICT`, message `Media confirmation is already in progress.` That is not `IDEMPOTENCY_CONFLICT`.
+* **Redis:** the reservation is deleted only after a new commit. Deletion failure still returns `201`. It is not deleted when S3 or the transaction fails. An orphaned private object can remain. This slice does not delete S3 objects.
+* **Realtime:** after a new commit, `chat:message:new` goes to `user:{recipientUserId}` only. Payload is `id`, `conversationId`, `senderId`, `messageType`, `content` (`null`), and `createdAt`. No storage key, MIME type, file size, or URL. Delivery is best-effort after commit and is not exactly once. A missing Socket.IO server does not fail the HTTP response. Replays do not emit. HTTP TEXT send still does not emit.
+* **Success (`201 Created` for a new row, `200 OK` for a replay):** Message: `Message sent.`
+  ```json
+  {
+    "success": true,
+    "data": {
+      "id": "upload-uuid-1",
+      "conversationId": "conversation-uuid",
+      "senderId": "caller-uuid",
+      "messageType": "IMAGE",
+      "content": null,
+      "mediaUrl": null,
+      "readAt": null,
+      "createdAt": "2026-10-13T08:42:00.000Z"
+    },
+    "message": "Message sent."
+  }
+  ```
+  `messageType` is `IMAGE`, `GIF`, `VIDEO`, or `VOICE`. `data` has no `remainingDailyMessages`, storage key, MIME type, file size, or URL. History and inbox still return `mediaUrl: null`.
 
 ---
 
@@ -2126,7 +2169,7 @@ Photo objects returned after confirm, list, and patch are `{ "id", "url", "displ
 
 ## 32. Realtime / Socket.IO Events Specification
 
-**Phase 6 Slices 1, 4, 6, and 7 cover the socket foundation, TEXT send/receive, read receipts, and typing indicators.** Socket.IO is attached to the Express HTTP server with `@socket.io/redis-adapter`. `chat:message:send` persists through `chat.service.sendTextMessage` and then emits `chat:message:new` to the recipient user room. HTTP `POST /api/v1/conversations/:conversationId/messages` does not emit that event. `PATCH /api/v1/conversations/:conversationId/read` emits `chat:message:read` to the other participant's user room after commit, and only when at least one incoming message was newly marked. `GET /api/v1/conversations/:conversationId/unread-count` does not emit a count event and does not change `chat:message:new` or `chat:message:read`. `chat:typing:start` and `chat:typing:stop` relay an ephemeral indicator to that same personal room. Conversation rooms are not joined. `DELETE /api/v1/matches/:matchId` still does not emit `match:unmatch`. HTTP routes keep working when Socket.IO did not start.
+**Phase 6 Slices 1, 4, 6, and 7 cover the socket foundation, TEXT send/receive, read receipts, and typing indicators.** Socket.IO is attached to the Express HTTP server with `@socket.io/redis-adapter`. `chat:message:send` persists through `chat.service.sendTextMessage` and then emits `chat:message:new` to the recipient user room. HTTP `POST /api/v1/conversations/:conversationId/messages` does not emit that event. HTTP `POST /api/v1/conversations/:conversationId/media-confirm` emits it after a new media row commits, and does not emit it for a replay. `PATCH /api/v1/conversations/:conversationId/read` emits `chat:message:read` to the other participant's user room after commit, and only when at least one incoming message was newly marked. `GET /api/v1/conversations/:conversationId/unread-count` does not emit a count event and does not change `chat:message:new` or `chat:message:read`. `chat:typing:start` and `chat:typing:stop` relay an ephemeral indicator to that same personal room. Conversation rooms are not joined. `DELETE /api/v1/matches/:matchId` still does not emit `match:unmatch`. HTTP routes keep working when Socket.IO did not start.
 
 ### 32.0 Implemented foundation
 * **Handshake:** Client connects with `auth: { token: "<access JWT>" }`. The token is the same access JWT used by HTTP `Authorization: Bearer`. Refresh tokens are not accepted.
@@ -2141,7 +2184,7 @@ Photo objects returned after confirm, list, and patch are `{ "id", "url", "displ
 | :--- | :--- | :--- | :--- | :--- |
 | `match:new` | `user:{userId}` | `{"matchId": "...", "matchedUser": { "id": "...", "firstName": "Jordan", "photos": [...] }, "matchedAt": "..."}` | Reciprocal like establishes active match. | Planned |
 | `match:unmatch` | `user:{userId}` | `{"matchId": "...", "conversationId": "..."}` | Participant unmatches or block is triggered. | Planned |
-| `chat:message:new` | `user:{recipientUserId}` | `{"id": "...", "conversationId": "...", "senderId": "...", "messageType": "TEXT", "content": "...", "createdAt": "..."}` | `chat:message:send` committed a TEXT message. Recipient sockets only. | Implemented |
+| `chat:message:new` | `user:{recipientUserId}` | `{"id": "...", "conversationId": "...", "senderId": "...", "messageType": "TEXT", "content": "...", "createdAt": "..."}` | `chat:message:send` committed a TEXT message, or media confirmation committed a new media row (`content` is `null`). Recipient sockets only. Delivery after commit is best-effort. | Implemented |
 | `chat:message:read`| `user:{otherParticipantId}`| `{"conversationId": "...", "readerId": "...", "readAt": "..."}` | `PATCH /conversations/:conversationId/read` committed at least one newly read incoming message. The other participant's sockets only. Not emitted when no row changed, or when the request fails. | Implemented |
 | `chat:typing:start` | `user:{otherParticipantId}` | `{"conversationId": "...", "senderId": "..."}` | A socket became the active typist for that conversation. Recipient sockets only. Repeated starts from the same socket do not emit again. | Implemented |
 | `chat:typing:stop` | `user:{otherParticipantId}` | `{"conversationId": "...", "senderId": "..."}` | That socket stopped, timed out, disconnected, switched conversations, or failed a later authorization check. Recipient sockets only. Emitted once for an active indicator. | Implemented |
@@ -2167,7 +2210,7 @@ The listener is registered only after handshake authentication and the `user:{us
 * **Success acknowledgement:** `{ "success": true, "data": { ... } }`. `data` matches the HTTP message object: `id`, `conversationId`, `senderId`, `messageType`, `content`, `mediaUrl`, `readAt`, `createdAt`, and `remainingDailyMessages`. It does not include the recipient id.
 * **`chat:message:new`:** emitted only after the service promise resolves. Target is `user:{recipientUserId}`, where the recipient is the other match participant from the authorized conversation. The sender's user room does not receive this event. Every connected device of the recipient does, including devices on other server instances through the Redis adapter. An offline recipient still gets a committed row and the sender still gets the acknowledgement. There is no offline queue, push, or replay. A delivery failure after commit is logged and does not fail the acknowledgement or roll back the message.
 * **Event payload:** `id`, `conversationId`, `senderId`, `messageType`, `content`, `createdAt`. No `remainingDailyMessages`, `mediaUrl`, `readAt`, or profile fields.
-* **Not emitted by HTTP:** `POST /api/v1/conversations/:conversationId/messages` does not emit `chat:message:new`.
+* **Not emitted by HTTP TEXT:** `POST /api/v1/conversations/:conversationId/messages` does not emit `chat:message:new`. `POST /api/v1/conversations/:conversationId/media-confirm` emits the same payload after a new commit only. `content` is `null`. A replay does not emit. A missing Socket.IO server does not fail that HTTP response.
 
 ### 32.4 Typing indicators (implemented)
 
