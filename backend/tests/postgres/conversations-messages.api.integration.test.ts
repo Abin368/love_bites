@@ -251,6 +251,10 @@ function getUnreadCount(callerId: string, conversationId: string) {
   return request(app).get(`/api/v1/conversations/${conversationId}/unread-count`).set(authHeader(callerId));
 }
 
+function getConversation(callerId: string, conversationId: string) {
+  return request(app).get(`/api/v1/conversations/${conversationId}`).set(authHeader(callerId));
+}
+
 function listInbox(callerId: string, query?: Record<string, string>) {
   const pending = request(app).get('/api/v1/conversations').set(authHeader(callerId));
   return query ? pending.query(query) : pending;
@@ -3467,6 +3471,470 @@ describe('GET /api/v1/conversations', () => {
       expect(response.status).toBe(200);
       expect(response.body.data.conversations).toHaveLength(1);
       expect(response.body.data.conversations[0].unreadCount).toBe(0);
+      expect(socket.emit).not.toHaveBeenCalled();
+    } finally {
+      socket.detach();
+    }
+
+    const afterMessages = await Message.findAll({ paranoid: false });
+    expect(afterMessages.map((row) => row.toJSON())).toEqual(beforeMessages.map((row) => row.toJSON()));
+    expect(await UsageRecord.count()).toBe(beforeUsage);
+    expect(await textMessageUsageCount(caller.id)).toBe(4);
+    expect(await textMessageUsageCount(target.id)).toBe(0);
+    expect(await UserCreditBalance.count()).toBe(1);
+    expect(await CreditTransaction.count()).toBe(1);
+    expect(await Block.count()).toBe(beforeBlocks);
+    await conversation.reload();
+    await match.reload();
+    expect(conversation.toJSON()).toEqual(beforeConversation);
+    expect(match.toJSON()).toEqual(beforeMatch);
+    const stored = await Message.findByPk(message.id);
+    expect(stored?.readAt?.toISOString()).toBe(readAt.toISOString());
+    expect(stored?.deletedAt).toBeNull();
+  });
+});
+
+describe('GET /api/v1/conversations/:conversationId', () => {
+  it('returns the approved fields for an active conversation with an active match', async () => {
+    const { caller, target, match, conversation } = await activeThread();
+    await Profile.update(
+      { firstName: 'Alex', bio: 'hidden-bio', occupation: 'hidden-occupation' },
+      { where: { userId: target.id } }
+    );
+
+    const response = await getConversation(caller.id, conversation.id);
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({
+      success: true,
+      data: {
+        conversationId: conversation.id,
+        matchId: match.id,
+        status: 'ACTIVE',
+        participant: { userId: target.id, firstName: 'Alex' },
+        unreadCount: 0
+      },
+      message: 'Conversation retrieved.'
+    });
+    expect(Object.keys(response.body).sort()).toEqual(['data', 'message', 'success']);
+    expect(Object.keys(response.body.data).sort()).toEqual([
+      'conversationId',
+      'matchId',
+      'participant',
+      'status',
+      'unreadCount'
+    ]);
+    expect(Object.keys(response.body.data.participant).sort()).toEqual(['firstName', 'userId']);
+    expect(JSON.stringify(response.body)).not.toContain('hidden-bio');
+    expect(JSON.stringify(response.body)).not.toContain('hidden-occupation');
+    expect(JSON.stringify(response.body)).not.toContain('lastMessage');
+    expect(JSON.stringify(response.body)).not.toContain(caller.email ?? 'missing-email');
+  });
+
+  it('returns the other participant to either match member', async () => {
+    const catalogGender = await gender();
+    const left = await buildUser({ genderId: catalogGender.id });
+    const right = await buildUser({ genderId: catalogGender.id });
+    await Profile.update({ firstName: 'Left' }, { where: { userId: left.id } });
+    await Profile.update({ firstName: 'Right' }, { where: { userId: right.id } });
+    const { match, conversation } = await openInboxThread({
+      callerId: left.id,
+      targetId: right.id
+    });
+
+    const asLeft = await getConversation(left.id, conversation.id);
+    const asRight = await getConversation(right.id, conversation.id);
+    expect(asLeft.status).toBe(200);
+    expect(asRight.status).toBe(200);
+    expect(asLeft.body.data).toEqual({
+      conversationId: conversation.id,
+      matchId: match.id,
+      status: 'ACTIVE',
+      participant: { userId: right.id, firstName: 'Right' },
+      unreadCount: 0
+    });
+    expect(asRight.body.data.participant).toEqual({ userId: left.id, firstName: 'Left' });
+    expect(asRight.body.data.status).toBe('ACTIVE');
+    expect(asRight.body.data.matchId).toBe(match.id);
+  });
+
+  it('returns a closed conversation after unmatch', async () => {
+    const { caller, target, match, conversation } = await activeThread();
+    await Profile.update({ firstName: 'Alex' }, { where: { userId: target.id } });
+    await insertHistoryMessage({
+      conversationId: conversation.id,
+      senderId: target.id,
+      content: 'still unread',
+      createdAt: new Date('2026-10-12T10:00:00.000Z')
+    });
+    const unmatch = await request(app).delete(`/api/v1/matches/${match.id}`).set(authHeader(caller.id));
+    expect(unmatch.status).toBe(200);
+
+    const response = await getConversation(caller.id, conversation.id);
+    expect(response.status).toBe(200);
+    expect(response.body.message).toBe('Conversation retrieved.');
+    expect(response.body.data).toEqual({
+      conversationId: conversation.id,
+      matchId: match.id,
+      status: 'CLOSED',
+      participant: { userId: target.id, firstName: 'Alex' },
+      unreadCount: 1
+    });
+    await conversation.reload();
+    await match.reload();
+    expect(conversation.status).toBe('CLOSED');
+    expect(match.status).toBe('UNMATCHED');
+  });
+
+  it('returns a closed conversation when the match is undone', async () => {
+    const { caller, target, match, conversation } = await activeThread();
+    await Profile.update({ firstName: 'Alex' }, { where: { userId: target.id } });
+    await insertHistoryMessage({
+      conversationId: conversation.id,
+      senderId: target.id,
+      content: 'one',
+      createdAt: new Date('2026-10-12T11:00:00.000Z')
+    });
+    await insertHistoryMessage({
+      conversationId: conversation.id,
+      senderId: target.id,
+      content: 'two',
+      createdAt: new Date('2026-10-12T11:01:00.000Z')
+    });
+    await match.update({ status: 'UNDONE' });
+    await conversation.update({ status: 'CLOSED', closedAt: new Date('2026-10-12T11:02:00.000Z') });
+
+    const response = await getConversation(caller.id, conversation.id);
+    expect(response.status).toBe(200);
+    expect(response.body.data).toEqual({
+      conversationId: conversation.id,
+      matchId: match.id,
+      status: 'CLOSED',
+      participant: { userId: target.id, firstName: 'Alex' },
+      unreadCount: 2
+    });
+    await match.reload();
+    expect(match.status).toBe('UNDONE');
+  });
+
+  it('hides an active conversation whose match is not active', async () => {
+    const { caller, target, conversation } = await activeThread();
+    const inactiveMatch = await insertMatch(caller.id, target.id, 'UNMATCHED');
+    const inconsistent = await insertConversation(inactiveMatch.id, 'ACTIVE', null, null);
+
+    const hidden = await getConversation(caller.id, inconsistent.id);
+    expect(hidden.status).toBe(404);
+    expect(hidden.body.error.code).toBe('RESOURCE_NOT_FOUND');
+    expect(hidden.body.error.message).toBe('Resource not found');
+
+    const visible = await getConversation(caller.id, conversation.id);
+    expect(visible.status).toBe(200);
+    expect(visible.body.data.status).toBe('ACTIVE');
+  });
+
+  it('hides unknown and foreign conversations with the same not-found response', async () => {
+    const { caller, target, genderId, conversation } = await activeThread();
+    const outsider = await buildUser({ genderId, point: north(3) });
+    await Profile.update({ firstName: 'Alex', bio: 'hidden-bio' }, { where: { userId: target.id } });
+
+    const missing = await getConversation(caller.id, randomUUID());
+    expect(missing.status).toBe(404);
+    expect(missing.body.error.code).toBe('RESOURCE_NOT_FOUND');
+    expect(missing.body.error.message).toBe('Resource not found');
+
+    const foreign = await getConversation(outsider.id, conversation.id);
+    expect(foreign.status).toBe(404);
+    expect(foreign.body.error.code).toBe('RESOURCE_NOT_FOUND');
+    expect(foreign.body.error.message).toBe('Resource not found');
+    expect(foreign.body.error.details).toEqual(missing.body.error.details);
+    expect(JSON.stringify(foreign.body)).not.toContain('Alex');
+    expect(JSON.stringify(foreign.body)).not.toContain('hidden-bio');
+  });
+
+  it('rejects a block in either direction, including after the conversation is closed', async () => {
+    const outgoing = await activeThread();
+    await Block.create({
+      blockerId: outgoing.caller.id,
+      blockedId: outgoing.target.id,
+      reason: null,
+      createdAt: new Date()
+    });
+    const callerBlocked = await getConversation(outgoing.target.id, outgoing.conversation.id);
+    expect(callerBlocked.status).toBe(409);
+    expect(callerBlocked.body.error.code).toBe('BLOCKED_USER');
+    expect(callerBlocked.body.error.message).toBe('Interaction prohibited due to an active safety block.');
+
+    const incoming = await activeThread();
+    await Block.create({
+      blockerId: incoming.target.id,
+      blockedId: incoming.caller.id,
+      reason: null,
+      createdAt: new Date()
+    });
+    const recipientBlocked = await getConversation(incoming.caller.id, incoming.conversation.id);
+    expect(recipientBlocked.status).toBe(409);
+    expect(recipientBlocked.body.error.code).toBe('BLOCKED_USER');
+
+    const closed = await activeThread();
+    const unmatch = await request(app).delete(`/api/v1/matches/${closed.match.id}`).set(authHeader(closed.caller.id));
+    expect(unmatch.status).toBe(200);
+    await Block.create({
+      blockerId: closed.caller.id,
+      blockedId: closed.target.id,
+      reason: null,
+      createdAt: new Date()
+    });
+    const closedBlocked = await getConversation(closed.caller.id, closed.conversation.id);
+    expect(closedBlocked.status).toBe(409);
+    expect(closedBlocked.body.error.code).toBe('BLOCKED_USER');
+    await closed.conversation.reload();
+    expect(closed.conversation.status).toBe('CLOSED');
+  });
+
+  it('rejects an unverified caller and an incomplete profile', async () => {
+    const catalogGender = await gender();
+    const target = await buildUser({ genderId: catalogGender.id });
+    const emailCaller = await buildUser({ genderId: catalogGender.id, emailVerified: false });
+    const emailMatch = await insertMatch(emailCaller.id, target.id, 'ACTIVE');
+    const emailConversation = await insertConversation(emailMatch.id, 'ACTIVE', null, null);
+    const emailResponse = await getConversation(emailCaller.id, emailConversation.id);
+    expect(emailResponse.status).toBe(403);
+    expect(emailResponse.body.error.code).toBe('EMAIL_NOT_VERIFIED');
+    expect(emailResponse.body.error.message).toBe('Email verification is required.');
+
+    const phoneCaller = await buildUser({ genderId: catalogGender.id, phoneOnly: true, emailVerified: false });
+    const phoneMatch = await insertMatch(phoneCaller.id, target.id, 'ACTIVE');
+    const phoneConversation = await insertConversation(phoneMatch.id, 'ACTIVE', null, null);
+    const phoneResponse = await getConversation(phoneCaller.id, phoneConversation.id);
+    expect(phoneResponse.status).toBe(403);
+    expect(phoneResponse.body.error.code).toBe('PHONE_NOT_VERIFIED');
+    expect(phoneResponse.body.error.message).toBe('Phone verification is required.');
+
+    const incomplete = await buildUser({ genderId: catalogGender.id, complete: false });
+    const incompleteMatch = await insertMatch(incomplete.id, target.id, 'ACTIVE');
+    const incompleteConversation = await insertConversation(incompleteMatch.id, 'ACTIVE', null, null);
+    const incompleteResponse = await getConversation(incomplete.id, incompleteConversation.id);
+    expect(incompleteResponse.status).toBe(400);
+    expect(incompleteResponse.body.error.code).toBe('PROFILE_INCOMPLETE');
+    expect(incompleteResponse.body.error.message).toBe('Onboarding is incomplete.');
+
+    const missingPreferences = await buildUser({ genderId: catalogGender.id, preferences: false });
+    const preferencesMatch = await insertMatch(missingPreferences.id, target.id, 'ACTIVE');
+    const preferencesConversation = await insertConversation(preferencesMatch.id, 'ACTIVE', null, null);
+    const preferencesResponse = await getConversation(missingPreferences.id, preferencesConversation.id);
+    expect(preferencesResponse.status).toBe(400);
+    expect(preferencesResponse.body.error.code).toBe('PROFILE_INCOMPLETE');
+
+    const missingLocation = await buildUser({ genderId: catalogGender.id, point: null });
+    const locationMatch = await insertMatch(missingLocation.id, target.id, 'ACTIVE');
+    const locationConversation = await insertConversation(locationMatch.id, 'ACTIVE', null, null);
+    const locationResponse = await getConversation(missingLocation.id, locationConversation.id);
+    expect(locationResponse.status).toBe(400);
+    expect(locationResponse.body.error.code).toBe('PROFILE_INCOMPLETE');
+  });
+
+  it('rejects a missing token, an invalid token, a deleted account, an admin, a suspended user, and a banned user', async () => {
+    const { conversation } = await activeThread();
+
+    const missing = await request(app).get(`/api/v1/conversations/${conversation.id}`);
+    expect(missing.status).toBe(401);
+    expect(missing.body.error.code).toBe('AUTH_REQUIRED');
+
+    const invalid = await request(app)
+      .get(`/api/v1/conversations/${conversation.id}`)
+      .set({ Authorization: 'Bearer not-a-token' });
+    expect(invalid.status).toBe(401);
+    expect(invalid.body.error.code).toBe('INVALID_TOKEN');
+    expect(invalid.body.error.message).toBe('Invalid token.');
+
+    const deleted = await User.create({
+      email: `deleted-${randomUUID()}@example.com`,
+      passwordHash: PASSWORD_HASH,
+      role: 'USER',
+      status: 'ACTIVE',
+      emailVerified: true,
+      phoneVerified: false
+    });
+    await deleted.destroy();
+    const deletedResponse = await getConversation(deleted.id, conversation.id);
+    expect(deletedResponse.status).toBe(401);
+    expect(deletedResponse.body.error.code).toBe('INVALID_TOKEN');
+
+    const admin = await User.create({
+      email: `admin-${randomUUID()}@example.com`,
+      passwordHash: PASSWORD_HASH,
+      role: 'ADMIN',
+      status: 'ACTIVE',
+      emailVerified: true,
+      phoneVerified: false
+    });
+    const forbidden = await request(app)
+      .get(`/api/v1/conversations/${conversation.id}`)
+      .set(authHeader(admin.id, 'ADMIN'));
+    expect(forbidden.status).toBe(403);
+    expect(forbidden.body.error.code).toBe('FORBIDDEN');
+
+    const suspended = await User.create({
+      email: `suspended-${randomUUID()}@example.com`,
+      passwordHash: PASSWORD_HASH,
+      role: 'USER',
+      status: 'SUSPENDED',
+      emailVerified: true,
+      phoneVerified: false
+    });
+    const suspendedResponse = await getConversation(suspended.id, conversation.id);
+    expect(suspendedResponse.status).toBe(403);
+    expect(suspendedResponse.body.error.code).toBe('ACCOUNT_SUSPENDED');
+
+    const banned = await User.create({
+      email: `banned-${randomUUID()}@example.com`,
+      passwordHash: PASSWORD_HASH,
+      role: 'USER',
+      status: 'BANNED',
+      emailVerified: true,
+      phoneVerified: false
+    });
+    const bannedResponse = await getConversation(banned.id, conversation.id);
+    expect(bannedResponse.status).toBe(403);
+    expect(bannedResponse.body.error.code).toBe('ACCOUNT_BANNED');
+  });
+
+  it('rejects an invalid conversation id before an unsupported query parameter', async () => {
+    const { caller } = await activeThread();
+    const response = await request(app)
+      .get('/api/v1/conversations/not-a-uuid')
+      .query({ limit: '20' })
+      .set(authHeader(caller.id));
+    expect(response.status).toBe(400);
+    expect(response.body.error.code).toBe('VALIDATION_ERROR');
+    expect(response.body.error.message).toBe('Validation failed');
+    expect(response.body.error.details).toEqual([
+      { field: 'conversationId', message: 'Conversation id must be a valid UUID.' }
+    ]);
+  });
+
+  it('rejects any query parameter', async () => {
+    const { caller, conversation } = await activeThread();
+
+    for (const query of [{ sort: 'desc' }, { limit: '20' }, { cursor: 'abc' }]) {
+      const response = await request(app)
+        .get(`/api/v1/conversations/${conversation.id}`)
+        .query(query)
+        .set(authHeader(caller.id));
+      expect(response.status).toBe(400);
+      expect(response.body.error.code).toBe('VALIDATION_ERROR');
+      expect(response.body.error.message).toBe('Validation failed');
+      expect(response.body.error.details).toEqual([
+        { field: Object.keys(query)[0], message: 'Unsupported query parameter.' }
+      ]);
+    }
+  });
+
+  it('counts every incoming unread message type and ignores own, read, and deleted rows', async () => {
+    const { caller, target, conversation } = await activeThread();
+    const createdAt = new Date('2026-10-12T10:00:00.000Z');
+    const storageKey = `private/${randomUUID()}/details-secret`;
+    await insertHistoryMessage({
+      conversationId: conversation.id,
+      senderId: target.id,
+      content: 'text',
+      createdAt
+    });
+    for (const messageType of ['IMAGE', 'GIF', 'VIDEO', 'VOICE'] as const) {
+      await insertHistoryMessage({
+        conversationId: conversation.id,
+        senderId: target.id,
+        content: null,
+        createdAt,
+        messageType,
+        mediaStorageKey: storageKey
+      });
+    }
+    await insertHistoryMessage({
+      conversationId: conversation.id,
+      senderId: target.id,
+      content: null,
+      createdAt: new Date('2026-10-12T10:05:00.000Z'),
+      messageType: 'IMAGE',
+      readAt: new Date('2026-10-12T10:06:00.000Z'),
+      mediaStorageKey: storageKey
+    });
+    const removed = await insertHistoryMessage({
+      conversationId: conversation.id,
+      senderId: target.id,
+      content: 'gone',
+      createdAt: new Date('2026-10-12T10:07:00.000Z')
+    });
+    await removed.destroy();
+    await insertHistoryMessage({
+      conversationId: conversation.id,
+      senderId: caller.id,
+      content: 'own',
+      createdAt: new Date('2026-10-12T10:08:00.000Z')
+    });
+
+    const response = await getConversation(caller.id, conversation.id);
+    expect(response.status).toBe(200);
+    expect(response.body.data.unreadCount).toBe(5);
+    expect(response.body.data).not.toHaveProperty('lastMessage');
+    expect(JSON.stringify(response.body)).not.toContain(storageKey);
+    expect(JSON.stringify(response.body)).not.toContain('gone');
+    expect(JSON.stringify(response.body)).not.toContain('own');
+  });
+
+  it('hides a conversation when the other participant has no profile', async () => {
+    const { caller, target, conversation } = await activeThread();
+    await Profile.destroy({ where: { userId: target.id } });
+
+    const response = await getConversation(caller.id, conversation.id);
+    expect(response.status).toBe(404);
+    expect(response.body.error.code).toBe('RESOURCE_NOT_FOUND');
+    expect(response.body.error.message).toBe('Resource not found');
+    expect(JSON.stringify(response.body)).not.toContain(target.id);
+  });
+
+  it('does not write rows or emit socket events', async () => {
+    const { caller, target, match, conversation } = await activeThread();
+    const readAt = new Date('2026-10-12T10:01:00.000Z');
+    const createdAt = new Date('2026-10-12T10:00:00.000Z');
+    const message = await insertHistoryMessage({
+      conversationId: conversation.id,
+      senderId: target.id,
+      content: 'steady',
+      createdAt,
+      readAt
+    });
+    await conversation.update({ lastMessageAt: createdAt });
+    await sequelize.query(`UPDATE conversations SET last_message_at = :createdAt WHERE id = CAST(:id AS uuid)`, {
+      replacements: { id: conversation.id, createdAt }
+    });
+    await seedTextUsage(caller.id, 4);
+    await UserCreditBalance.create({
+      userId: caller.id,
+      creditType: 'SUPER_LIKE',
+      balance: 3,
+      ...timestamps()
+    });
+    await CreditTransaction.create({
+      userId: caller.id,
+      creditType: 'SUPER_LIKE',
+      delta: -1,
+      reason: 'CONSUMPTION',
+      createdAt: new Date()
+    });
+
+    const beforeMessages = await Message.findAll({ paranoid: false });
+    const beforeUsage = await UsageRecord.count();
+    const beforeBlocks = await Block.count();
+    await conversation.reload();
+    await match.reload();
+    const beforeConversation = conversation.toJSON();
+    const beforeMatch = match.toJSON();
+    const socket = attachFakeSocket();
+
+    try {
+      const response = await getConversation(caller.id, conversation.id);
+      expect(response.status).toBe(200);
+      expect(response.body.data.unreadCount).toBe(0);
       expect(socket.emit).not.toHaveBeenCalled();
     } finally {
       socket.detach();

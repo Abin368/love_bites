@@ -4,6 +4,20 @@ import { ValidationError, type ErrorDetail } from '../../utils/errors';
 
 export const conversationIdSchema = z.string().uuid('Conversation id must be a valid UUID.');
 
+export function validateConversationIdParam(req: Request, _res: Response, next: NextFunction): void {
+  try {
+    const parsed = conversationIdSchema.safeParse(req.params.conversationId);
+    if (!parsed.success) {
+      throw new ValidationError('Validation failed', [
+        { field: 'conversationId', message: 'Conversation id must be a valid UUID.' }
+      ]);
+    }
+    next();
+  } catch (error) {
+    next(error);
+  }
+}
+
 const HISTORY_LIMIT_MESSAGE = 'Limit must be an integer from 1 to 50.';
 const CURSOR_MALFORMED_MESSAGE = 'Cursor must be a base64-encoded JSON object with createdAt and id.';
 const CURSOR_TIME_MESSAGE = 'Cursor createdAt must be a valid date-time.';

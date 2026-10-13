@@ -467,7 +467,7 @@ Implement swipe action mechanics (`LIKE`, `PASS`, `SUPER_LIKE`), daily action qu
 
 ## 10. Phase 6 — Chat and Realtime Messaging
 
-**Partly complete (2026-10-12).** Slice 1 Socket.IO foundation, Slice 2 TEXT message persistence, Slice 3 free text-message quota, Slice 4 realtime TEXT send/receive, Slice 5 message history, Slice 6 read receipts, Slice 7 typing indicators, Slice 8 conversation unread counts, and Slice 9 conversation inbox are implemented. Conversation rooms and media are not.
+**Partly complete (2026-10-13).** Slice 1 Socket.IO foundation, Slice 2 TEXT message persistence, Slice 3 free text-message quota, Slice 4 realtime TEXT send/receive, Slice 5 message history, Slice 6 read receipts, Slice 7 typing indicators, Slice 8 conversation unread counts, Slice 9 conversation inbox, and Slice 10 conversation details are implemented. Conversation rooms and media are not.
 
 ### 10.1 Objectives
 Build real-time messaging using Socket.IO backed by PostgreSQL persistence, enforce message authorization, manage unread counters, support tiered media attachments, and provide cursor-based history pagination.
@@ -505,7 +505,9 @@ Build real-time messaging using Socket.IO backed by PostgreSQL persistence, enfo
 8. **Conversation unread count — Implemented (Slice 8):**
    * `GET /api/v1/conversations/:conversationId/unread-count`: One integer for a participant. The gates match message history, including a closed conversation and either-direction blocks. The count is incoming rows of every stored type with `read_at IS NULL` and `deleted_at IS NULL`. The caller's own rows are excluded. The read uses `idx_messages_unread_count` and does not write, cache, or emit a socket event. No migration.
 9. **Conversation inbox — Implemented (Slice 9):**
-   * `GET /api/v1/conversations`: Cursor-paginated inbox for a verified `USER` with a complete profile, location, and dating preferences. Returns `ACTIVE` conversations whose match is `ACTIVE`. A block in either direction omits that conversation only. Order is `last_message_at DESC NULLS LAST, id DESC`. `lastMessage` is the latest non-deleted message, or `null`. `unreadCount` uses the Slice 8 predicate for the page. `limit` defaults to 20 and maxes at 50. The read does not write, cache, or emit a socket event. No migration. `GET /api/v1/conversations/:conversationId` remains unimplemented.
+   * `GET /api/v1/conversations`: Cursor-paginated inbox for a verified `USER` with a complete profile, location, and dating preferences. Returns `ACTIVE` conversations whose match is `ACTIVE`. A block in either direction omits that conversation only. Order is `last_message_at DESC NULLS LAST, id DESC`. `lastMessage` is the latest non-deleted message, or `null`. `unreadCount` uses the Slice 8 predicate for the page. `limit` defaults to 20 and maxes at 50. The read does not write, cache, or emit a socket event. No migration.
+10. **Conversation details — Implemented (Slice 10):**
+   * `GET /api/v1/conversations/:conversationId`: One conversation for a verified `USER` with a complete profile, location, and dating preferences. Authorization matches message history. A participant may read a `CLOSED` conversation, including after unmatch or undo. An `ACTIVE` conversation whose match is not `ACTIVE` is `404 RESOURCE_NOT_FOUND`. A missing other-participant profile is the same 404. A block in either direction is `409 BLOCKED_USER`. The body is the stored status, match id, other participant `userId` and `firstName`, and the Slice 8 unread count. No message preview, write, cache, socket event, or migration.
 
 ---
 

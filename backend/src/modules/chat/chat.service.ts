@@ -19,6 +19,7 @@ import {
   countInboxUnreadMessages,
   countIncomingUnreadMessages,
   findConversationWithMatch,
+  findProfileFirstName,
   hasBidirectionalBlock,
   insertTextMessage,
   listConversationMessages,
@@ -32,6 +33,8 @@ import {
 import type {
   AuthorizeTypingInput,
   AuthorizeTypingResult,
+  ConversationDetails,
+  GetConversationDetailsInput,
   GetUnreadCountInput,
   GetUnreadCountResult,
   HistoryMessage,
@@ -214,6 +217,56 @@ export async function sendTextMessage(input: SendTextMessageInput): Promise<Send
       recipientId
     };
   });
+}
+
+function asConversationStatus(status: string): ConversationDetails['status'] {
+  if (status === 'ACTIVE' || status === 'CLOSED') {
+    return status;
+  }
+  throw resourceNotFound();
+}
+
+export async function getConversationDetails(input: GetConversationDetailsInput): Promise<ConversationDetails> {
+  const conversationId = parseConversationId(input.conversationId);
+
+  if (!input.isVerified) {
+    await rejectUnverified(input.callerId);
+  }
+
+  const context = await findViewerDiscoveryContext(input.callerId);
+  if (!context || !context.isProfileComplete || !context.hasLocation || !context.hasDatingPreferences) {
+    throw incomplete();
+  }
+
+  const loaded = await findConversationWithMatch(conversationId);
+  if (!loaded || !participates(loaded.userOneId, loaded.userTwoId, input.callerId)) {
+    throw resourceNotFound();
+  }
+
+  if (loaded.conversationStatus === 'ACTIVE' && loaded.matchStatus !== 'ACTIVE') {
+    throw resourceNotFound();
+  }
+
+  const participantId = otherParticipant(loaded.userOneId, loaded.userTwoId, input.callerId);
+  if (await hasBidirectionalBlock(input.callerId, participantId)) {
+    throw new ConflictError(BLOCKED_USER_MESSAGE, [], 'BLOCKED_USER');
+  }
+
+  const firstName = await findProfileFirstName(participantId);
+  if (firstName === null) {
+    throw resourceNotFound();
+  }
+
+  return {
+    conversationId: loaded.conversationId,
+    matchId: loaded.matchId,
+    status: asConversationStatus(loaded.conversationStatus),
+    participant: {
+      userId: participantId,
+      firstName
+    },
+    unreadCount: await countIncomingUnreadMessages(conversationId, participantId)
+  };
 }
 
 export async function getUnreadCount(input: GetUnreadCountInput): Promise<GetUnreadCountResult> {

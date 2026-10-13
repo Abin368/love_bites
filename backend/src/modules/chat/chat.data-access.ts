@@ -154,6 +154,21 @@ WHERE conversation_id = CAST(:conversationId AS uuid)
   AND deleted_at IS NULL
 `;
 
+export async function findProfileFirstName(userId: string): Promise<string | null> {
+  const rows = await sequelize.query<{ firstName: string | null }>(
+    `SELECT first_name AS "firstName"
+     FROM profiles
+     WHERE user_id = CAST(:userId AS uuid)
+     LIMIT 1`,
+    {
+      replacements: { userId },
+      type: QueryTypes.SELECT
+    }
+  );
+  const firstName = rows[0]?.firstName;
+  return typeof firstName === 'string' ? firstName : null;
+}
+
 export async function countIncomingUnreadMessages(conversationId: string, senderId: string): Promise<number> {
   const rows = await sequelize.query<{ unreadCount: number | string }>(COUNT_INCOMING_UNREAD_SQL, {
     replacements: { conversationId, senderId },

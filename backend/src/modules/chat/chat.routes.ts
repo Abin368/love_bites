@@ -6,6 +6,7 @@ import * as chatController from './chat.controller';
 import {
   markReadBodySchema,
   sendTextMessageSchema,
+  validateConversationIdParam,
   validateListInboxQuery,
   validateListMessagesQuery,
   validateMarkReadRequest,
@@ -47,6 +48,15 @@ router.patch(
   validateMarkReadRequest,
   validate(markReadBodySchema),
   chatController.markMessagesRead
+);
+
+router.get(
+  '/:conversationId',
+  authenticate,
+  requireRole('USER'),
+  validateConversationIdParam,
+  validateUnreadCountQuery,
+  chatController.getConversationDetails
 );
 
 export const chatRoutes = router;

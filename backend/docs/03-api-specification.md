@@ -13,7 +13,7 @@ This document defines the **RESTful API Specification** and **Socket.IO Realtime
 
 ### Implementation status
 
-Phase 2 authentication, Phase 3 onboarding, Phase 4 Discovery, and Phase 5 slices for PASS, LIKE and match creation, SUPER LIKE, UNDO, and UNMATCH are implemented. Sections **4**, **11**, **12**, **14**, **19**, **20**, **21**, and **22.2** describe that live behavior. Sections **13**, **17**, **18**, **22.1**, and **23** onward are the planned contract and are not mounted, except where a subsection says otherwise. Section **23.1** is mounted. `PUT /api/v1/me/interests`, `PUT /api/v1/me/relationship-intentions`, `GET /api/v1/dating-preferences`, `PUT /api/v1/dating-preferences`, `PUT /api/v1/location`, and `PATCH /api/v1/onboarding/profile` are not implemented. `GET /api/v1/matches` is not implemented. `DELETE /api/v1/matches/:matchId` is implemented. Match and conversation rows are created by LIKE and SUPER LIKE. UNMATCH does not delete them.
+Phase 2 authentication, Phase 3 onboarding, Phase 4 Discovery, and Phase 5 slices for PASS, LIKE and match creation, SUPER LIKE, UNDO, and UNMATCH are implemented. Sections **4**, **11**, **12**, **14**, **19**, **20**, **21**, and **22.2** describe that live behavior. Sections **13**, **17**, **18**, **22.1**, and **23** onward are the planned contract and are not mounted, except where a subsection says otherwise. Sections **23.1** and **23.2** are mounted. `PUT /api/v1/me/interests`, `PUT /api/v1/me/relationship-intentions`, `GET /api/v1/dating-preferences`, `PUT /api/v1/dating-preferences`, `PUT /api/v1/location`, and `PATCH /api/v1/onboarding/profile` are not implemented. `GET /api/v1/matches` is not implemented. `DELETE /api/v1/matches/:matchId` is implemented. Match and conversation rows are created by LIKE and SUPER LIKE. UNMATCH does not delete them.
 
 Health checks are also live: `GET /health` and `GET /api/v1/health`.
 
@@ -115,8 +115,9 @@ Live routes that require `Authorization: Bearer <accessToken>`:
 * `POST /api/v1/conversations/:conversationId/messages`.
 * `GET /api/v1/conversations/:conversationId/messages`.
 * `GET /api/v1/conversations/:conversationId/unread-count`.
+* `GET /api/v1/conversations/:conversationId`.
 
-Those profile, onboarding, photo, discovery, unmatch, and message routes also require role `USER`. `requireVerified` is not applied on the route. An unverified `USER` may call profile, onboarding, and photo routes. Discovery, PASS, LIKE, SUPER LIKE, UNDO, UNMATCH, the conversation inbox, send message, message history, and the conversation unread count check verification in the service and return `403 EMAIL_NOT_VERIFIED` or `403 PHONE_NOT_VERIFIED`. Any other role, including `ADMIN`, receives `403 FORBIDDEN`. Suspended and banned accounts are rejected with `403` by the authentication middleware.
+Those profile, onboarding, photo, discovery, unmatch, and message routes also require role `USER`. `requireVerified` is not applied on the route. An unverified `USER` may call profile, onboarding, and photo routes. Discovery, PASS, LIKE, SUPER LIKE, UNDO, UNMATCH, the conversation inbox, conversation details, send message, message history, and the conversation unread count check verification in the service and return `403 EMAIL_NOT_VERIFIED` or `403 PHONE_NOT_VERIFIED`. Any other role, including `ADMIN`, receives `403 FORBIDDEN`. Suspended and banned accounts are rejected with `403` by the authentication middleware.
 
 There is no live admin API yet. `requireRole('ADMIN')` exists for later routes.
 
@@ -1518,7 +1519,7 @@ Photo objects returned after confirm, list, and patch are `{ "id", "url", "displ
 ## 23. Conversation APIs
 
 ### 23.1 List Inbox Conversations
-**Implemented.** Read-only inbox for the authenticated caller. This route does not send a message, mark anything read, consume quota, change conversation or match status, write Redis, or emit a Socket.IO event. `GET /api/v1/conversations/:conversationId` remains unimplemented.
+**Implemented.** Read-only inbox for the authenticated caller. This route does not send a message, mark anything read, consume quota, change conversation or match status, write Redis, or emit a Socket.IO event. One conversation is `GET /api/v1/conversations/:conversationId` in section 23.2.
 
 * **Method & Path:** `GET /api/v1/conversations`
 * **Auth:** `Authorization: Bearer <accessToken>` and role `USER`. Middleware is `authenticate`, `requireRole('USER')`, then query validation. `requireVerified` is not on the route. The service checks verification and returns `403 EMAIL_NOT_VERIFIED` or `403 PHONE_NOT_VERIFIED`. A non-`USER` role is `403 FORBIDDEN`.
@@ -1570,9 +1571,40 @@ Photo objects returned after confirm, list, and patch are `{ "id", "url", "displ
 ---
 
 ### 23.2 Get Conversation Details
+**Implemented (Phase 6 Slice 10).** Read-only details for one conversation. This route does not send a message, mark anything read, consume quota, change conversation or match status, write Redis, or emit a Socket.IO event. It does not return message history or a last-message preview. History is section 24.1. The inbox list is section 23.1. The unread-count route is section 24.4.
+
 * **Method & Path:** `GET /api/v1/conversations/:conversationId`
-* **Auth:** Authenticated
-* **Success Response (`200 OK`):** Returns conversation status, match participant metadata, and unread count.
+* **Auth:** `Authorization: Bearer <accessToken>` and role `USER`. Middleware is `authenticate`, `requireRole('USER')`, conversation-id validation, then empty-query validation. `requireVerified` is not on the route. The service checks verification and returns `403 EMAIL_NOT_VERIFIED` or `403 PHONE_NOT_VERIFIED`. A non-`USER` role is `403 FORBIDDEN`.
+* **Incomplete caller:** `400 PROFILE_INCOMPLETE`, same discovery rule as history. Message: `Onboarding is incomplete.`
+* **Path `conversationId`:** required UUID. A bad value is `400 VALIDATION_ERROR` before query validation. Message: `Validation failed`. `details` is `[{ "field": "conversationId", "message": "Conversation id must be a valid UUID." }]`.
+* **Query:** none. Any query parameter is `400 VALIDATION_ERROR`. Detail field is the parameter name. Message: `Unsupported query parameter.`
+* **Body:** none.
+* **Who can read:** either `user_one_id` or `user_two_id` on the match that backs the conversation. The same rules as section 24.1 apply.
+* **Not found:** `404 RESOURCE_NOT_FOUND`. Message: `Resource not found`. Covers a missing conversation id, a conversation whose match the caller does not belong to, an `ACTIVE` conversation whose match is not `ACTIVE`, and a participant whose profile row is missing. The response does not reveal whether the id exists.
+* **Closed conversation:** a participant receives the stored `CLOSED` status when `conversations.status = 'CLOSED'`, including after unmatch or undo, unless a block exists. The match may be `UNMATCHED` or `UNDONE`. The route does not return `CONVERSATION_CLOSED` and does not reopen the conversation or match.
+* **Block:** either direction returns `409 BLOCKED_USER`, including when the conversation is `CLOSED`. Message: `Interaction prohibited due to an active safety block.` Participation is checked before the block. The block check is not skipped for a closed conversation.
+* **Other participant:** `participant` is the other match user. The fields are `userId` and `firstName` only. `firstName` is `profiles.first_name`. Bio, occupation, photos, email, phone, and account flags are not returned. The route does not filter on the other account's status. A missing profile row is `404 RESOURCE_NOT_FOUND`.
+* **Status:** `data.status` is the stored `conversations.status`, `ACTIVE` or `CLOSED`. It is not hardcoded.
+* **Unread count:** incoming non-deleted messages from the other participant with `read_at IS NULL`, every stored message type. The caller's own messages do not count. A conversation with no such rows returns `0`. The count uses `idx_messages_unread_count`. Message rows are not returned.
+* **Read-only:** no insert, update, or delete. `read_at`, `deleted_at`, `last_message_at`, conversation status, match status, `usage_records`, and credits stay unchanged. No Socket.IO event is emitted. No Redis key is written. `media_storage_key` is not selected.
+* **Success Response (`200 OK`):** Message: `Conversation retrieved.`
+  ```json
+  {
+    "success": true,
+    "data": {
+      "conversationId": "conv-uuid-1",
+      "matchId": "match-uuid-1",
+      "status": "ACTIVE",
+      "participant": {
+        "userId": "c3e7d81b-9932-4233-812c-6f5e39482130",
+        "firstName": "Alex"
+      },
+      "unreadCount": 2
+    },
+    "message": "Conversation retrieved."
+  }
+  ```
+  `status` is `ACTIVE` or `CLOSED`. `unreadCount` is an integer, including `0`. The body does not include `lastMessage`, messages, photos, or storage keys.
 
 ---
 
@@ -1697,7 +1729,7 @@ Photo objects returned after confirm, list, and patch are `{ "id", "url", "displ
 ---
 
 ### 24.4 Get Conversation Unread Count
-**Implemented (Phase 6 Slice 8).** Read-only count of unread incoming messages in one conversation. This route does not send a message, mark anything read, consume quota, change conversation or match status, write Redis, or emit a Socket.IO event. `GET /api/v1/conversations` is implemented in section 23.1. `GET /api/v1/conversations/:conversationId` remains unimplemented.
+**Implemented (Phase 6 Slice 8).** Read-only count of unread incoming messages in one conversation. This route does not send a message, mark anything read, consume quota, change conversation or match status, write Redis, or emit a Socket.IO event. `GET /api/v1/conversations` is implemented in section 23.1. `GET /api/v1/conversations/:conversationId` is implemented in section 23.2.
 
 * **Method & Path:** `GET /api/v1/conversations/:conversationId/unread-count`
 * **Auth:** `Authorization: Bearer <accessToken>` and role `USER`. Middleware is `authenticate`, `requireRole('USER')`, then empty-query validation. `requireVerified` is not on the route. The service checks verification and returns `403 EMAIL_NOT_VERIFIED` or `403 PHONE_NOT_VERIFIED`. A non-`USER` role is `403 FORBIDDEN`.
@@ -2184,6 +2216,7 @@ Rate limits are enforced using Redis sliding-window algorithms:
 | **Read receipts** (`PATCH /conversations/:conversationId/read`, implemented) | `messages` only. Sets `read_at` and `updated_at` to `CURRENT_TIMESTAMP` on unread incoming rows from the other participant. Does not change `conversations`, matches, likes, `usage_records`, or credits. No notification row and no Redis idempotency key. The Redis adapter delivers `chat:message:read` to `user:{otherParticipantId}` only after commit, and only when at least one row changed. |
 | **Unread count** (`GET /conversations/:conversationId/unread-count`, implemented) | Reads `messages`, `conversations`, `matches`, `blocks`, and the profile context used by history. Counts non-deleted incoming rows with `read_at IS NULL` through `idx_messages_unread_count`. Writes no row, no Redis key, and no socket event. |
 | **Inbox** (`GET /conversations`, implemented) | Reads `conversations`, `matches`, `profiles`, `blocks`, and `messages`. Returns `ACTIVE` conversations for an `ACTIVE` match and omits a blocked pair without failing the list. The page is limited before the latest-message and unread aggregate queries. Writes no row, no Redis key, and no socket event. |
+| **Conversation details** (`GET /conversations/:conversationId`, implemented) | Reads one `conversations` row, its `matches` row, `blocks`, the other participant's `profiles.first_name`, and the unread count on `messages` through `idx_messages_unread_count`. Uses the history authorization rules. Writes no row, no Redis key, and no socket event. |
 | **Typing** (`chat:typing:start`, `chat:typing:stop`, implemented) | Reads `conversations`, `matches`, `blocks`, `users`, and the profile context used by send. Writes no row and no Redis key. Process memory on the socket's node holds one active conversation and one timer per socket. The Redis adapter delivers the recipient event only. |
 | **Safety** (`/blocks`, `/reports`) | `blocks`, `reports` |
 | **Notifications** | `notifications` |

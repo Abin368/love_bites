@@ -54,6 +54,23 @@ export interface GetUnreadCountInput {
   conversationId: string;
 }
 
+export interface GetConversationDetailsInput {
+  callerId: string;
+  isVerified: boolean;
+  conversationId: string;
+}
+
+export interface ConversationDetails {
+  conversationId: string;
+  matchId: string;
+  status: 'ACTIVE' | 'CLOSED';
+  participant: {
+    userId: string;
+    firstName: string;
+  };
+  unreadCount: number;
+}
+
 export interface GetUnreadCountResult {
   unreadCount: number;
 }
