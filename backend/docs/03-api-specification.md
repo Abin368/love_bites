@@ -115,11 +115,12 @@ Live routes that require `Authorization: Bearer <accessToken>`:
 * `POST /api/v1/conversations/:conversationId/messages`.
 * `POST /api/v1/conversations/:conversationId/media-upload-url`.
 * `POST /api/v1/conversations/:conversationId/media-confirm`.
+* `GET /api/v1/conversations/:conversationId/messages/:messageId/media-download-url`.
 * `GET /api/v1/conversations/:conversationId/messages`.
 * `GET /api/v1/conversations/:conversationId/unread-count`.
 * `GET /api/v1/conversations/:conversationId`.
 
-Those profile, onboarding, photo, discovery, unmatch, and message routes also require role `USER`. `requireVerified` is not applied on the route. An unverified `USER` may call profile, onboarding, and photo routes. Discovery, PASS, LIKE, SUPER LIKE, UNDO, UNMATCH, the conversation inbox, conversation details, send message, media upload URL, media confirmation, message history, and the conversation unread count check verification in the service and return `403 EMAIL_NOT_VERIFIED` or `403 PHONE_NOT_VERIFIED`. Any other role, including `ADMIN`, receives `403 FORBIDDEN`. Suspended and banned accounts are rejected with `403` by the authentication middleware.
+Those profile, onboarding, photo, discovery, unmatch, and message routes also require role `USER`. `requireVerified` is not applied on the route. An unverified `USER` may call profile, onboarding, and photo routes. Discovery, PASS, LIKE, SUPER LIKE, UNDO, UNMATCH, the conversation inbox, conversation details, send message, media upload URL, media confirmation, media download, message history, and the conversation unread count check verification in the service and return `403 EMAIL_NOT_VERIFIED` or `403 PHONE_NOT_VERIFIED`. Any other role, including `ADMIN`, receives `403 FORBIDDEN`. Suspended and banned accounts are rejected with `403` by the authentication middleware.
 
 There is no live admin API yet. `requireRole('ADMIN')` exists for later routes.
 
@@ -1539,7 +1540,7 @@ Photo objects returned after confirm, list, and patch are `{ "id", "url", "displ
 * **Block:** a block in either direction omits that conversation only. The rest of the inbox is still returned. The route does not return `409 BLOCKED_USER` for the list, and it does not change the block, match, or conversation.
 * **Other participant:** `participant` is the other match user. The fields are `userId` and `firstName` only. Bio, occupation, photos, email, phone, and account flags are not returned. The route does not filter on the other account's status.
 * **Order:** `conversations.last_message_at DESC NULLS LAST`, then `conversations.id DESC`. The sort key is the stored `last_message_at`, not the preview message timestamp.
-* **Preview:** `lastMessage` is the latest non-deleted message in that conversation, ordered by `messages.created_at DESC, messages.id DESC`. A conversation with no non-deleted messages returns `lastMessage: null`. Soft-deleted rows are never returned. `content` is the stored value, including null. `mediaUrl` is `null`. `media_storage_key` is not returned.
+* **Preview:** `lastMessage` is the latest non-deleted message in that conversation, ordered by `messages.created_at DESC, messages.id DESC`. A conversation with no non-deleted messages returns `lastMessage: null`. Soft-deleted rows are never returned. `content` is the stored value, including null. `mediaUrl` is `null`. A download URL is not included; section 24.7 issues one for a single confirmed media message. `media_storage_key` is not returned.
 * **Unread count:** incoming non-deleted messages from the other participant with `read_at IS NULL`, every stored message type. The caller's own messages do not count. A conversation with no such rows returns `0`.
 * **Page:** at most `limit` conversations, after eligibility, block exclusion, and the cursor predicate. `hasMore` is true when another eligible row exists. `nextCursor` is then the base64 cursor of the last returned conversation. Otherwise `nextCursor` is `null` and `hasMore` is false. An empty inbox returns `conversations: []`.
 * **Cursor continuation:** a non-null `lastMessageAt` includes rows with an earlier `last_message_at`, rows with the same `last_message_at` and a smaller conversation id, and rows whose `last_message_at` is null. A null `lastMessageAt` includes only rows whose `last_message_at` is null and whose conversation id is smaller. The cursor does not restart at the first page.
@@ -1636,7 +1637,7 @@ Photo objects returned after confirm, list, and patch are `{ "id", "url", "displ
 * **Rows:** non-deleted messages for that conversation only, every stored `message_type`. Soft-deleted rows (`deleted_at` set) are omitted. There is no per-user hide list.
 * **Order:** `created_at DESC, id DESC`. `id` is a tie-break, not a timestamp. A cursor returns rows strictly older than `(createdAt, id)`: `created_at < cursor.createdAt OR (created_at = cursor.createdAt AND id < cursor.id)`.
 * **Page:** at most `limit` items. `hasMore` is true when another row exists. `nextCursor` is then the base64 cursor of the last returned item. Otherwise `nextCursor` is `null` and `hasMore` is false. An authorized conversation with no visible messages returns `items: []`.
-* **Read-only:** no insert, update, or delete. `read_at`, `deleted_at`, `last_message_at`, conversation status, match status, `usage_records`, and credits stay unchanged. No Socket.IO event is emitted. `media_storage_key` and other storage metadata are not returned. `mediaUrl` is `null` until a media URL resolver exists. `readAt` is the stored value. Items do not include `remainingDailyMessages`.
+* **Read-only:** no insert, update, or delete. `read_at`, `deleted_at`, `last_message_at`, conversation status, match status, `usage_records`, and credits stay unchanged. No Socket.IO event is emitted. `media_storage_key` and other storage metadata are not returned. `mediaUrl` is `null`. A participant fetches a private download URL separately, as section 24.7 describes. `readAt` is the stored value. Items do not include `remainingDailyMessages`.
 * **Success Response (`200 OK`):** Message: `Messages retrieved.`
   ```json
   {
@@ -1842,7 +1843,39 @@ Photo objects returned after confirm, list, and patch are `{ "id", "url", "displ
     "message": "Message sent."
   }
   ```
-  `messageType` is `IMAGE`, `GIF`, `VIDEO`, or `VOICE`. `data` has no `remainingDailyMessages`, storage key, MIME type, file size, or URL. History and inbox still return `mediaUrl: null`.
+  `messageType` is `IMAGE`, `GIF`, `VIDEO`, or `VOICE`. `data` has no `remainingDailyMessages`, storage key, MIME type, file size, or URL. History, inbox, and `chat:message:new` still omit the download URL. A participant fetches one with section 24.7.
+
+---
+
+### 24.7 Request a Chat Media Download URL
+**Implemented (Phase 6 media slice 3).** Signs a private S3 `GetObject` URL for one already confirmed media message. The route does not call `HeadObject`, insert or update a message, change `read_at`, `deleted_at`, or `last_message_at`, write `usage_records` or credits, write Redis, or emit a Socket.IO event. History, inbox, confirmation, and `chat:message:new` still leave `mediaUrl` unset.
+
+* **Method & Path:** `GET /api/v1/conversations/:conversationId/messages/:messageId/media-download-url`
+* **Auth:** `Authorization: Bearer <accessToken>` and role `USER`. Middleware is `authenticate`, `requireRole('USER')`, then path, query, and empty-body validation. `requireVerified` is not on the route. The service checks verification and returns `403 EMAIL_NOT_VERIFIED` or `403 PHONE_NOT_VERIFIED`. A non-`USER` role is `403 FORBIDDEN`.
+* **Incomplete caller:** `400 PROFILE_INCOMPLETE`, same discovery rule as history. Message: `Onboarding is incomplete.`
+* **Path:** `conversationId` and `messageId` are required UUIDs. They are lowercased before use. A bad `conversationId` is `400 VALIDATION_ERROR` with field `conversationId`, and that check runs before the message id and before query parameters. A bad `messageId` uses field `messageId` and message `Message id must be a valid UUID.`
+* **Query:** none. Any query parameter is `400 VALIDATION_ERROR`. Detail field is the parameter name. Message: `Unsupported query parameter.`
+* **Body:** none. A JSON object must be empty. Unknown properties, including `storageKey`, `uploadId`, `mimeType`, `fileSizeBytes`, `senderId`, and `filename`, are `400 VALIDATION_ERROR`. The client cannot supply an object key.
+* **Who can download:** either participant, using the same rules as section 24.1. The client does not send `senderId`. The sender and the recipient are both allowed. The other account's status and profile are not checked.
+* **Not found:** `404 RESOURCE_NOT_FOUND`. Message: `Resource not found`. Covers a missing conversation, a non-participant, an `ACTIVE` conversation whose match is not `ACTIVE`, a missing message, a soft-deleted message, a message from another conversation, a `TEXT` message, a missing `media_storage_key`, and a key other than the canonical key below. Those cases share one response. It does not reveal whether the message exists.
+* **Closed conversation:** a participant can download retained media when `conversations.status = 'CLOSED'`, including after unmatch or undo, unless a block exists. The route does not return `CONVERSATION_CLOSED` and does not reopen the conversation or match.
+* **Block:** either direction returns `409 BLOCKED_USER`, including when the conversation is `CLOSED`. Message: `Interaction prohibited due to an active safety block.` Authorization runs before the message lookup.
+* **Premium:** not checked. Upload and confirmation still require `hasActivePremium` at those calls. A free recipient can download. A sender or recipient whose Premium lapses after confirmation can still download. This route does not call `incrementDailyTextMessages`.
+* **Canonical key:** the server signs only `chat-media/{conversationId}/{messageId}`, rebuilt from the validated ids with the same builder confirmation uses. The stored `media_storage_key` must equal that string. A different stored value is not signed.
+* **Presign:** existing private `GetObject` signer, 3600 seconds. No ACL, no `HeadObject`, and no Redis cache. The URL is a bearer secret until it expires. Signing does not prove the object still exists. Missing bucket configuration is `500 STORAGE_NOT_CONFIGURED`, message `Photo storage is not configured.` Any other signer failure is `500 STORAGE_UNAVAILABLE`, message `Media storage is temporarily unavailable.` Provider text, credentials, the bucket, and the URL are not returned.
+* **Read-only:** no insert, update, or delete. Repeated calls sign again and can return a different URL string. Each URL is valid for 3600 seconds from its own signing. `read_at`, `deleted_at`, `last_message_at`, conversation status, match status, `usage_records`, and credits stay unchanged. No Socket.IO event is emitted.
+* **Success Response (`200 OK`):** Message: `Download URL created.`
+  ```json
+  {
+    "success": true,
+    "data": {
+      "downloadUrl": "https://example-bucket.s3.amazonaws.com/chat-media/conversation-uuid/message-uuid?X-Amz-...",
+      "expiresInSeconds": 3600
+    },
+    "message": "Download URL created."
+  }
+  ```
+  `data` is exactly those two fields. It does not include the storage key, bucket, MIME type, or file size.
 
 ---
 
@@ -2278,7 +2311,7 @@ Rate limits are enforced using Redis sliding-window algorithms:
 2. **HTTP Security Headers:** Configured via `Helmet` (CSP, HSTS, X-Content-Type-Options).
 3. **CORS:** Restricted to verified web/mobile origin domains with credentials enabled.
 4. **IDOR & Mass Assignment Protection:** Sequelize explicit attribute whitelisting; ownership checks on all user resources.
-5. **Private Media Storage:** Photos uploaded directly to S3 via short-lived presigned URLs; served through signed CloudFront URLs.
+5. **Private Media Storage:** Profile photos and confirmed chat media stay in a private S3 bucket. Clients upload with short-lived `PutObject` URLs and read with short-lived `GetObject` URLs. CloudFront signing is not implemented.
 6. **Zero Coordinate Exposure:** SQL projections strictly exclude `profiles.location` from public serialization.
 
 ---

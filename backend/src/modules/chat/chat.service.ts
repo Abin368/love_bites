@@ -7,6 +7,7 @@ import { StorageObjectMissingError } from '../../integrations/storage/storage.in
 import {
   ConflictError,
   ForbiddenError,
+  InternalServerError,
   NotFoundError,
   RateLimitError,
   UnauthorizedError,
@@ -45,6 +46,7 @@ import type {
   ConfirmMediaUploadInput,
   ConfirmMediaUploadResult,
   ConversationDetails,
+  CreateMediaDownloadUrlInput,
   CreateMediaUploadUrlInput,
   GetConversationDetailsInput,
   GetUnreadCountInput,
@@ -58,6 +60,7 @@ import type {
   ListMessagesResult,
   MarkMessagesReadInput,
   MarkMessagesReadResult,
+  MediaDownloadUrlResult,
   MediaUploadUrlResult,
   SendTextMessageInput,
   SendTextMessageResult
@@ -70,6 +73,9 @@ const BLOCKED_USER_MESSAGE = 'Interaction prohibited due to an active safety blo
 const DAILY_TEXT_LIMIT_MESSAGE = 'You have reached your daily limit of 20 text messages.';
 const PREMIUM_REQUIRED_MESSAGE = 'Feature requires an active Premium subscription.';
 const MEDIA_UPLOAD_TTL_SECONDS = 300;
+const MEDIA_DOWNLOAD_TTL_SECONDS = 3600;
+const MEDIA_STORAGE_UNAVAILABLE_MESSAGE = 'Media storage is temporarily unavailable.';
+const DOWNLOADABLE_MEDIA_TYPES = new Set(['IMAGE', 'GIF', 'VIDEO', 'VOICE']);
 const MEDIA_NOT_UPLOADED_MESSAGE = 'Uploaded media was not found.';
 const MEDIA_SIZE_MISMATCH_MESSAGE = 'Uploaded media size does not match the reservation.';
 const MEDIA_MIME_MISMATCH_MESSAGE = 'Uploaded media type does not match the reservation.';
@@ -342,6 +348,44 @@ function parseUploadId(uploadId: string): string {
     ]);
   }
   return parsed.data.toLowerCase();
+}
+
+function parseMessageId(messageId: string): string {
+  const parsed = conversationIdSchema.safeParse(messageId);
+  if (!parsed.success) {
+    throw new ValidationError('Validation failed', [
+      { field: 'messageId', message: 'Message id must be a valid UUID.' }
+    ]);
+  }
+  return parsed.data.toLowerCase();
+}
+
+function isDownloadableMediaMessage(
+  message: { conversationId: string; messageType: string; mediaStorageKey: string | null },
+  conversationId: string,
+  messageId: string
+): boolean {
+  if (message.conversationId.toLowerCase() !== conversationId) {
+    return false;
+  }
+  if (!DOWNLOADABLE_MEDIA_TYPES.has(message.messageType)) {
+    return false;
+  }
+  return message.mediaStorageKey === buildChatMediaStorageKey(conversationId, messageId);
+}
+
+async function signChatMediaDownload(storageKey: string): Promise<{ url: string }> {
+  try {
+    return await photoStorage.createDownloadUrl({
+      storageKey,
+      expiresInSeconds: MEDIA_DOWNLOAD_TTL_SECONDS
+    });
+  } catch (error) {
+    if (error instanceof InternalServerError && error.errorCode === 'STORAGE_NOT_CONFIGURED') {
+      throw error;
+    }
+    throw new InternalServerError(MEDIA_STORAGE_UNAVAILABLE_MESSAGE, [], 'STORAGE_UNAVAILABLE', true);
+  }
 }
 
 function isUuid(value: string): boolean {
@@ -629,6 +673,45 @@ export async function confirmMediaUpload(input: ConfirmMediaUploadInput): Promis
     }
     throw resourceNotFound();
   }
+}
+
+export async function createMediaDownloadUrl(input: CreateMediaDownloadUrlInput): Promise<MediaDownloadUrlResult> {
+  const conversationId = parseConversationId(input.conversationId);
+  const messageId = parseMessageId(input.messageId);
+
+  if (!input.isVerified) {
+    await rejectUnverified(input.callerId);
+  }
+
+  const context = await findViewerDiscoveryContext(input.callerId);
+  if (!context || !context.isProfileComplete || !context.hasLocation || !context.hasDatingPreferences) {
+    throw incomplete();
+  }
+
+  const loaded = await findConversationWithMatch(conversationId);
+  if (!loaded || !participates(loaded.userOneId, loaded.userTwoId, input.callerId)) {
+    throw resourceNotFound();
+  }
+
+  if (loaded.conversationStatus === 'ACTIVE' && loaded.matchStatus !== 'ACTIVE') {
+    throw resourceNotFound();
+  }
+
+  const recipientId = otherParticipant(loaded.userOneId, loaded.userTwoId, input.callerId);
+  if (await hasBidirectionalBlock(input.callerId, recipientId)) {
+    throw new ConflictError(BLOCKED_USER_MESSAGE, [], 'BLOCKED_USER');
+  }
+
+  const message = await findMessageById(messageId);
+  if (!message || !isDownloadableMediaMessage(message, conversationId, messageId)) {
+    throw resourceNotFound();
+  }
+
+  const signed = await signChatMediaDownload(buildChatMediaStorageKey(conversationId, messageId));
+  return {
+    downloadUrl: signed.url,
+    expiresInSeconds: MEDIA_DOWNLOAD_TTL_SECONDS
+  };
 }
 
 function asConversationStatus(status: string): ConversationDetails['status'] {

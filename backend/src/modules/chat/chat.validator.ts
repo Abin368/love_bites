@@ -312,6 +312,45 @@ export function validateListInboxQuery(req: Request, res: Response, next: NextFu
 
 export const markReadBodySchema = z.object({}).strict();
 
+export const mediaDownloadBodySchema = z.object({}).strict();
+
+export function validateMediaDownloadRequest(req: Request, _res: Response, next: NextFunction): void {
+  try {
+    const conversationId = conversationIdSchema.safeParse(req.params.conversationId);
+    if (!conversationId.success) {
+      throw new ValidationError('Validation failed', [
+        { field: 'conversationId', message: 'Conversation id must be a valid UUID.' }
+      ]);
+    }
+
+    const messageId = conversationIdSchema.safeParse(req.params.messageId);
+    if (!messageId.success) {
+      throw new ValidationError('Validation failed', [
+        { field: 'messageId', message: 'Message id must be a valid UUID.' }
+      ]);
+    }
+
+    if (!req.query || typeof req.query !== 'object' || Array.isArray(req.query)) {
+      throw new ValidationError('Validation failed', [{ field: 'query', message: 'Query parameters are invalid.' }]);
+    }
+
+    const details: ErrorDetail[] = [];
+    for (const key of Object.keys(req.query)) {
+      details.push({ field: key, message: 'Unsupported query parameter.' });
+    }
+    if (details.length > 0) {
+      throw new ValidationError('Validation failed', details);
+    }
+
+    if (req.body === undefined) {
+      req.body = {};
+    }
+    next();
+  } catch (error) {
+    next(error);
+  }
+}
+
 export function validateMarkReadRequest(req: Request, _res: Response, next: NextFunction): void {
   try {
     if (!req.query || typeof req.query !== 'object' || Array.isArray(req.query)) {

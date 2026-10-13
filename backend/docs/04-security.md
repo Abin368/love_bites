@@ -350,7 +350,14 @@ The server key is `chat-media/{conversationId}/{uploadId}`. Redis `chat-media:up
 
 `HeadObject` then compares `ContentLength` and `ContentType` with the reservation. That is metadata verification. It does not inspect the bytes, scan malware, or prove the file is the declared media type. A 403 is `STORAGE_ACCESS_DENIED`, not proof the object is missing, because S3 can return 403 for a missing key without `s3:ListBucket`.
 
-Authorization runs again inside the TEXT-send lock order, including `hasActivePremium`. A Premium lapse after the URL was issued is `403 PREMIUM_REQUIRED`. The message id is the upload id, so PostgreSQL rejects a second row. The reservation is deleted only after that commit. Redis is not the idempotency store. No public ACL and no download URL are created. `DAILY_TEXT_MESSAGES` is not consumed. `chat:message:new` is emitted to the recipient room only after a new commit. HTTP TEXT send still does not emit.
+Authorization runs again inside the TEXT-send lock order, including `hasActivePremium`. A Premium lapse after the URL was issued is `403 PREMIUM_REQUIRED`. The message id is the upload id, so PostgreSQL rejects a second row. The reservation is deleted only after that commit. Redis is not the idempotency store. No public ACL is set. Confirmation does not sign a download URL. `DAILY_TEXT_MESSAGES` is not consumed. `chat:message:new` is emitted to the recipient room only after a new commit. HTTP TEXT send still does not emit. Download is section 16.4.
+
+### 16.4 Chat Media Download URL (Phase 6 media slice 3)
+`GET /api/v1/conversations/:conversationId/messages/:messageId/media-download-url` signs a private `GetObject` URL for one confirmed media message. Authorization matches message history: verified caller, complete profile, participant, bidirectional block, and the same not-found rule for a missing conversation or an `ACTIVE` conversation whose match is not `ACTIVE`. A `CLOSED` conversation stays downloadable unless a block exists. The message is loaded only after that check.
+
+Premium is not checked. It remains required for upload and confirmation. A free recipient can download, and a later lapse does not hide the row.
+
+The client cannot send a storage key. The signed key is `chat-media/{conversationId}/{messageId}` only when the stored `media_storage_key` equals that string. `TEXT`, a soft-deleted row, a foreign conversation, a missing key, and any other key are `404 RESOURCE_NOT_FOUND`. The route does not call `HeadObject` and does not cache the URL in Redis. The TTL is 3600 seconds. `STORAGE_NOT_CONFIGURED` is preserved. Other signer failures are `500 STORAGE_UNAVAILABLE` with message `Media storage is temporarily unavailable.` The handler does not log the SDK error or the URL. The URL is a bearer secret until it expires. The route does not write messages, quota, match state, or a socket event.
 
 ---
 

@@ -281,11 +281,13 @@ Reports are not a Discovery exclusion. Browsing candidate cards does not consume
 | **GIFs** | Prohibited | Allowed |
 | **Videos** | Prohibited | Allowed |
 | **Voice Messages** | Prohibited | Allowed |
+| **Download of confirmed media** | Allowed for a participant | Allowed for a participant |
 
 ### 8.3 Messaging Quotas & Lifecycle
 * **Live send path:** Either participant may send TEXT on an `ACTIVE` match with an `ACTIVE` conversation. Empty and whitespace-only content are accepted. Bidirectional blocks reject send. Closed conversations reject send.
 * **Free Tier Daily Quota:** Enforced at 20 sent text messages per UTC calendar day (`usage_records` metric `DAILY_TEXT_MESSAGES`). Premium callers have unlimited TEXT and do not consume that counter.
 * **Incoming Messages:** Received messages do **not** consume the receiver's daily sent quota.
+* **Media download:** `GET /api/v1/conversations/:conversationId/messages/:messageId/media-download-url` returns a private 3600-second URL for one confirmed media message. Premium is required to upload and confirm that message, not to download it. A free recipient can download. A later Premium lapse does not remove the message. A closed conversation stays downloadable unless a safety block exists. History and inbox keep `mediaUrl` unset.
 * **Unmatch Impact:** When a match is unmatched, the conversation becomes `CLOSED` immediately and further messages are blocked. The conversation and its messages stay in PostgreSQL. A participant can still read that retained history unless a safety block exists. Unmatch does not delete likes.
 * **History:** `GET /api/v1/conversations/:conversationId/messages` returns cursor-paginated messages for a participant. It does not mark messages read, consume the send quota, or emit a realtime event.
 * **Read receipts:** `PATCH /api/v1/conversations/:conversationId/read` marks the other participant's unread messages in that conversation. A closed conversation can be marked read unless a block exists. The call does not consume the send quota. After the database update commits, the other participant's connected devices receive `chat:message:read`. Opening history does not mark messages read.

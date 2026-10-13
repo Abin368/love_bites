@@ -17,6 +17,7 @@ import { CreditTransaction } from '../../src/database/models/credit-transaction.
 import { UsageRecord } from '../../src/database/models/usage-record.model';
 import { UserCreditBalance } from '../../src/database/models/user-credit-balance.model';
 import { User, UserStatus } from '../../src/database/models/user.model';
+import * as chatDataAccess from '../../src/modules/chat/chat.data-access';
 import { encodeHistoryCursor, encodeInboxCursor } from '../../src/modules/chat/chat.validator';
 import type { Server } from 'socket.io';
 import {
@@ -5042,5 +5043,707 @@ describe('POST /api/v1/conversations/:conversationId/media-confirm', () => {
     expect(await textMessageUsageCount(caller.id)).toBe(0);
     expect(await textMessageUsageCount(target.id)).toBe(1);
     socket.detach();
+  });
+});
+
+function requestMediaDownload(
+  callerId: string | null,
+  conversationId: string,
+  messageId: string,
+  body?: unknown
+) {
+  const pending = request(app).get(
+    `/api/v1/conversations/${conversationId}/messages/${messageId}/media-download-url`
+  );
+  if (callerId) {
+    pending.set(authHeader(callerId));
+  }
+  return body === undefined ? pending : pending.send(body);
+}
+
+async function confirmChatMedia(
+  callerId: string,
+  conversationId: string,
+  media: { mediaType: 'IMAGE' | 'GIF' | 'VIDEO' | 'VOICE'; mimeType: string; fileSizeBytes: number }
+): Promise<string> {
+  stubMediaHead(media.mimeType, media.fileSizeBytes);
+  const issued = await requestMediaUpload(callerId, conversationId, media);
+  expect(issued.status).toBe(200);
+  const uploadId = issued.body.data.uploadId as string;
+  const confirmed = await confirmMedia(callerId, conversationId, { uploadId });
+  expect(confirmed.status).toBe(201);
+  expect(confirmed.body.data.mediaUrl).toBeNull();
+  expect(confirmed.body.data.downloadUrl).toBeUndefined();
+  return uploadId;
+}
+
+describe('GET /api/v1/conversations/:conversationId/messages/:messageId/media-download-url', () => {
+  let downloadSequence = 0;
+
+  beforeEach(() => {
+    resetMemoryRedis();
+    downloadSequence = 0;
+    mockPhotoStorage.createDownloadUrl.mockReset();
+    mockPhotoStorage.createUploadUrl.mockReset();
+    mockPhotoStorage.headObject.mockReset();
+    mockPhotoStorage.createDownloadUrl.mockImplementation(async () => {
+      downloadSequence += 1;
+      return {
+        url: `https://download.test/object?n=${downloadSequence}`,
+        expiresInSeconds: 3600
+      };
+    });
+    mockPhotoStorage.createUploadUrl.mockImplementation(
+      async (input: { storageKey: string; mimeType: string; expiresInSeconds: number }) => ({
+        url: `https://upload.test/${input.storageKey}`,
+        expiresInSeconds: input.expiresInSeconds
+      })
+    );
+  });
+
+  it('lets the sender download confirmed media without writing, caching, or emitting', async () => {
+    const { caller, target, match, conversation } = await activeThread();
+    await grantPremium(caller.id);
+    const socket = attachFakeSocket();
+    const setSpy = jest.spyOn(redis, 'set');
+    const delSpy = jest.spyOn(redis, 'del');
+    const messageId = await confirmChatMedia(caller.id, conversation.id, {
+      mediaType: 'IMAGE',
+      mimeType: 'image/jpeg',
+      fileSizeBytes: 128
+    });
+    expect(socket.emit).toHaveBeenCalledTimes(1);
+    expect(socket.emit).toHaveBeenCalledWith(
+      'chat:message:new',
+      expect.objectContaining({
+        id: messageId,
+        conversationId: conversation.id,
+        senderId: caller.id,
+        messageType: 'IMAGE',
+        content: null
+      })
+    );
+    const emitted = socket.emit.mock.calls[0][1] as Record<string, unknown>;
+    expect(emitted.downloadUrl).toBeUndefined();
+    expect(emitted.mediaUrl).toBeUndefined();
+    expect(emitted.storageKey).toBeUndefined();
+
+    await conversation.reload();
+    const beforeConversation = conversation.toJSON();
+    const beforeMatch = match.toJSON();
+    const beforeMessage = (await Message.findByPk(messageId))?.toJSON();
+    const beforeMessages = await Message.count();
+    const beforeUsage = await textMessageUsageRowCount();
+    const beforeCredits = await CreditTransaction.count();
+    const headCalls = mockPhotoStorage.headObject.mock.calls.length;
+    setSpy.mockClear();
+    delSpy.mockClear();
+    mockPhotoStorage.createDownloadUrl.mockClear();
+    downloadSequence = 0;
+
+    const response = await requestMediaDownload(caller.id, conversation.id, messageId.toUpperCase());
+
+    expect(response.status).toBe(200);
+    expect(response.body.success).toBe(true);
+    expect(response.body.message).toBe('Download URL created.');
+    expect(Object.keys(response.body.data).sort()).toEqual(['downloadUrl', 'expiresInSeconds']);
+    expect(response.body.data).toEqual({
+      downloadUrl: 'https://download.test/object?n=1',
+      expiresInSeconds: 3600
+    });
+    expect(JSON.stringify(response.body)).not.toContain('chat-media/');
+    expect(JSON.stringify(response.body)).not.toContain('image/jpeg');
+    expect(mockPhotoStorage.createDownloadUrl).toHaveBeenCalledTimes(1);
+    expect(mockPhotoStorage.createDownloadUrl).toHaveBeenCalledWith({
+      storageKey: `chat-media/${conversation.id}/${messageId}`,
+      expiresInSeconds: 3600
+    });
+    expect(mockPhotoStorage.headObject).toHaveBeenCalledTimes(headCalls);
+    expect(setSpy).not.toHaveBeenCalled();
+    expect(delSpy).not.toHaveBeenCalled();
+    expect(socket.emit).toHaveBeenCalledTimes(1);
+    expect(await Message.count()).toBe(beforeMessages);
+    expect(await textMessageUsageRowCount()).toBe(beforeUsage);
+    expect(await CreditTransaction.count()).toBe(beforeCredits);
+    expect((await Message.findByPk(messageId))?.toJSON()).toEqual(beforeMessage);
+    await conversation.reload();
+    await match.reload();
+    expect(conversation.toJSON()).toEqual(beforeConversation);
+    expect(match.toJSON()).toEqual(beforeMatch);
+
+    const history = await listMessages(target.id, conversation.id);
+    expect(history.status).toBe(200);
+    expect(history.body.data.items[0]).toMatchObject({ id: messageId, mediaUrl: null });
+    expect(JSON.stringify(history.body)).not.toContain('download.test');
+    expect(JSON.stringify(history.body)).not.toContain(`chat-media/${conversation.id}/${messageId}`);
+    const inbox = await listInbox(target.id);
+    expect(inbox.body.data.conversations[0].lastMessage.mediaUrl).toBeNull();
+    expect(JSON.stringify(inbox.body)).not.toContain('download.test');
+    expect(JSON.stringify(inbox.body)).not.toContain('chat-media/');
+
+    setSpy.mockRestore();
+    delSpy.mockRestore();
+    socket.detach();
+  });
+
+  it('lets a free recipient download and lets the sender download after Premium lapses', async () => {
+    const { caller, target, conversation } = await activeThread();
+    await grantPremium(caller.id);
+    const messageId = await confirmChatMedia(caller.id, conversation.id, {
+      mediaType: 'IMAGE',
+      mimeType: 'image/png',
+      fileSizeBytes: 64
+    });
+    expect(await Subscription.count({ where: { userId: target.id } })).toBe(0);
+
+    const recipient = await requestMediaDownload(target.id, conversation.id, messageId);
+    expect(recipient.status).toBe(200);
+    expect(recipient.body.data.expiresInSeconds).toBe(3600);
+    expect(mockPhotoStorage.createDownloadUrl).toHaveBeenCalledWith({
+      storageKey: `chat-media/${conversation.id}/${messageId}`,
+      expiresInSeconds: 3600
+    });
+
+    await Subscription.update(
+      { currentPeriodEnd: new Date(Date.now() - 60_000), gracePeriodEnd: null },
+      { where: { userId: caller.id } }
+    );
+    const lapsed = await requestMediaDownload(caller.id, conversation.id, messageId);
+    expect(lapsed.status).toBe(200);
+    expect(lapsed.body.message).toBe('Download URL created.');
+    expect(await textMessageUsageCount(caller.id)).toBe(0);
+    expect(await textMessageUsageCount(target.id)).toBe(0);
+  });
+
+  it('signs IMAGE, GIF, VIDEO, and VOICE with the canonical key and a 3600 second TTL', async () => {
+    const { caller, conversation } = await activeThread();
+    await grantPremium(caller.id);
+
+    for (const mediaCase of MEDIA_CONFIRM_CASES) {
+      const messageId = await confirmChatMedia(caller.id, conversation.id, mediaCase);
+      const headCalls = mockPhotoStorage.headObject.mock.calls.length;
+      const response = await requestMediaDownload(caller.id, conversation.id, messageId);
+      expect(response.status).toBe(200);
+      expect(response.body.data.expiresInSeconds).toBe(3600);
+      expect(mockPhotoStorage.createDownloadUrl).toHaveBeenLastCalledWith({
+        storageKey: `chat-media/${conversation.id}/${messageId}`,
+        expiresInSeconds: 3600
+      });
+      expect(mockPhotoStorage.headObject).toHaveBeenCalledTimes(headCalls);
+    }
+
+    expect(mockPhotoStorage.createDownloadUrl).toHaveBeenCalledTimes(MEDIA_CONFIRM_CASES.length);
+    expect(await Message.count()).toBe(MEDIA_CONFIRM_CASES.length);
+    expect(await textMessageUsageRowCount()).toBe(0);
+  });
+
+  it('signs again on a repeated request without changing stored rows', async () => {
+    const { caller, match, conversation } = await activeThread();
+    await grantPremium(caller.id);
+    const messageId = await confirmChatMedia(caller.id, conversation.id, {
+      mediaType: 'VOICE',
+      mimeType: 'audio/ogg',
+      fileSizeBytes: 32
+    });
+    await conversation.reload();
+    const beforeConversation = conversation.toJSON();
+    const beforeMatch = match.toJSON();
+    const beforeMessage = (await Message.findByPk(messageId))?.toJSON();
+    mockPhotoStorage.createDownloadUrl.mockClear();
+    downloadSequence = 0;
+
+    const first = await requestMediaDownload(caller.id, conversation.id, messageId);
+    const second = await requestMediaDownload(caller.id, conversation.id, messageId);
+
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect(first.body.data.downloadUrl).toBe('https://download.test/object?n=1');
+    expect(second.body.data.downloadUrl).toBe('https://download.test/object?n=2');
+    expect(first.body.data.expiresInSeconds).toBe(3600);
+    expect(second.body.data.expiresInSeconds).toBe(3600);
+    expect(mockPhotoStorage.createDownloadUrl).toHaveBeenCalledTimes(2);
+    expect(await Message.count()).toBe(1);
+    expect((await Message.findByPk(messageId))?.toJSON()).toEqual(beforeMessage);
+    await conversation.reload();
+    await match.reload();
+    expect(conversation.toJSON()).toEqual(beforeConversation);
+    expect(match.toJSON()).toEqual(beforeMatch);
+    expect(await textMessageUsageCount(caller.id)).toBe(0);
+  });
+
+  it('returns the same not-found response for text, missing, deleted, foreign, blank, and non-canonical messages', async () => {
+    const { caller, target, genderId, conversation } = await activeThread();
+    await grantPremium(caller.id);
+    const messageId = await confirmChatMedia(caller.id, conversation.id, {
+      mediaType: 'IMAGE',
+      mimeType: 'image/jpeg',
+      fileSizeBytes: 96
+    });
+    const text = await insertHistoryMessage({
+      conversationId: conversation.id,
+      senderId: caller.id,
+      content: 'plain',
+      createdAt: new Date('2026-10-13T09:00:00.000Z')
+    });
+    const removed = await insertHistoryMessage({
+      conversationId: conversation.id,
+      senderId: caller.id,
+      content: null,
+      createdAt: new Date('2026-10-13T09:01:00.000Z'),
+      messageType: 'IMAGE',
+      mediaStorageKey: `chat-media/${conversation.id}/${randomUUID()}`
+    });
+    const removedKey = removed.mediaStorageKey;
+    await removed.destroy();
+    const blankId = randomUUID();
+    await insertHistoryMessage({
+      id: blankId,
+      conversationId: conversation.id,
+      senderId: target.id,
+      content: null,
+      createdAt: new Date('2026-10-13T09:02:00.000Z'),
+      messageType: 'GIF',
+      mediaStorageKey: ''
+    });
+    const foreignKey = `private/${randomUUID()}/secret-object`;
+    const nonCanonical = await insertHistoryMessage({
+      conversationId: conversation.id,
+      senderId: target.id,
+      content: null,
+      createdAt: new Date('2026-10-13T09:03:00.000Z'),
+      messageType: 'VIDEO',
+      mediaStorageKey: foreignKey
+    });
+    const other = await buildUser({ genderId, point: north(4) });
+    const otherMatch = await insertMatch(caller.id, other.id, 'ACTIVE');
+    const otherConversation = await insertConversation(otherMatch.id, 'ACTIVE', null, null);
+    const otherMessageId = randomUUID();
+    await insertHistoryMessage({
+      id: otherMessageId,
+      conversationId: otherConversation.id,
+      senderId: caller.id,
+      content: null,
+      createdAt: new Date('2026-10-13T09:04:00.000Z'),
+      messageType: 'VOICE',
+      mediaStorageKey: `chat-media/${otherConversation.id}/${otherMessageId}`
+    });
+
+    mockPhotoStorage.createDownloadUrl.mockClear();
+    const cases = [
+      text.id,
+      randomUUID(),
+      removed.id,
+      blankId,
+      nonCanonical.id,
+      otherMessageId
+    ];
+    const bodies = [];
+    for (const id of cases) {
+      const response = await requestMediaDownload(caller.id, conversation.id, id);
+      expect(response.status).toBe(404);
+      expect(response.body.error.code).toBe('RESOURCE_NOT_FOUND');
+      expect(response.body.error.message).toBe('Resource not found');
+      expect(JSON.stringify(response.body)).not.toContain('secret-object');
+      expect(JSON.stringify(response.body)).not.toContain('chat-media/');
+      bodies.push(response.body.error.message);
+    }
+    expect(new Set(bodies).size).toBe(1);
+    expect(mockPhotoStorage.createDownloadUrl).not.toHaveBeenCalled();
+
+    const findSpy = jest.spyOn(chatDataAccess, 'findMessageById').mockResolvedValueOnce({
+      id: messageId,
+      conversationId: conversation.id,
+      messageType: 'IMAGE',
+      mediaStorageKey: null
+    } as Message);
+    const missingKey = await requestMediaDownload(caller.id, conversation.id, messageId);
+    findSpy.mockRestore();
+    expect(missingKey.status).toBe(404);
+    expect(missingKey.body.error.code).toBe('RESOURCE_NOT_FOUND');
+    expect(missingKey.body.error.message).toBe('Resource not found');
+    expect(mockPhotoStorage.createDownloadUrl).not.toHaveBeenCalled();
+
+    const stillThere = await requestMediaDownload(caller.id, conversation.id, messageId);
+    expect(stillThere.status).toBe(200);
+    const storedRemoved = await Message.findByPk(removed.id, { paranoid: false });
+    expect(storedRemoved?.deletedAt).toBeInstanceOf(Date);
+    expect(storedRemoved?.mediaStorageKey).toBe(removedKey);
+    expect(await Message.count()).toBe(5);
+    expect(await Message.count({ paranoid: false })).toBe(6);
+  });
+
+  it('hides a message from a non-participant with the same not-found response', async () => {
+    const { caller, genderId, conversation } = await activeThread();
+    await grantPremium(caller.id);
+    const messageId = await confirmChatMedia(caller.id, conversation.id, {
+      mediaType: 'IMAGE',
+      mimeType: 'image/webp',
+      fileSizeBytes: 40
+    });
+    const outsider = await buildUser({ genderId, point: north(6) });
+    mockPhotoStorage.createDownloadUrl.mockClear();
+
+    const foreign = await requestMediaDownload(outsider.id, conversation.id, messageId);
+    const unknownConversation = await requestMediaDownload(outsider.id, randomUUID(), messageId);
+    const unknownMessage = await requestMediaDownload(caller.id, conversation.id, randomUUID());
+
+    expect(foreign.status).toBe(404);
+    expect(unknownConversation.status).toBe(404);
+    expect(unknownMessage.status).toBe(404);
+    expect(foreign.body.error.code).toBe(unknownConversation.body.error.code);
+    expect(foreign.body.error.message).toBe(unknownConversation.body.error.message);
+    expect(foreign.body.error.details).toEqual(unknownConversation.body.error.details);
+    expect(foreign.body.error).toMatchObject({ code: 'RESOURCE_NOT_FOUND', message: 'Resource not found' });
+    expect(unknownMessage.body.error.code).toBe('RESOURCE_NOT_FOUND');
+    expect(mockPhotoStorage.createDownloadUrl).not.toHaveBeenCalled();
+    expect(await Message.count()).toBe(1);
+  });
+
+  it('allows download after unmatch and after undo without reopening the thread', async () => {
+    const unmatched = await activeThread();
+    await grantPremium(unmatched.caller.id);
+    const unmatchedMessageId = await confirmChatMedia(unmatched.caller.id, unmatched.conversation.id, {
+      mediaType: 'GIF',
+      mimeType: 'image/gif',
+      fileSizeBytes: 256
+    });
+    await unmatched.conversation.reload();
+    const unmatchedLastMessageAt = unmatched.conversation.lastMessageAt?.toISOString();
+    const unmatch = await request(app)
+      .delete(`/api/v1/matches/${unmatched.match.id}`)
+      .set(authHeader(unmatched.caller.id));
+    expect(unmatch.status).toBe(200);
+
+    const afterUnmatch = await requestMediaDownload(
+      unmatched.target.id,
+      unmatched.conversation.id,
+      unmatchedMessageId
+    );
+    expect(afterUnmatch.status).toBe(200);
+    expect(mockPhotoStorage.createDownloadUrl).toHaveBeenLastCalledWith({
+      storageKey: `chat-media/${unmatched.conversation.id}/${unmatchedMessageId}`,
+      expiresInSeconds: 3600
+    });
+    await unmatched.conversation.reload();
+    await unmatched.match.reload();
+    expect(unmatched.conversation.status).toBe('CLOSED');
+    expect(unmatched.conversation.lastMessageAt?.toISOString()).toBe(unmatchedLastMessageAt);
+    expect(unmatched.match.status).toBe('UNMATCHED');
+    const stored = await Message.findByPk(unmatchedMessageId);
+    expect(stored?.readAt).toBeNull();
+    expect(stored?.deletedAt).toBeNull();
+
+    const undone = await activeThread();
+    await grantPremium(undone.caller.id);
+    const undoneMessageId = await confirmChatMedia(undone.caller.id, undone.conversation.id, {
+      mediaType: 'VIDEO',
+      mimeType: 'video/webm',
+      fileSizeBytes: 512
+    });
+    await Like.create({
+      fromUserId: undone.caller.id,
+      toUserId: undone.target.id,
+      action: 'LIKE',
+      isUndone: false,
+      ...timestamps()
+    });
+    await Like.create({
+      fromUserId: undone.target.id,
+      toUserId: undone.caller.id,
+      action: 'LIKE',
+      isUndone: false,
+      ...timestamps()
+    });
+    const undo = await request(app).post('/api/v1/discovery/undo').set(authHeader(undone.caller.id));
+    expect(undo.status).toBe(200);
+    expect(undo.body.data.revertedMatch).toBe(true);
+
+    const afterUndo = await requestMediaDownload(undone.caller.id, undone.conversation.id, undoneMessageId);
+    expect(afterUndo.status).toBe(200);
+    await undone.conversation.reload();
+    await undone.match.reload();
+    expect(undone.conversation.status).toBe('CLOSED');
+    expect(undone.match.status).toBe('UNDONE');
+    expect((await Message.findByPk(undoneMessageId))?.deletedAt).toBeNull();
+    expect(await textMessageUsageCount(undone.caller.id)).toBe(0);
+  });
+
+  it('hides an active conversation whose match is not active', async () => {
+    const { caller, target } = await activeThread();
+    await grantPremium(caller.id);
+    const inactiveMatch = await insertMatch(caller.id, target.id, 'UNMATCHED');
+    const inactiveConversation = await insertConversation(inactiveMatch.id, 'ACTIVE', null, null);
+    const messageId = randomUUID();
+    await insertHistoryMessage({
+      id: messageId,
+      conversationId: inactiveConversation.id,
+      senderId: caller.id,
+      content: null,
+      createdAt: new Date('2026-10-13T10:00:00.000Z'),
+      messageType: 'IMAGE',
+      mediaStorageKey: `chat-media/${inactiveConversation.id}/${messageId}`
+    });
+    mockPhotoStorage.createDownloadUrl.mockClear();
+
+    const response = await requestMediaDownload(caller.id, inactiveConversation.id, messageId);
+    expect(response.status).toBe(404);
+    expect(response.body.error.code).toBe('RESOURCE_NOT_FOUND');
+    expect(response.body.error.message).toBe('Resource not found');
+    expect(mockPhotoStorage.createDownloadUrl).not.toHaveBeenCalled();
+    await inactiveConversation.reload();
+    await inactiveMatch.reload();
+    expect(inactiveConversation.status).toBe('ACTIVE');
+    expect(inactiveMatch.status).toBe('UNMATCHED');
+  });
+
+  it('rejects a block in either direction, including after the conversation is closed', async () => {
+    const { caller, target, conversation } = await activeThread();
+    await grantPremium(caller.id);
+    const messageId = await confirmChatMedia(caller.id, conversation.id, {
+      mediaType: 'IMAGE',
+      mimeType: 'image/jpeg',
+      fileSizeBytes: 24
+    });
+    await Block.create({ blockerId: caller.id, blockedId: target.id, reason: null, createdAt: new Date() });
+    mockPhotoStorage.createDownloadUrl.mockClear();
+
+    const callerBlocked = await requestMediaDownload(caller.id, conversation.id, messageId);
+    const targetBlocked = await requestMediaDownload(target.id, conversation.id, messageId);
+    expect(callerBlocked.status).toBe(409);
+    expect(targetBlocked.status).toBe(409);
+    expect(callerBlocked.body.error).toMatchObject({
+      code: 'BLOCKED_USER',
+      message: 'Interaction prohibited due to an active safety block.'
+    });
+    expect(targetBlocked.body.error.code).toBe('BLOCKED_USER');
+
+    const closed = await activeThread();
+    await grantPremium(closed.caller.id);
+    const closedMessageId = await confirmChatMedia(closed.caller.id, closed.conversation.id, {
+      mediaType: 'VOICE',
+      mimeType: 'audio/mpeg',
+      fileSizeBytes: 80
+    });
+    const unmatch = await request(app)
+      .delete(`/api/v1/matches/${closed.match.id}`)
+      .set(authHeader(closed.caller.id));
+    expect(unmatch.status).toBe(200);
+    await Block.create({
+      blockerId: closed.target.id,
+      blockedId: closed.caller.id,
+      reason: null,
+      createdAt: new Date()
+    });
+    const blockedClosed = await requestMediaDownload(closed.caller.id, closed.conversation.id, closedMessageId);
+    expect(blockedClosed.status).toBe(409);
+    expect(blockedClosed.body.error.code).toBe('BLOCKED_USER');
+    await closed.conversation.reload();
+    await closed.match.reload();
+    expect(closed.conversation.status).toBe('CLOSED');
+    expect(closed.match.status).toBe('UNMATCHED');
+    expect(mockPhotoStorage.createDownloadUrl).not.toHaveBeenCalled();
+    expect((await Message.findByPk(messageId))?.readAt).toBeNull();
+    expect((await Message.findByPk(closedMessageId))?.deletedAt).toBeNull();
+  });
+
+  it('rejects unauthenticated, non-USER, unverified, and incomplete callers before signing', async () => {
+    const { caller, conversation } = await activeThread();
+    await grantPremium(caller.id);
+    const messageId = await confirmChatMedia(caller.id, conversation.id, {
+      mediaType: 'IMAGE',
+      mimeType: 'image/jpeg',
+      fileSizeBytes: 16
+    });
+    mockPhotoStorage.createDownloadUrl.mockClear();
+
+    const missing = await requestMediaDownload(null, conversation.id, messageId);
+    expect(missing.status).toBe(401);
+    expect(missing.body.error.code).toBe('AUTH_REQUIRED');
+
+    const invalid = await request(app)
+      .get(`/api/v1/conversations/${conversation.id}/messages/${messageId}/media-download-url`)
+      .set({ Authorization: 'Bearer not-a-token' });
+    expect(invalid.status).toBe(401);
+    expect(invalid.body.error.code).toBe('INVALID_TOKEN');
+
+    const deleted = await User.create({
+      email: `deleted-${randomUUID()}@example.com`,
+      passwordHash: PASSWORD_HASH,
+      role: 'USER',
+      status: 'ACTIVE',
+      emailVerified: true,
+      phoneVerified: false
+    });
+    await deleted.destroy();
+    const deletedResponse = await requestMediaDownload(deleted.id, conversation.id, messageId);
+    expect(deletedResponse.status).toBe(401);
+    expect(deletedResponse.body.error.code).toBe('INVALID_TOKEN');
+
+    const admin = await User.create({
+      email: `admin-${randomUUID()}@example.com`,
+      passwordHash: PASSWORD_HASH,
+      role: 'ADMIN',
+      status: 'ACTIVE',
+      emailVerified: true,
+      phoneVerified: false
+    });
+    const forbidden = await request(app)
+      .get(`/api/v1/conversations/${conversation.id}/messages/${messageId}/media-download-url`)
+      .set(authHeader(admin.id, 'ADMIN'));
+    expect(forbidden.status).toBe(403);
+    expect(forbidden.body.error.code).toBe('FORBIDDEN');
+
+    const suspended = await User.create({
+      email: `suspended-${randomUUID()}@example.com`,
+      passwordHash: PASSWORD_HASH,
+      role: 'USER',
+      status: 'SUSPENDED',
+      emailVerified: true,
+      phoneVerified: false
+    });
+    const suspendedResponse = await requestMediaDownload(suspended.id, conversation.id, messageId);
+    expect(suspendedResponse.status).toBe(403);
+    expect(suspendedResponse.body.error.code).toBe('ACCOUNT_SUSPENDED');
+
+    const banned = await User.create({
+      email: `banned-${randomUUID()}@example.com`,
+      passwordHash: PASSWORD_HASH,
+      role: 'USER',
+      status: 'BANNED',
+      emailVerified: true,
+      phoneVerified: false
+    });
+    const bannedResponse = await requestMediaDownload(banned.id, conversation.id, messageId);
+    expect(bannedResponse.status).toBe(403);
+    expect(bannedResponse.body.error.code).toBe('ACCOUNT_BANNED');
+
+    const catalogGender = await gender();
+    const target = await buildUser({ genderId: catalogGender.id });
+    const emailCaller = await buildUser({ genderId: catalogGender.id, emailVerified: false });
+    const emailMatch = await insertMatch(emailCaller.id, target.id, 'ACTIVE');
+    const emailConversation = await insertConversation(emailMatch.id, 'ACTIVE', null, null);
+    const emailResponse = await requestMediaDownload(emailCaller.id, emailConversation.id, messageId);
+    expect(emailResponse.status).toBe(403);
+    expect(emailResponse.body.error.code).toBe('EMAIL_NOT_VERIFIED');
+
+    const phoneCaller = await buildUser({ genderId: catalogGender.id, phoneOnly: true, emailVerified: false });
+    const phoneMatch = await insertMatch(phoneCaller.id, target.id, 'ACTIVE');
+    const phoneConversation = await insertConversation(phoneMatch.id, 'ACTIVE', null, null);
+    const phoneResponse = await requestMediaDownload(phoneCaller.id, phoneConversation.id, messageId);
+    expect(phoneResponse.status).toBe(403);
+    expect(phoneResponse.body.error.code).toBe('PHONE_NOT_VERIFIED');
+
+    const incomplete = await buildUser({ genderId: catalogGender.id, complete: false });
+    const incompleteMatch = await insertMatch(incomplete.id, target.id, 'ACTIVE');
+    const incompleteConversation = await insertConversation(incompleteMatch.id, 'ACTIVE', null, null);
+    const incompleteResponse = await requestMediaDownload(incomplete.id, incompleteConversation.id, messageId);
+    expect(incompleteResponse.status).toBe(400);
+    expect(incompleteResponse.body.error.code).toBe('PROFILE_INCOMPLETE');
+
+    const missingPreferences = await buildUser({ genderId: catalogGender.id, preferences: false });
+    const preferencesMatch = await insertMatch(missingPreferences.id, target.id, 'ACTIVE');
+    const preferencesConversation = await insertConversation(preferencesMatch.id, 'ACTIVE', null, null);
+    const preferencesResponse = await requestMediaDownload(missingPreferences.id, preferencesConversation.id, messageId);
+    expect(preferencesResponse.status).toBe(400);
+    expect(preferencesResponse.body.error.code).toBe('PROFILE_INCOMPLETE');
+
+    const missingLocation = await buildUser({ genderId: catalogGender.id, point: null });
+    const locationMatch = await insertMatch(missingLocation.id, target.id, 'ACTIVE');
+    const locationConversation = await insertConversation(locationMatch.id, 'ACTIVE', null, null);
+    const locationResponse = await requestMediaDownload(missingLocation.id, locationConversation.id, messageId);
+    expect(locationResponse.status).toBe(400);
+    expect(locationResponse.body.error.code).toBe('PROFILE_INCOMPLETE');
+
+    expect(mockPhotoStorage.createDownloadUrl).not.toHaveBeenCalled();
+    expect((await Message.findByPk(messageId))?.readAt).toBeNull();
+  });
+
+  it('rejects invalid identifiers, unsupported query parameters, and a non-empty body', async () => {
+    const { caller, conversation } = await activeThread();
+    await grantPremium(caller.id);
+    const messageId = await confirmChatMedia(caller.id, conversation.id, {
+      mediaType: 'IMAGE',
+      mimeType: 'image/jpeg',
+      fileSizeBytes: 12
+    });
+    mockPhotoStorage.createDownloadUrl.mockClear();
+
+    const invalidConversation = await request(app)
+      .get(`/api/v1/conversations/not-a-uuid/messages/${messageId}/media-download-url`)
+      .query({ storageKey: 'client/key' })
+      .set(authHeader(caller.id));
+    expect(invalidConversation.status).toBe(400);
+    expect(invalidConversation.body.error.code).toBe('VALIDATION_ERROR');
+    expect(invalidConversation.body.error.message).toBe('Validation failed');
+    expect(invalidConversation.body.error.details).toEqual([
+      { field: 'conversationId', message: 'Conversation id must be a valid UUID.' }
+    ]);
+
+    const invalidMessage = await requestMediaDownload(caller.id, conversation.id, 'not-a-uuid');
+    expect(invalidMessage.status).toBe(400);
+    expect(invalidMessage.body.error.details).toEqual([
+      { field: 'messageId', message: 'Message id must be a valid UUID.' }
+    ]);
+
+    const unsupported = await request(app)
+      .get(`/api/v1/conversations/${conversation.id}/messages/${messageId}/media-download-url`)
+      .query({ storageKey: 'client/key' })
+      .set(authHeader(caller.id));
+    expect(unsupported.status).toBe(400);
+    expect(unsupported.body.error.details).toEqual([
+      { field: 'storageKey', message: 'Unsupported query parameter.' }
+    ]);
+
+    const extra = await requestMediaDownload(caller.id, conversation.id, messageId, {
+      storageKey: 'chat-media/client/key',
+      uploadId: messageId,
+      mimeType: 'image/jpeg',
+      filename: 'photo.jpg'
+    });
+    expect(extra.status).toBe(400);
+    expect(extra.body.error.code).toBe('VALIDATION_ERROR');
+    expect(extra.body.error.message).toBe('Validation failed');
+    expect(JSON.stringify(extra.body.error.details)).toContain('storageKey');
+
+    expect(mockPhotoStorage.createDownloadUrl).not.toHaveBeenCalled();
+    expect(await Message.count()).toBe(1);
+  });
+
+  it('preserves storage configuration errors and sanitizes signer failures', async () => {
+    const { caller, conversation } = await activeThread();
+    await grantPremium(caller.id);
+    const messageId = await confirmChatMedia(caller.id, conversation.id, {
+      mediaType: 'IMAGE',
+      mimeType: 'image/jpeg',
+      fileSizeBytes: 20
+    });
+    const beforeMessage = (await Message.findByPk(messageId))?.toJSON();
+    mockPhotoStorage.headObject.mockClear();
+
+    mockPhotoStorage.createDownloadUrl.mockRejectedValueOnce(
+      new InternalServerError('Photo storage is not configured.', [], 'STORAGE_NOT_CONFIGURED', true)
+    );
+    const unconfigured = await requestMediaDownload(caller.id, conversation.id, messageId);
+    expect(unconfigured.status).toBe(500);
+    expect(unconfigured.body.error).toMatchObject({
+      code: 'STORAGE_NOT_CONFIGURED',
+      message: 'Photo storage is not configured.'
+    });
+
+    mockPhotoStorage.createDownloadUrl.mockRejectedValueOnce(
+      new Error('https://secret.example/presigned?X-Amz-Credential=hidden-bucket')
+    );
+    const failed = await requestMediaDownload(caller.id, conversation.id, messageId);
+    expect(failed.status).toBe(500);
+    expect(failed.body.error).toMatchObject({
+      code: 'STORAGE_UNAVAILABLE',
+      message: 'Media storage is temporarily unavailable.'
+    });
+    expect(JSON.stringify(failed.body)).not.toContain('secret');
+    expect(JSON.stringify(failed.body)).not.toContain('X-Amz-Credential');
+    expect(JSON.stringify(failed.body)).not.toContain('hidden-bucket');
+    expect(mockPhotoStorage.headObject).not.toHaveBeenCalled();
+    expect((await Message.findByPk(messageId))?.toJSON()).toEqual(beforeMessage);
+    expect(await textMessageUsageCount(caller.id)).toBe(0);
   });
 });

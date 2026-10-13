@@ -6,12 +6,14 @@ import * as chatController from './chat.controller';
 import {
   markReadBodySchema,
   mediaConfirmSchema,
+  mediaDownloadBodySchema,
   mediaUploadUrlSchema,
   sendTextMessageSchema,
   validateConversationIdParam,
   validateListInboxQuery,
   validateListMessagesQuery,
   validateMarkReadRequest,
+  validateMediaDownloadRequest,
   validateUnreadCountQuery
 } from './chat.validator';
 
@@ -25,6 +27,15 @@ router.get(
   requireRole('USER'),
   validateUnreadCountQuery,
   chatController.getUnreadCount
+);
+
+router.get(
+  '/:conversationId/messages/:messageId/media-download-url',
+  authenticate,
+  requireRole('USER'),
+  validateMediaDownloadRequest,
+  validate(mediaDownloadBodySchema),
+  chatController.createMediaDownloadUrl
 );
 
 router.get(

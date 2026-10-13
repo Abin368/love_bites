@@ -39,6 +39,25 @@ export const createMediaUploadUrl = asyncHandler(async (req, res) => {
   );
 });
 
+export const createMediaDownloadUrl = asyncHandler(async (req, res) => {
+  const result = await chatService.createMediaDownloadUrl({
+    callerId: req.user!.id,
+    isVerified: req.user!.isVerified,
+    conversationId: req.params.conversationId,
+    messageId: req.params.messageId
+  });
+
+  send(
+    res,
+    200,
+    {
+      downloadUrl: result.downloadUrl,
+      expiresInSeconds: result.expiresInSeconds
+    },
+    'Download URL created.'
+  );
+});
+
 export const confirmMediaUpload = asyncHandler(async (req, res) => {
   const body = req.body as MediaConfirmBody;
   const result = await chatService.confirmMediaUpload({
