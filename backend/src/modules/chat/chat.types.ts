@@ -1,6 +1,34 @@
 import type { MessageType } from '../../database/models/message.model';
 import type { HistoryCursor, InboxCursor } from './chat.validator';
 
+export type ChatMediaType = 'IMAGE' | 'GIF' | 'VIDEO' | 'VOICE';
+
+export interface CreateMediaUploadUrlInput {
+  callerId: string;
+  isVerified: boolean;
+  conversationId: string;
+  mediaType: ChatMediaType;
+  mimeType: string;
+  fileSizeBytes: number;
+}
+
+export interface MediaUploadUrlResult {
+  uploadId: string;
+  uploadUrl: string;
+  storageKey: string;
+  expiresInSeconds: number;
+}
+
+export interface ChatMediaUploadReservation {
+  uploadId: string;
+  userId: string;
+  conversationId: string;
+  storageKey: string;
+  mediaType: ChatMediaType;
+  mimeType: string;
+  fileSizeBytes: number;
+}
+
 export interface SendTextMessageInput {
   callerId: string;
   isVerified: boolean;

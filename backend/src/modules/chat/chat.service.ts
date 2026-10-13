@@ -1,4 +1,7 @@
+import { randomUUID } from 'crypto';
 import { sequelize } from '../../config/database';
+import { redis } from '../../config/redis';
+import { photoStorage } from '../../integrations/storage/s3.provider';
 import {
   ConflictError,
   ForbiddenError,
@@ -33,7 +36,9 @@ import {
 import type {
   AuthorizeTypingInput,
   AuthorizeTypingResult,
+  ChatMediaUploadReservation,
   ConversationDetails,
+  CreateMediaUploadUrlInput,
   GetConversationDetailsInput,
   GetUnreadCountInput,
   GetUnreadCountResult,
@@ -46,6 +51,7 @@ import type {
   ListMessagesResult,
   MarkMessagesReadInput,
   MarkMessagesReadResult,
+  MediaUploadUrlResult,
   SendTextMessageInput,
   SendTextMessageResult
 } from './chat.types';
@@ -55,6 +61,16 @@ const RESOURCE_NOT_FOUND_MESSAGE = 'Resource not found';
 const CONVERSATION_CLOSED_MESSAGE = 'Conversation is closed due to unmatch or safety block.';
 const BLOCKED_USER_MESSAGE = 'Interaction prohibited due to an active safety block.';
 const DAILY_TEXT_LIMIT_MESSAGE = 'You have reached your daily limit of 20 text messages.';
+const PREMIUM_REQUIRED_MESSAGE = 'Feature requires an active Premium subscription.';
+const MEDIA_UPLOAD_TTL_SECONDS = 300;
+
+function buildChatMediaStorageKey(conversationId: string, uploadId: string): string {
+  return `chat-media/${conversationId}/${uploadId}`;
+}
+
+function chatMediaReservationKey(uploadId: string): string {
+  return `chat-media:upload:${uploadId}`;
+}
 
 function parseConversationId(conversationId: string): string {
   const parsed = conversationIdSchema.safeParse(conversationId);
@@ -217,6 +233,94 @@ export async function sendTextMessage(input: SendTextMessageInput): Promise<Send
       recipientId
     };
   });
+}
+
+async function authorizeMediaUpload(callerId: string, conversationId: string): Promise<void> {
+  await sequelize.transaction(async (transaction) => {
+    const loaded = await findConversationWithMatch(conversationId, transaction);
+    if (!loaded || !participates(loaded.userOneId, loaded.userTwoId, callerId)) {
+      throw resourceNotFound();
+    }
+
+    await lockLikeUsers(loaded.userOneId, loaded.userTwoId, transaction);
+    await lockMatchById(loaded.matchId, transaction);
+    await lockConversationById(conversationId, transaction);
+
+    const locked = await findConversationWithMatch(conversationId, transaction);
+    if (!locked || !participates(locked.userOneId, locked.userTwoId, callerId)) {
+      throw resourceNotFound();
+    }
+
+    if (locked.conversationStatus === 'CLOSED') {
+      throw conversationClosed();
+    }
+
+    if (locked.matchStatus !== 'ACTIVE') {
+      throw resourceNotFound();
+    }
+
+    const recipientId = otherParticipant(locked.userOneId, locked.userTwoId, callerId);
+    if (await hasBidirectionalBlock(callerId, recipientId, transaction)) {
+      throw new ConflictError(BLOCKED_USER_MESSAGE, [], 'BLOCKED_USER');
+    }
+
+    const premium = await hasActivePremium(callerId, transaction);
+    if (!premium) {
+      throw new ForbiddenError(PREMIUM_REQUIRED_MESSAGE, [], 'PREMIUM_REQUIRED');
+    }
+  });
+}
+
+export async function createMediaUploadUrl(input: CreateMediaUploadUrlInput): Promise<MediaUploadUrlResult> {
+  const conversationId = parseConversationId(input.conversationId);
+
+  if (!input.isVerified) {
+    await rejectUnverified(input.callerId);
+  }
+
+  const context = await findViewerDiscoveryContext(input.callerId);
+  if (!context || !context.isProfileComplete || !context.hasLocation || !context.hasDatingPreferences) {
+    throw incomplete();
+  }
+
+  await authorizeMediaUpload(input.callerId, conversationId);
+
+  // Row locks end with the authorization transaction, before signing or Redis.
+  const uploadId = randomUUID();
+  const storageKey = buildChatMediaStorageKey(conversationId, uploadId);
+  const signed = await photoStorage.createUploadUrl({
+    storageKey,
+    mimeType: input.mimeType,
+    expiresInSeconds: MEDIA_UPLOAD_TTL_SECONDS
+  });
+
+  const reservation: ChatMediaUploadReservation = {
+    uploadId,
+    userId: input.callerId,
+    conversationId,
+    storageKey,
+    mediaType: input.mediaType,
+    mimeType: input.mimeType,
+    fileSizeBytes: input.fileSizeBytes
+  };
+  const reservationKey = chatMediaReservationKey(uploadId);
+  try {
+    await redis.set(reservationKey, JSON.stringify(reservation), 'EX', MEDIA_UPLOAD_TTL_SECONDS);
+  } catch (error) {
+    try {
+      await redis.del(reservationKey);
+    } catch {
+      // The reservation error is the client response.
+    }
+    throw error;
+  }
+
+  return {
+    uploadId,
+    uploadUrl: signed.url,
+    storageKey,
+    expiresInSeconds: MEDIA_UPLOAD_TTL_SECONDS
+  };
 }
 
 function asConversationStatus(status: string): ConversationDetails['status'] {

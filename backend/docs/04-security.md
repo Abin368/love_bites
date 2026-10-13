@@ -338,7 +338,12 @@ Incoming TEXT payload
 [Persist TEXT in PostgreSQL and update last_message_at]
 ```
 
-Media entitlement (attachments) is not in this slice. Free callers consume `DAILY_TEXT_MESSAGES` after authorization succeeds; exhausted free quota is `429 DAILY_LIMIT_REACHED` with message `You have reached your daily limit of 20 text messages.` Premium callers do not write `usage_records` and return `remainingDailyMessages: null`. Quota and message write share one transaction. HTTP send does not emit a Socket.IO event. `chat:message:send` emits `chat:message:new` only after that transaction commits. User locks reuse `lockLikeUsers` so HTTP and socket sends coordinate with UNMATCH and UNDO. Redis is not used for this quota.
+Media entitlement (attachments) is not part of TEXT send. Free callers consume `DAILY_TEXT_MESSAGES` after authorization succeeds; exhausted free quota is `429 DAILY_LIMIT_REACHED` with message `You have reached your daily limit of 20 text messages.` Premium callers do not write `usage_records` and return `remainingDailyMessages: null`. Quota and message write share one transaction. HTTP send does not emit a Socket.IO event. `chat:message:send` emits `chat:message:new` only after that transaction commits. User locks reuse `lockLikeUsers` so HTTP and socket sends coordinate with UNMATCH and UNDO. Redis is not used for this quota.
+
+### 16.2 Chat Media Upload URL (Phase 6 media slice 1)
+`POST /api/v1/conversations/:conversationId/media-upload-url` issues a private 300-second `PutObject` URL for an eligible Premium participant. It uses `hasActivePremium` inside a transaction after `lockLikeUsers`, `lockMatchById`, and `lockConversationById`. The transaction commits before signing and before the Redis write, so those calls do not hold row locks. A later close, block, or Premium lapse is not visible to this response. Confirmation, which is not implemented, must authorize again.
+
+The server key is `chat-media/{conversationId}/{uploadId}`. Redis `chat-media:upload:{uploadId}` holds the user, conversation, key, media type, declared MIME type, and declared size for 300 seconds. The installed presigner sets `ContentType` but marks `content-type` unsignable and uses `UNSIGNED-PAYLOAD`. It does not sign `Content-Length`. Declared size and MIME type are not enforced on the PUT and do not prove the object bytes. No public ACL is set. The route does not insert a message, update `last_message_at`, or consume `DAILY_TEXT_MESSAGES`. History and inbox still return `mediaUrl: null`. TEXT send is unchanged.
 
 ---
 

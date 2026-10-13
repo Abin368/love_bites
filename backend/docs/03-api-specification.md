@@ -113,11 +113,12 @@ Live routes that require `Authorization: Bearer <accessToken>`:
 * `DELETE /api/v1/matches/:matchId`.
 * `GET /api/v1/conversations`.
 * `POST /api/v1/conversations/:conversationId/messages`.
+* `POST /api/v1/conversations/:conversationId/media-upload-url`.
 * `GET /api/v1/conversations/:conversationId/messages`.
 * `GET /api/v1/conversations/:conversationId/unread-count`.
 * `GET /api/v1/conversations/:conversationId`.
 
-Those profile, onboarding, photo, discovery, unmatch, and message routes also require role `USER`. `requireVerified` is not applied on the route. An unverified `USER` may call profile, onboarding, and photo routes. Discovery, PASS, LIKE, SUPER LIKE, UNDO, UNMATCH, the conversation inbox, conversation details, send message, message history, and the conversation unread count check verification in the service and return `403 EMAIL_NOT_VERIFIED` or `403 PHONE_NOT_VERIFIED`. Any other role, including `ADMIN`, receives `403 FORBIDDEN`. Suspended and banned accounts are rejected with `403` by the authentication middleware.
+Those profile, onboarding, photo, discovery, unmatch, and message routes also require role `USER`. `requireVerified` is not applied on the route. An unverified `USER` may call profile, onboarding, and photo routes. Discovery, PASS, LIKE, SUPER LIKE, UNDO, UNMATCH, the conversation inbox, conversation details, send message, media upload URL, message history, and the conversation unread count check verification in the service and return `403 EMAIL_NOT_VERIFIED` or `403 PHONE_NOT_VERIFIED`. Any other role, including `ADMIN`, receives `403 FORBIDDEN`. Suspended and banned accounts are rejected with `403` by the authentication middleware.
 
 There is no live admin API yet. `requireRole('ADMIN')` exists for later routes.
 
@@ -1757,6 +1758,51 @@ Photo objects returned after confirm, list, and patch are `{ "id", "url", "displ
 
 ---
 
+### 24.5 Request a Chat Media Upload URL
+**Implemented (Phase 6 media slice 1).** Issues a private S3 `PutObject` presigned URL for a future media message. This route does not confirm the upload, insert a `messages` row, change `last_message_at`, write `usage_records`, or emit a Socket.IO event. Confirmation and media-message persistence are not implemented. History and inbox still return `mediaUrl: null`. `POST /conversations/:conversationId/messages` and `chat:message:send` remain TEXT-only.
+
+* **Method & Path:** `POST /api/v1/conversations/:conversationId/media-upload-url`
+* **Auth:** `Authorization: Bearer <accessToken>` and role `USER`. Middleware is `authenticate`, `requireRole('USER')`, conversation-id validation, then strict body validation. `requireVerified` is not on the route. The service checks verification and returns `403 EMAIL_NOT_VERIFIED` or `403 PHONE_NOT_VERIFIED`. A non-`USER` role is `403 FORBIDDEN`.
+* **Incomplete caller:** `400 PROFILE_INCOMPLETE`, same discovery rule as send. Message: `Onboarding is incomplete.`
+* **Path `conversationId`:** required UUID. A bad value is `400 VALIDATION_ERROR`. Message: `Validation failed`. `details` is `[{ "field": "conversationId", "message": "Conversation id must be a valid UUID." }]`.
+* **Body:** strict JSON with exactly `mediaType`, `mimeType`, and `fileSizeBytes`. Unknown properties, including `storageKey`, `caption`, `filename`, `senderId`, and `uploadId`, are `400 VALIDATION_ERROR`.
+* **Allowed combinations:**
+
+| mediaType | mimeType | fileSizeBytes |
+| :--- | :--- | :--- |
+| `IMAGE` | `image/jpeg`, `image/png`, `image/webp` | integer 1–10485760 |
+| `GIF` | `image/gif` | integer 1–15728640 |
+| `VIDEO` | `video/mp4`, `video/webm` | integer 1–52428800 |
+| `VOICE` | `audio/mpeg`, `audio/mp4`, `audio/ogg`, `audio/webm`, `audio/wav` | integer 1–10485760 |
+
+  A MIME type that does not belong to the selected `mediaType`, a size of 0, a negative size, a decimal, a non-numeric size, and a size one byte over the type maximum are `400 VALIDATION_ERROR`.
+* **Who can request a URL:** either participant of an `ACTIVE` match with an `ACTIVE` conversation. The client does not send `senderId`.
+* **Not found:** `404 RESOURCE_NOT_FOUND`. Message: `Resource not found`. Covers a missing conversation, a non-participant, and an `ACTIVE` conversation whose match is not `ACTIVE`.
+* **Closed conversation:** `404 CONVERSATION_CLOSED`. Message: `Conversation is closed due to unmatch or safety block.`
+* **Block:** either direction returns `409 BLOCKED_USER`. Message: `Interaction prohibited due to an active safety block.`
+* **Premium:** `hasActivePremium` runs inside a Sequelize transaction after the same user, match, and conversation lock order used by TEXT send. A caller without an active Premium subscription receives `403 PREMIUM_REQUIRED`. Message: `Feature requires an active Premium subscription.` There is no `CHAT_MEDIA` entitlement lookup. The route does not call `incrementDailyTextMessages`.
+* **Locks and external calls:** the authorization transaction commits before the presign and the Redis write. Those calls do not hold row locks. A conversation can close, a block can appear, or Premium can lapse after the URL is issued. A future confirmation endpoint must authorize again before it persists a message.
+* **Object key:** server-generated `chat-media/{conversationId}/{uploadId}`. Both ids are server UUIDs. The key is not under `photos/`, has no client filename, and is not forced to `.webp`. It fits `messages.media_storage_key` (`VARCHAR(512)`). No public ACL.
+* **Presign:** existing private `PutObject` signer, 300 seconds, `ContentType` set to the declared MIME type. The installed signer does not enforce `fileSizeBytes` and does not cryptographically bind `Content-Type`. The declared size and MIME type are stored on the reservation for a future check. This route does not prove the uploaded bytes.
+* **Reservation:** Redis key `chat-media:upload:{uploadId}`, JSON, TTL 300 seconds. The payload binds `uploadId`, `userId`, `conversationId`, `storageKey`, `mediaType`, `mimeType`, and `fileSizeBytes`. The reservation is not deleted on success. Signing failure does not write a reservation. A reservation write failure does not return a URL, and a cleanup failure does not replace that error.
+* **Not in this slice:** no confirm route, no media message row, no download URL, no socket media event, and no change to TEXT send.
+* **Success Response (`200 OK`):** Message: `Upload URL created.`
+  ```json
+  {
+    "success": true,
+    "data": {
+      "uploadId": "upload-uuid-1",
+      "uploadUrl": "https://example-bucket.s3.amazonaws.com/chat-media/conversation-uuid/upload-uuid-1?X-Amz-...",
+      "storageKey": "chat-media/conversation-uuid/upload-uuid-1",
+      "expiresInSeconds": 300
+    },
+    "message": "Upload URL created."
+  }
+  ```
+  `data` does not include a message id, `mediaUrl`, `remainingDailyMessages`, the bucket name, MIME type, or file size. `storageKey` is returned so the client can echo it later. Confirmation must match the server reservation and must not trust this key by itself.
+
+---
+
 ## 25. Block APIs
 
 ### 25.1 Block a User
@@ -2088,7 +2134,7 @@ Photo objects returned after confirm, list, and patch are `{ "id", "url", "displ
 * **Socket identity:** Successful handshakes store the live `AuthenticatedUser` on `socket.data.user`. `chat:message:send` uses `socket.data.user.id` as the sender. Unverified or incomplete profiles may connect. The send path reloads the user before it calls the chat service.
 * **User room:** On connect the server joins exactly `user:{userId}` from `socket.data.user.id`. The client cannot choose the room. Conversation rooms are not joined, and there is no conversation-room join event.
 * **Redis:** Socket.IO requires Redis for the adapter. Production fails startup if Redis or the adapter cannot initialize. Development can keep serving HTTP without Socket.IO when Redis is unavailable. Redis is not a message store, a quota store, or a chat idempotency store.
-* **Not in this slice:** No client `chat:message:read` command, no conversation-room join, no media uploads, no offline replay, and no notification or match socket emissions. Read receipts are the HTTP route in section 24.3. That route emits the server event below. It does not add a client listener. Typing indicators are section 32.4.
+* **Not in this slice:** No client `chat:message:read` command, no conversation-room join, no media Socket.IO upload or delivery, no offline replay, and no notification or match socket emissions. Chat media upload URL issuance is the HTTP route in section 24.5. It does not emit a socket event. Confirmation and media-message persistence are not implemented. Read receipts are the HTTP route in section 24.3. That route emits the server event below. It does not add a client listener. Typing indicators are section 32.4.
 
 ### 32.1 Server $\rightarrow$ Client Events
 | Event Name | Room / Target | Payload Structure | Trigger Condition | Status |
