@@ -5,11 +5,15 @@ import { validate } from '../../middleware/validate.middleware';
 import * as chatController from './chat.controller';
 import {
   markReadBodySchema,
+  mediaConfirmSchema,
+  mediaDownloadBodySchema,
+  mediaUploadUrlSchema,
   sendTextMessageSchema,
   validateConversationIdParam,
   validateListInboxQuery,
   validateListMessagesQuery,
   validateMarkReadRequest,
+  validateMediaDownloadRequest,
   validateUnreadCountQuery
 } from './chat.validator';
 
@@ -26,6 +30,15 @@ router.get(
 );
 
 router.get(
+  '/:conversationId/messages/:messageId/media-download-url',
+  authenticate,
+  requireRole('USER'),
+  validateMediaDownloadRequest,
+  validate(mediaDownloadBodySchema),
+  chatController.createMediaDownloadUrl
+);
+
+router.get(
   '/:conversationId/messages',
   authenticate,
   requireRole('USER'),
@@ -39,6 +52,24 @@ router.post(
   requireRole('USER'),
   validate(sendTextMessageSchema),
   chatController.sendTextMessage
+);
+
+router.post(
+  '/:conversationId/media-upload-url',
+  authenticate,
+  requireRole('USER'),
+  validateConversationIdParam,
+  validate(mediaUploadUrlSchema),
+  chatController.createMediaUploadUrl
+);
+
+router.post(
+  '/:conversationId/media-confirm',
+  authenticate,
+  requireRole('USER'),
+  validateConversationIdParam,
+  validate(mediaConfirmSchema),
+  chatController.confirmMediaUpload
 );
 
 router.patch(

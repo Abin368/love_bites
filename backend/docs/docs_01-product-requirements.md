@@ -281,11 +281,13 @@ Reports are not a Discovery exclusion. Browsing candidate cards does not consume
 | **GIFs** | Prohibited | Allowed |
 | **Videos** | Prohibited | Allowed |
 | **Voice Messages** | Prohibited | Allowed |
+| **Download of confirmed media** | Allowed for a participant | Allowed for a participant |
 
 ### 8.3 Messaging Quotas & Lifecycle
 * **Live send path:** Either participant may send TEXT on an `ACTIVE` match with an `ACTIVE` conversation. Empty and whitespace-only content are accepted. Bidirectional blocks reject send. Closed conversations reject send.
 * **Free Tier Daily Quota:** Enforced at 20 sent text messages per UTC calendar day (`usage_records` metric `DAILY_TEXT_MESSAGES`). Premium callers have unlimited TEXT and do not consume that counter.
 * **Incoming Messages:** Received messages do **not** consume the receiver's daily sent quota.
+* **Media download:** `GET /api/v1/conversations/:conversationId/messages/:messageId/media-download-url` returns a private 3600-second URL for one confirmed media message. Premium is required to upload and confirm that message, not to download it. A free recipient can download. A later Premium lapse does not remove the message. A closed conversation stays downloadable unless a safety block exists. History and inbox keep `mediaUrl` unset.
 * **Unmatch Impact:** When a match is unmatched, the conversation becomes `CLOSED` immediately and further messages are blocked. The conversation and its messages stay in PostgreSQL. A participant can still read that retained history unless a safety block exists. Unmatch does not delete likes.
 * **History:** `GET /api/v1/conversations/:conversationId/messages` returns cursor-paginated messages for a participant. It does not mark messages read, consume the send quota, or emit a realtime event.
 * **Read receipts:** `PATCH /api/v1/conversations/:conversationId/read` marks the other participant's unread messages in that conversation. A closed conversation can be marked read unless a block exists. The call does not consume the send quota. After the database update commits, the other participant's connected devices receive `chat:message:read`. Opening history does not mark messages read.
@@ -403,22 +405,15 @@ Reports are not a Discovery exclusion. Browsing candidate cards does not consume
 ### 11.1 Safety Mechanics
 
 #### Blocking
-* Users can block any profile from Discovery, Match lists, or Chat windows.
-* **System Effect:**
-  * Instantly closes active matches and hides chats.
-  * Removes both users permanently from each other's Discovery queues.
-  * Prevents all present and future interactions.
+* **Implemented.** `POST /api/v1/blocks/:userId`, `GET /api/v1/blocks`, and `DELETE /api/v1/blocks/:userId`. The caller must be role `USER`. Verification and a complete profile are not required.
+* **While the row exists:** neither user appears in the other's Discovery queue. Like, pass, and super-like return `409 BLOCKED_USER`. An `ACTIVE` match becomes `UNMATCHED` and its `ACTIVE` conversation becomes `CLOSED`. Likes and messages stay.
+* **Unblock:** `DELETE` removes only the caller's row. The old match stays `UNMATCHED` and the old conversation stays `CLOSED`. Discovery can show the other user again only when no block remains in either direction and no active outgoing like, pass, or super-like remains. Rematch is not implemented.
 
 #### Reporting
-* Users can report profiles for misconduct.
-* **Mandatory Report Categories:**
-  * Fake Profile / Impersonation
-  * Harassment / Abusive Behavior
-  * Spam / Commercial Promotion
-  * Inappropriate Content / Nudity
-  * Scam / Fraud
-  * Other (Requires text details)
-* Submitted reports enter the Admin Moderation Queue for review.
+* **Submission is implemented.** `POST /api/v1/reports`. The caller must be role `USER`. Verification and a complete profile are not required.
+* Categories are `FAKE_PROFILE`, `HARASSMENT`, `SPAM`, `INAPPROPRIATE_CONTENT`, `SCAM`, and `OTHER`. `OTHER` requires a non-empty description. The other categories may omit it. The stored description is trimmed, and the column has no character limit.
+* The row is `PENDING`. The reported person is not notified, and the response does not reveal the reporter. A report does not block, unmatch, or hide anyone in Discovery.
+* More than one report for the same pair is allowed. Admin review of those rows is not implemented.
 
 ### 11.2 Admin Management Capabilities
 The Admin Dashboard provides full operational management over the platform:
@@ -489,4 +484,4 @@ The following parameter values are designated as **TBD** and must be populated v
 ## Document Status
 * **Status:** DRAFT
 * **Version:** 1.0
-* **Last Updated:** 13 October 2026. Discovery, pass, like, super like, undo, unmatch, HTTP TEXT send, free text quota, Socket.IO TEXT send/receive, message history, read receipts, typing indicators, per-conversation unread counts, the conversation inbox, and conversation details match the implemented API. Media, rematch, who-liked-you, the match list, and payments remain product scope that is not yet implemented.
+* **Last Updated:** 14 October 2026. Discovery, pass, like, super like, undo, unmatch, chat through media download, block management, and `POST /api/v1/reports` match the implemented API. Rematch, who-liked-you, the match list, notifications, the admin report queue, and payments remain product scope that is not yet implemented.

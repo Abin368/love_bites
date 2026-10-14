@@ -312,6 +312,45 @@ export function validateListInboxQuery(req: Request, res: Response, next: NextFu
 
 export const markReadBodySchema = z.object({}).strict();
 
+export const mediaDownloadBodySchema = z.object({}).strict();
+
+export function validateMediaDownloadRequest(req: Request, _res: Response, next: NextFunction): void {
+  try {
+    const conversationId = conversationIdSchema.safeParse(req.params.conversationId);
+    if (!conversationId.success) {
+      throw new ValidationError('Validation failed', [
+        { field: 'conversationId', message: 'Conversation id must be a valid UUID.' }
+      ]);
+    }
+
+    const messageId = conversationIdSchema.safeParse(req.params.messageId);
+    if (!messageId.success) {
+      throw new ValidationError('Validation failed', [
+        { field: 'messageId', message: 'Message id must be a valid UUID.' }
+      ]);
+    }
+
+    if (!req.query || typeof req.query !== 'object' || Array.isArray(req.query)) {
+      throw new ValidationError('Validation failed', [{ field: 'query', message: 'Query parameters are invalid.' }]);
+    }
+
+    const details: ErrorDetail[] = [];
+    for (const key of Object.keys(req.query)) {
+      details.push({ field: key, message: 'Unsupported query parameter.' });
+    }
+    if (details.length > 0) {
+      throw new ValidationError('Validation failed', details);
+    }
+
+    if (req.body === undefined) {
+      req.body = {};
+    }
+    next();
+  } catch (error) {
+    next(error);
+  }
+}
+
 export function validateMarkReadRequest(req: Request, _res: Response, next: NextFunction): void {
   try {
     if (!req.query || typeof req.query !== 'object' || Array.isArray(req.query)) {
@@ -357,3 +396,96 @@ export const typingEventSchema = z
 export type SendTextMessageBody = z.infer<typeof sendTextMessageSchema>;
 export type SendTextMessageEvent = z.infer<typeof sendTextMessageEventSchema>;
 export type TypingEvent = z.infer<typeof typingEventSchema>;
+
+const CHAT_MEDIA_TYPES = ['IMAGE', 'GIF', 'VIDEO', 'VOICE'] as const;
+
+const MEDIA_MIME_TYPES = {
+  IMAGE: ['image/jpeg', 'image/png', 'image/webp'],
+  GIF: ['image/gif'],
+  VIDEO: ['video/mp4', 'video/webm'],
+  VOICE: ['audio/mpeg', 'audio/mp4', 'audio/ogg', 'audio/webm', 'audio/wav']
+} as const;
+
+const MEDIA_MAX_BYTES = {
+  IMAGE: 10_485_760,
+  GIF: 15_728_640,
+  VIDEO: 52_428_800,
+  VOICE: 10_485_760
+} as const;
+
+export function isAllowedChatMedia(mediaType: string, mimeType: string, fileSizeBytes: number): boolean {
+  if (!CHAT_MEDIA_TYPES.includes(mediaType as (typeof CHAT_MEDIA_TYPES)[number])) {
+    return false;
+  }
+  const type = mediaType as (typeof CHAT_MEDIA_TYPES)[number];
+  const allowed = MEDIA_MIME_TYPES[type] as readonly string[];
+  if (!allowed.includes(mimeType)) {
+    return false;
+  }
+  return Number.isInteger(fileSizeBytes) && fileSizeBytes >= 1 && fileSizeBytes <= MEDIA_MAX_BYTES[type];
+}
+
+const MEDIA_MIME_MESSAGES = {
+  IMAGE: 'Mime type must be image/jpeg, image/png, or image/webp.',
+  GIF: 'Mime type must be image/gif.',
+  VIDEO: 'Mime type must be video/mp4 or video/webm.',
+  VOICE: 'Mime type must be audio/mpeg, audio/mp4, audio/ogg, audio/webm, or audio/wav.'
+} as const;
+
+export const mediaUploadUrlSchema = z
+  .object({
+    mediaType: z.enum(['IMAGE', 'GIF', 'VIDEO', 'VOICE'], {
+      errorMap: () => ({ message: 'Media type must be IMAGE, GIF, VIDEO, or VOICE.' })
+    }),
+    mimeType: z.string({
+      required_error: 'Mime type is required.',
+      invalid_type_error: 'Mime type must be a string.'
+    }),
+    fileSizeBytes: z
+      .number({
+        required_error: 'File size is required.',
+        invalid_type_error: 'File size must be a number of bytes.'
+      })
+      .int('File size must be a whole number of bytes.')
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    const allowed = MEDIA_MIME_TYPES[value.mediaType] as readonly string[];
+    if (!allowed.includes(value.mimeType)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['mimeType'],
+        message: MEDIA_MIME_MESSAGES[value.mediaType]
+      });
+    }
+
+    const maxBytes = MEDIA_MAX_BYTES[value.mediaType];
+    if (value.fileSizeBytes < 1) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['fileSizeBytes'],
+        message: 'File size must be at least 1 byte.'
+      });
+    } else if (value.fileSizeBytes > maxBytes) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['fileSizeBytes'],
+        message: `File size must be at most ${maxBytes} bytes.`
+      });
+    }
+  });
+
+export type MediaUploadUrlBody = z.infer<typeof mediaUploadUrlSchema>;
+
+export const mediaConfirmSchema = z
+  .object({
+    uploadId: z
+      .string({
+        required_error: 'Upload id is required.',
+        invalid_type_error: 'Upload id must be a valid UUID.'
+      })
+      .uuid('Upload id must be a valid UUID.')
+  })
+  .strict();
+
+export type MediaConfirmBody = z.infer<typeof mediaConfirmSchema>;

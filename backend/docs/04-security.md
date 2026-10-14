@@ -338,7 +338,26 @@ Incoming TEXT payload
 [Persist TEXT in PostgreSQL and update last_message_at]
 ```
 
-Media entitlement (attachments) is not in this slice. Free callers consume `DAILY_TEXT_MESSAGES` after authorization succeeds; exhausted free quota is `429 DAILY_LIMIT_REACHED` with message `You have reached your daily limit of 20 text messages.` Premium callers do not write `usage_records` and return `remainingDailyMessages: null`. Quota and message write share one transaction. HTTP send does not emit a Socket.IO event. `chat:message:send` emits `chat:message:new` only after that transaction commits. User locks reuse `lockLikeUsers` so HTTP and socket sends coordinate with UNMATCH and UNDO. Redis is not used for this quota.
+Media entitlement (attachments) is not part of TEXT send. Free callers consume `DAILY_TEXT_MESSAGES` after authorization succeeds; exhausted free quota is `429 DAILY_LIMIT_REACHED` with message `You have reached your daily limit of 20 text messages.` Premium callers do not write `usage_records` and return `remainingDailyMessages: null`. Quota and message write share one transaction. HTTP send does not emit a Socket.IO event. `chat:message:send` emits `chat:message:new` only after that transaction commits. User locks reuse `lockLikeUsers` so HTTP and socket sends coordinate with UNMATCH and UNDO. Redis is not used for this quota.
+
+### 16.2 Chat Media Upload URL (Phase 6 media slice 1)
+`POST /api/v1/conversations/:conversationId/media-upload-url` issues a private 300-second `PutObject` URL for an eligible Premium participant. It uses `hasActivePremium` inside a transaction after `lockLikeUsers`, `lockMatchById`, and `lockConversationById`. The transaction commits before signing and before the Redis write, so those calls do not hold row locks. A later close, block, or Premium lapse is not visible to this response. Confirmation authorizes again, as section 16.3 describes.
+
+The server key is `chat-media/{conversationId}/{uploadId}`. Redis `chat-media:upload:{uploadId}` holds the user, conversation, key, media type, declared MIME type, and declared size for 300 seconds. The installed presigner sets `ContentType` but marks `content-type` unsignable and uses `UNSIGNED-PAYLOAD`. It does not sign `Content-Length`. Declared size and MIME type are not enforced on the PUT and do not prove the object bytes. No public ACL is set. The route does not insert a message, update `last_message_at`, or consume `DAILY_TEXT_MESSAGES`. History and inbox still return `mediaUrl: null`. TEXT send is unchanged.
+
+### 16.3 Chat Media Confirmation (Phase 6 media slice 2)
+`POST /api/v1/conversations/:conversationId/media-confirm` accepts only `uploadId`. The client cannot supply the storage key, MIME type, or size. The reservation is validated before any S3 call. A missing, expired, malformed, or mismatched reservation is `404 RESOURCE_NOT_FOUND` and does not reveal whether another user's upload exists.
+
+`HeadObject` then compares `ContentLength` and `ContentType` with the reservation. That is metadata verification. It does not inspect the bytes, scan malware, or prove the file is the declared media type. A 403 is `STORAGE_ACCESS_DENIED`, not proof the object is missing, because S3 can return 403 for a missing key without `s3:ListBucket`.
+
+Authorization runs again inside the TEXT-send lock order, including `hasActivePremium`. A Premium lapse after the URL was issued is `403 PREMIUM_REQUIRED`. The message id is the upload id, so PostgreSQL rejects a second row. The reservation is deleted only after that commit. Redis is not the idempotency store. No public ACL is set. Confirmation does not sign a download URL. `DAILY_TEXT_MESSAGES` is not consumed. `chat:message:new` is emitted to the recipient room only after a new commit. HTTP TEXT send still does not emit. Download is section 16.4.
+
+### 16.4 Chat Media Download URL (Phase 6 media slice 3)
+`GET /api/v1/conversations/:conversationId/messages/:messageId/media-download-url` signs a private `GetObject` URL for one confirmed media message. Authorization matches message history: verified caller, complete profile, participant, bidirectional block, and the same not-found rule for a missing conversation or an `ACTIVE` conversation whose match is not `ACTIVE`. A `CLOSED` conversation stays downloadable unless a block exists. The message is loaded only after that check.
+
+Premium is not checked. It remains required for upload and confirmation. A free recipient can download, and a later lapse does not hide the row.
+
+The client cannot send a storage key. The signed key is `chat-media/{conversationId}/{messageId}` only when the stored `media_storage_key` equals that string. `TEXT`, a soft-deleted row, a foreign conversation, a missing key, and any other key are `404 RESOURCE_NOT_FOUND`. The route does not call `HeadObject` and does not cache the URL in Redis. The TTL is 3600 seconds. `STORAGE_NOT_CONFIGURED` is preserved. Other signer failures are `500 STORAGE_UNAVAILABLE` with message `Media storage is temporarily unavailable.` The handler does not log the SDK error or the URL. The URL is a bearer secret until it expires. The route does not write messages, quota, match state, or a socket event.
 
 ---
 
@@ -357,8 +376,9 @@ Media entitlement (attachments) is not in this slice. Free callers consume `DAIL
 
 ## 18. Subscription & Entitlement Security
 
-1. **Premium checks today:** `entitlements.service.ts` is not implemented. PASS, LIKE, SUPER LIKE, and UNDO decide Premium by reading `subscriptions` joined to `plans` (`PREMIUM_MONTHLY` or `PREMIUM_YEARLY`) with status `ACTIVE`, `PAST_DUE`, or `GRACE_PERIOD` and a `current_period_end` or `grace_period_end` still in the future. Controllers do not trust a client `isPremium` flag. The centralized entitlement service remains later work.
-2. **Tamper-Proof Plan Pricing:** 
+1. **Premium checks today:** PASS, LIKE, SUPER LIKE, UNDO, and chat media decide Premium by reading `subscriptions` joined to `plans` (`PREMIUM_MONTHLY` or `PREMIUM_YEARLY`) with status `ACTIVE`, `PAST_DUE`, or `GRACE_PERIOD` and a `current_period_end` or `grace_period_end` still in the future. Controllers do not trust a client `isPremium` flag. `GET /api/v1/me/entitlements` uses that same `hasActivePremium` predicate for its snapshot. It is not a shared engine for other routes. The centralized entitlement service remains later work.
+2. **Entitlements snapshot:** `GET /api/v1/me/entitlements` requires a valid access token and role `USER`. It does not require email verification, phone verification, or a completed profile. A missing token is `401 AUTH_REQUIRED`. An `ADMIN` is `403 FORBIDDEN`. The handler reads the caller's subscription and stored `SUPER_LIKE` and `BOOST` balances. It does not insert or update those rows, and it ignores a client-supplied tier or balance. `advancedFilters`, `adFree`, and `priorityVisibility` are returned `false`. A `CANCELED` or `EXPIRED` subscription is `FREE` under the live predicate even when a period end is still in the future. Section 28.3 of the API specification still describes canceled access remaining until period end. That conflict is unresolved.
+3. **Tamper-Proof Plan Pricing:** 
    * Clients submit only `planId` during checkout.
    * The backend resolves `plans.price_in_cents` and `plans.currency` directly from PostgreSQL.
    * Client-supplied prices or currency overrides are completely ignored.
@@ -393,8 +413,8 @@ Media entitlement (attachments) is not in this slice. Free callers consume `DAIL
 
 ## 22. Block and Report Security
 
-1. **Bidirectional Block Isolation:** When User A blocks User B, PostgreSQL constraints and discovery queries immediately prevent both users from discovering, matching, or messaging each other.
-2. **Report Confidentiality:** Moderation reports and administrative investigation notes are accessible strictly by authenticated administrators. The reported user is never notified of the reporter's identity.
+1. **Bidirectional Block Isolation:** `POST /api/v1/blocks/:userId` inserts one directional row. `chk_blocks_no_self_block` rejects a self-block and `uq_blocks_pair` rejects a duplicate ordered pair. Discovery, like, pass, super-like, and chat queries treat either direction as a block. `DELETE /api/v1/blocks/:userId` removes only the caller's outgoing row and returns the same `404 RESOURCE_NOT_FOUND` for a missing row and a reverse-only row.
+2. **Report Confidentiality:** `POST /api/v1/reports` stores the reporter id and returns only `reportId` and `PENDING`. It does not notify the reported user, emit a Socket.IO event, or return admin notes. There is no user-facing report list. Administrative investigation notes remain admin-only. Those admin routes are not implemented.
 
 ---
 
@@ -460,7 +480,7 @@ The following events must always generate structured audit logs:
 ## 29. Account Deletion and Data Retention
 
 1. **Soft Delete Implementation:** User deletion sets `users.deleted_at = CURRENT_TIMESTAMP`, `status = 'DELETED'`, and revokes all active refresh tokens.
-2. **Cascade Protection:** Financial transaction records (`payments`) and safety moderation records (`reports`) retain references with `ON DELETE SET NULL` to ensure tax and legal compliance.
+2. **Cascade Protection:** Financial transaction records (`payments`) use `ON DELETE SET NULL`. A report row keeps its history when the reporter or resolving admin is removed: `reporter_id` and `resolved_by` use `ON DELETE SET NULL`. `reported_user_id` uses `ON DELETE CASCADE` through `fk_reports_reported`. Product account deletion is still a soft delete. These foreign keys apply when a user row is hard-deleted.
 3. **Hard Purge Window:** An automated background job permanently purges soft-deleted user records and removes S3 media binaries after a **30-day compliance retention window**.
 
 ---
@@ -495,7 +515,8 @@ Before creating a Pull Request or deploying code, verify that all applicable ite
 * [ ] Authenticated endpoints enforce `auth.middleware.ts`.
 * [ ] Admin endpoints enforce `requireRole('ADMIN')`.
 * [ ] Resource ownership verified for all mutating operations (`resource.user_id === req.user.id`).
-* [x] UNMATCH (`DELETE /api/v1/matches/:matchId`) allows either participant of an `ACTIVE` match and returns `404 MATCH_NOT_FOUND` for every other match id. It does not use Redis.
+* [x] UNMATCH (`DELETE /api/v1/matches/:matchId`) allows either participant of an `ACTIVE` match and returns `404 MATCH_NOT_FOUND` for every other match id. It does not use Redis. It does not emit `match:unmatch`.
+* [x] Block (`POST /api/v1/blocks/:userId`, `GET /api/v1/blocks`, `DELETE /api/v1/blocks/:userId`) is limited to role `USER`. List and delete use only the caller's outgoing rows. A duplicate block is `409 CONFLICT`. Self-block is `400 SELF_INTERACTION`.
 * [x] Send message (`POST /api/v1/conversations/:conversationId/messages`) verifies participant ownership, active match/conversation state, and bidirectional blocks. Missing or foreign conversations return `404 RESOURCE_NOT_FOUND`.
 
 ### Privacy & Data Protection

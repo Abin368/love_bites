@@ -133,28 +133,74 @@ function unexpectedFailure(): SocketFailure {
   };
 }
 
-function deliverNewMessage(io: Server, result: SendTextMessageResult): void {
-  if (result.recipientId.toLowerCase() === result.senderId.toLowerCase()) {
+interface ChatMessageEvent {
+  id: string;
+  conversationId: string;
+  senderId: string;
+  recipientId: string;
+  messageType: string;
+  content: string | null;
+  createdAt: Date;
+}
+
+function emitNewChatMessage(io: Server, input: ChatMessageEvent): void {
+  if (input.recipientId.toLowerCase() === input.senderId.toLowerCase()) {
     logger.error('Refusing to deliver chat:message:new to the sender room', {
-      conversationId: result.conversationId
+      conversationId: input.conversationId
     });
     return;
   }
 
   try {
-    io.to(userRoom(result.recipientId)).emit('chat:message:new', {
-      id: result.id,
-      conversationId: result.conversationId,
-      senderId: result.senderId,
-      messageType: result.messageType,
-      content: result.content,
-      createdAt: result.createdAt.toISOString()
+    io.to(userRoom(input.recipientId)).emit('chat:message:new', {
+      id: input.id,
+      conversationId: input.conversationId,
+      senderId: input.senderId,
+      messageType: input.messageType,
+      content: input.content,
+      createdAt: input.createdAt.toISOString()
     });
   } catch (error) {
     logger.error('Failed to deliver chat:message:new', {
       error: error instanceof Error ? error.message : 'Unknown error',
-      conversationId: result.conversationId,
-      recipientId: result.recipientId
+      conversationId: input.conversationId,
+      recipientId: input.recipientId
+    });
+  }
+}
+
+function deliverNewMessage(io: Server, result: SendTextMessageResult): void {
+  emitNewChatMessage(io, result);
+}
+
+export function deliverChatMessage(input: ChatMessageEvent): void {
+  const io = activeSocketServer();
+  if (!io) {
+    return;
+  }
+  emitNewChatMessage(io, input);
+}
+
+export function deliverMatchUnmatch(input: {
+  matchId: string;
+  conversationId: string;
+  recipientId: string;
+}): void {
+  const io = activeSocketServer();
+  if (!io) {
+    return;
+  }
+
+  try {
+    io.to(userRoom(input.recipientId)).emit('match:unmatch', {
+      matchId: input.matchId,
+      conversationId: input.conversationId
+    });
+  } catch (error) {
+    logger.error('Failed to deliver match:unmatch', {
+      error: error instanceof Error ? error.message : 'Unknown error',
+      matchId: input.matchId,
+      recipientId: input.recipientId
     });
   }
 }

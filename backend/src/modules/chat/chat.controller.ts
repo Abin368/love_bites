@@ -1,13 +1,100 @@
 import { Response } from 'express';
-import { deliverReadReceipt } from '../../socket/chat.socket';
+import { deliverChatMessage, deliverReadReceipt } from '../../socket/chat.socket';
 import { asyncHandler } from '../../utils/async-handler';
 import * as chatService from './chat.service';
 import type { HistoryMessage, InboxConversation } from './chat.types';
-import type { ListInboxQuery, ListMessagesQuery, SendTextMessageBody } from './chat.validator';
+import type {
+  ListInboxQuery,
+  ListMessagesQuery,
+  MediaConfirmBody,
+  MediaUploadUrlBody,
+  SendTextMessageBody
+} from './chat.validator';
 
 function send(res: Response, status: number, data: unknown, message: string): void {
   res.status(status).json({ success: true, data, message });
 }
+
+export const createMediaUploadUrl = asyncHandler(async (req, res) => {
+  const body = req.body as MediaUploadUrlBody;
+  const result = await chatService.createMediaUploadUrl({
+    callerId: req.user!.id,
+    isVerified: req.user!.isVerified,
+    conversationId: req.params.conversationId,
+    mediaType: body.mediaType,
+    mimeType: body.mimeType,
+    fileSizeBytes: body.fileSizeBytes
+  });
+
+  send(
+    res,
+    200,
+    {
+      uploadId: result.uploadId,
+      uploadUrl: result.uploadUrl,
+      storageKey: result.storageKey,
+      expiresInSeconds: result.expiresInSeconds
+    },
+    'Upload URL created.'
+  );
+});
+
+export const createMediaDownloadUrl = asyncHandler(async (req, res) => {
+  const result = await chatService.createMediaDownloadUrl({
+    callerId: req.user!.id,
+    isVerified: req.user!.isVerified,
+    conversationId: req.params.conversationId,
+    messageId: req.params.messageId
+  });
+
+  send(
+    res,
+    200,
+    {
+      downloadUrl: result.downloadUrl,
+      expiresInSeconds: result.expiresInSeconds
+    },
+    'Download URL created.'
+  );
+});
+
+export const confirmMediaUpload = asyncHandler(async (req, res) => {
+  const body = req.body as MediaConfirmBody;
+  const result = await chatService.confirmMediaUpload({
+    callerId: req.user!.id,
+    isVerified: req.user!.isVerified,
+    conversationId: req.params.conversationId,
+    uploadId: body.uploadId
+  });
+
+  if (result.created && result.recipientId) {
+    deliverChatMessage({
+      id: result.id,
+      conversationId: result.conversationId,
+      senderId: result.senderId,
+      recipientId: result.recipientId,
+      messageType: result.messageType,
+      content: result.content,
+      createdAt: result.createdAt
+    });
+  }
+
+  send(
+    res,
+    result.created ? 201 : 200,
+    {
+      id: result.id,
+      conversationId: result.conversationId,
+      senderId: result.senderId,
+      messageType: result.messageType,
+      content: result.content,
+      mediaUrl: result.mediaUrl,
+      readAt: result.readAt,
+      createdAt: result.createdAt
+    },
+    'Message sent.'
+  );
+});
 
 export const sendTextMessage = asyncHandler(async (req, res) => {
   const body = req.body as SendTextMessageBody;

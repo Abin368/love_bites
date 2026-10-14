@@ -269,7 +269,7 @@ modules/likes/
 ```
 *Note: Optional files (e.g., `*.constants.ts`) should only be created when explicitly needed.*
 
-Implemented modules today are `auth`, `users`, `profiles`, `profile-photos`, `genders`, `interests`, `relationship-intentions`, `onboarding`, `discovery`, `likes`, and `chat`. Discovery routes mount the like, pass, super-like, and undo handlers. There is no `passes` table and no separate `likes.routes.ts`. Chat mounts `GET /conversations`, `GET /conversations/:conversationId`, `POST /conversations/:conversationId/messages`, `GET /conversations/:conversationId/messages`, `GET /conversations/:conversationId/unread-count`, and `PATCH /conversations/:conversationId/read`. Notifications, safety, subscriptions, payments, entitlements, match list, and admin modules are not implemented as HTTP modules. Their tables exist from Phase 1.
+Implemented modules today are `auth`, `users`, `profiles`, `profile-photos`, `genders`, `interests`, `relationship-intentions`, `onboarding`, `discovery`, `likes`, `chat`, and `entitlements`. Discovery routes mount the like, pass, super-like, and undo handlers. There is no `passes` table and no separate `likes.routes.ts`. Chat mounts `GET /conversations`, `GET /conversations/:conversationId`, `POST /conversations/:conversationId/messages`, `POST /conversations/:conversationId/media-upload-url`, `POST /conversations/:conversationId/media-confirm`, `GET /conversations/:conversationId/messages/:messageId/media-download-url`, `GET /conversations/:conversationId/messages`, `GET /conversations/:conversationId/unread-count`, and `PATCH /conversations/:conversationId/read`. `entitlements` mounts only `GET /me/entitlements`. Block management and report submission are mounted. Notifications, subscriptions, payments, the match list, and admin modules are not implemented as HTTP modules. Their tables exist from Phase 1.
 
 ---
 
@@ -501,11 +501,11 @@ The live LIKE and SUPER LIKE transaction locks both users in canonical id order,
 
 * **`ACTIVE`:** the current mutual match. LIKE and SUPER LIKE insert this row, with `user_one_id < user_two_id`, plus one `ACTIVE` conversation.
 * **`UNDONE`:** Undo of the LIKE that created the current active match sets this status. `unmatched_at` and `unmatched_by_user_id` stay null. The `ACTIVE` conversation becomes `CLOSED` and `closed_at` is set.
-* **`UNMATCHED`:** `DELETE /api/v1/matches/:matchId` sets this status for an `ACTIVE` match. `unmatched_at` is `CURRENT_TIMESTAMP` and `unmatched_by_user_id` is the caller. `updated_at` changes. The `ACTIVE` conversation becomes `CLOSED` and `closed_at` is set. Likes stay unchanged.
+* **`UNMATCHED`:** `DELETE /api/v1/matches/:matchId` or `POST /api/v1/blocks/:userId` sets this status for an `ACTIVE` match. `unmatched_at` is `CURRENT_TIMESTAMP` and `unmatched_by_user_id` is the caller or the blocker. `updated_at` changes. The `ACTIVE` conversation becomes `CLOSED` and `closed_at` is set. Likes stay unchanged. Unblock does not change this status.
 
 The live route is `matches.routes` → `likes.controller.unmatch` → `likes.service.unmatch` → `likes.data-access` → one PostgreSQL transaction. The service reuses `lockLikeUsers` and `closeActiveConversation`. There is no repository layer.
 
-Historical `UNDONE` and `UNMATCHED` rows stay in place. `uq_matches_single_active_pair` allows a later `ACTIVE` row for the same pair. Rematch is not implemented and does not revive the old row. There is no match list API. TEXT send exists under `/conversations/:conversationId/messages`. The match diagram's notification and Socket.IO steps are not implemented. `match:unmatch` is future scope.
+Historical `UNDONE` and `UNMATCHED` rows stay in place. `uq_matches_single_active_pair` allows a later `ACTIVE` row for the same pair. Rematch is not implemented and does not revive the old row. There is no match list API. TEXT send exists under `/conversations/:conversationId/messages`. The match diagram's notification step is not implemented. `match:new` is future scope. `DELETE /api/v1/matches/:matchId` does not emit `match:unmatch`. `POST /api/v1/blocks/:userId` emits it after commit to `user:{blockedUserId}` when the block closes an active match that has a conversation.
 
 ---
 
@@ -561,13 +561,21 @@ Client A                  Server Node                 PostgreSQL              Cl
 Safety features operate independently from matching and communication modules.
 
 ### Blocking Logic
-* **Bidirectional Isolation:** Blocking user $A 
-ightarrow B$ creates a permanent isolation barrier. Neither user can discover, like, message, or view the other.
-* **Execution:** Executing a block immediately terminates active matches between the pair, closes open conversations, and invalidates active Socket.IO room subscriptions.
+`POST /api/v1/blocks/:userId`, `GET /api/v1/blocks`, and `DELETE /api/v1/blocks/:userId` are implemented. The route is `blocks.routes` → `blocks.controller` → `blocks.service` → `blocks.data-access`. There is no repository layer and no new migration.
+
+* **Row:** one directional record, `blocker_id` = caller and `blocked_id` = target. `reason` is stored as null. `uq_blocks_pair` rejects a duplicate ordered pair. `chk_blocks_no_self_block` rejects a self-block. The HTTP self-block response is `400 SELF_INTERACTION` before insert.
+* **Isolation:** either direction already excludes discovery and rejects like, pass, super-like, and chat. Those checks were not changed. A block does not delete likes.
+* **Match:** an `ACTIVE` match becomes `UNMATCHED` in the same transaction, after `lockLikeUsers` and the match and conversation locks. `unmatched_by_user_id` is the blocker. The `ACTIVE` conversation becomes `CLOSED`. `UNDONE` and already `UNMATCHED` rows stay. Unblock deletes only the caller's row and does not reopen the match or conversation.
+* **Realtime:** after commit, `match:unmatch` is emitted to `user:{blockedUserId}` only when this request unmatched a match that has a conversation. The payload is `{ matchId, conversationId }`. Users join `user:{userId}` only. There is no conversation room to invalidate. Unmatch does not emit this event. A missing Socket.IO server does not fail the HTTP response.
 
 ### Report Handling
-* Support classifications: `FAKE_PROFILE`, `HARASSMENT`, `SPAM`, `INAPPROPRIATE_CONTENT`, `SCAM`, `OTHER`.
-* Submitting a report creates an auditable record in `reports` for Admin Review.
+`POST /api/v1/reports` is implemented. The route is `reports.routes` → `reports.controller` → `reports.service` → `reports.data-access`. There is no repository layer and no new migration. Admin listing and resolution are not implemented.
+
+* **Caller:** authenticated `USER`. Verification, profile completion, and Premium are not required. A query parameter is rejected. Unknown body properties are rejected.
+* **Row:** `reporter_id` is the caller, `reported_user_id` is the target, and `status` is `PENDING`. `admin_notes`, `resolved_by`, and `resolved_at` are null. Reasons are `FAKE_PROFILE`, `HARASSMENT`, `SPAM`, `INAPPROPRIATE_CONTENT`, `SCAM`, and `OTHER`. `OTHER` requires a trimmed description. Other reasons store trimmed text or `null`. The column has no length check. Duplicate pairs are allowed.
+* **Target:** a missing, soft-deleted, or `DELETED` user is `404 USER_NOT_FOUND`. A self-report is `400 SELF_INTERACTION` before insert. The table has no self-report check.
+* **Isolation:** the insert does not create a block, change a match or conversation, change likes or messages, or change discovery eligibility. Reports remain outside the discovery filter.
+* **Confidentiality:** no notification row and no Socket.IO event. The `201` data is `{ reportId, status: "PENDING" }`.
 
 ---
 
@@ -602,7 +610,9 @@ function formatNotificationForUser(notification, userEntitlements) {
 
 ## 20. Subscription & Entitlement Architecture
 
-**The entitlement service is not implemented.** Live PASS, LIKE, SUPER LIKE, and UNDO read `subscriptions` and `plans` directly. Free LIKE and PASS usage is `usage_records`. Super Like usage is `user_credit_balances`. The pattern below is the planned central engine.
+**There is no shared entitlement engine.** `GET /api/v1/me/entitlements` is a read-only snapshot in `src/modules/entitlements/`. It calls the existing `hasActivePremium` in `likes.data-access.ts` and reads stored `user_credit_balances` rows. It does not move that predicate, and other modules do not call the snapshot service. PASS, LIKE, SUPER LIKE, UNDO, and chat media still call `hasActivePremium` themselves. Free LIKE and PASS usage is `usage_records`. Super Like usage is `user_credit_balances`. `GET /api/v1/me/usage` is not mounted.
+
+The snapshot returns `tier` `PREMIUM` or `FREE`. `unlimitedSwipes`, `undoAction`, `chatMedia`, and `seeWhoLikedYou` follow `hasActivePremium`. `advancedFilters`, `adFree`, and `priorityVisibility` are `false` for both tiers. Premium does not change discovery ranking. Credit fields are the stored `SUPER_LIKE` and `BOOST` balances, or `0` when no row exists. The request does not create a balance row. Authentication and role `USER` are required. Verification and profile completion are not. The pattern below remains the planned central engine, not the live snapshot.
 
 Entitlements are planned to manage feature availability and usage enforcement across the application.
 
@@ -710,7 +720,7 @@ Sessions, discovery caching, daily LIKE/PASS counters (those are `usage_records`
 
 ## 23. Realtime Architecture
 
-**Phase 6 Slices 1, 4, 6, and 7 are implemented.** `src/socket/socket.server.ts` attaches Socket.IO to the HTTP server created in `src/server.ts`. `src/socket/socket.auth.ts` authenticates the handshake. `src/socket/chat.socket.ts` handles `chat:message:send` after the user room join, emits `chat:message:read` from the HTTP read-receipt route, and relays `chat:typing:start` / `chat:typing:stop`. Conversation rooms are not implemented. There is no client `chat:message:read` listener.
+**Phase 6 Slices 1, 4, 6, and 7 are implemented.** `src/socket/socket.server.ts` attaches Socket.IO to the HTTP server created in `src/server.ts`. `src/socket/socket.auth.ts` authenticates the handshake. `src/socket/chat.socket.ts` handles `chat:message:send` after the user room join, emits `chat:message:read` from the HTTP read-receipt route, emits `chat:message:new` from media confirmation after a new commit, and relays `chat:typing:start` / `chat:typing:stop`. HTTP TEXT send does not emit. Conversation rooms are not implemented. There is no client `chat:message:read` listener.
 
 * Framework: Socket.IO initialized over the Express HTTP server.
 * Cluster Distribution: `@socket.io/redis-adapter` uses duplicated `ioredis` pub/sub clients from the existing Redis configuration. Recipient delivery uses that adapter. Message rows stay in PostgreSQL.

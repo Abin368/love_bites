@@ -13,7 +13,7 @@ This document defines the **RESTful API Specification** and **Socket.IO Realtime
 
 ### Implementation status
 
-Phase 2 authentication, Phase 3 onboarding, Phase 4 Discovery, and Phase 5 slices for PASS, LIKE and match creation, SUPER LIKE, UNDO, and UNMATCH are implemented. Sections **4**, **11**, **12**, **14**, **19**, **20**, **21**, and **22.2** describe that live behavior. Sections **13**, **17**, **18**, **22.1**, and **23** onward are the planned contract and are not mounted, except where a subsection says otherwise. Sections **23.1** and **23.2** are mounted. `PUT /api/v1/me/interests`, `PUT /api/v1/me/relationship-intentions`, `GET /api/v1/dating-preferences`, `PUT /api/v1/dating-preferences`, `PUT /api/v1/location`, and `PATCH /api/v1/onboarding/profile` are not implemented. `GET /api/v1/matches` is not implemented. `DELETE /api/v1/matches/:matchId` is implemented. Match and conversation rows are created by LIKE and SUPER LIKE. UNMATCH does not delete them.
+Phase 2 authentication, Phase 3 onboarding, Phase 4 Discovery, and Phase 5 slices for PASS, LIKE and match creation, SUPER LIKE, UNDO, and UNMATCH are implemented. Sections **4**, **11**, **12**, **14**, **19**, **20**, **21**, and **22.2** describe that live behavior. Sections **13**, **17**, **18**, **22.1**, and **23** onward are the planned contract and are not mounted, except where a subsection says otherwise. Sections **23.1**, **23.2**, **25**, **26.1**, and **30.1** are mounted. Section **30.2** is not. Admin report review in section **31.2** is not. `PUT /api/v1/me/interests`, `PUT /api/v1/me/relationship-intentions`, `GET /api/v1/dating-preferences`, `PUT /api/v1/dating-preferences`, `PUT /api/v1/location`, and `PATCH /api/v1/onboarding/profile` are not implemented. `GET /api/v1/matches` is not implemented. `DELETE /api/v1/matches/:matchId` is implemented. Match and conversation rows are created by LIKE and SUPER LIKE. UNMATCH does not delete them.
 
 Health checks are also live: `GET /health` and `GET /api/v1/health`.
 
@@ -113,11 +113,15 @@ Live routes that require `Authorization: Bearer <accessToken>`:
 * `DELETE /api/v1/matches/:matchId`.
 * `GET /api/v1/conversations`.
 * `POST /api/v1/conversations/:conversationId/messages`.
+* `POST /api/v1/conversations/:conversationId/media-upload-url`.
+* `POST /api/v1/conversations/:conversationId/media-confirm`.
+* `GET /api/v1/conversations/:conversationId/messages/:messageId/media-download-url`.
 * `GET /api/v1/conversations/:conversationId/messages`.
 * `GET /api/v1/conversations/:conversationId/unread-count`.
 * `GET /api/v1/conversations/:conversationId`.
+* `GET /api/v1/me/entitlements`.
 
-Those profile, onboarding, photo, discovery, unmatch, and message routes also require role `USER`. `requireVerified` is not applied on the route. An unverified `USER` may call profile, onboarding, and photo routes. Discovery, PASS, LIKE, SUPER LIKE, UNDO, UNMATCH, the conversation inbox, conversation details, send message, message history, and the conversation unread count check verification in the service and return `403 EMAIL_NOT_VERIFIED` or `403 PHONE_NOT_VERIFIED`. Any other role, including `ADMIN`, receives `403 FORBIDDEN`. Suspended and banned accounts are rejected with `403` by the authentication middleware.
+Those profile, onboarding, photo, discovery, unmatch, message, and entitlements routes also require role `USER`. `requireVerified` is not applied on the route. An unverified `USER` may call profile, onboarding, photo, and entitlements routes. Discovery, PASS, LIKE, SUPER LIKE, UNDO, UNMATCH, the conversation inbox, conversation details, send message, media upload URL, media confirmation, media download, message history, and the conversation unread count check verification in the service and return `403 EMAIL_NOT_VERIFIED` or `403 PHONE_NOT_VERIFIED`. Entitlements does not check verification or profile completion. Any other role, including `ADMIN`, receives `403 FORBIDDEN`. Suspended and banned accounts are rejected with `403` by the authentication middleware.
 
 There is no live admin API yet. `requireRole('ADMIN')` exists for later routes.
 
@@ -206,6 +210,12 @@ All failed HTTP requests return a standardized, machine-parseable JSON error env
 | `PHOTO_CONFLICT` | 409 | Photo order or primary photo conflicts with an existing photo. |
 | `PHOTO_REQUIRED` | 409 | A completed profile cannot delete its only active photo. |
 | `PREMIUM_REQUIRED` | 403 | Feature requires an active Premium subscription. |
+| `MEDIA_NOT_UPLOADED` | 404 | The reserved chat object is not in S3. Message: `Uploaded media was not found.` |
+| `MEDIA_SIZE_MISMATCH` | 409 | HeadObject `ContentLength` is missing or does not equal the reserved size. |
+| `MEDIA_MIME_MISMATCH` | 409 | HeadObject `ContentType` is missing or does not equal the reserved MIME type. |
+| `STORAGE_NOT_CONFIGURED` | 500 | `AWS_REGION` or `AWS_S3_BUCKET_NAME` is missing. Message: `Photo storage is not configured.` |
+| `STORAGE_ACCESS_DENIED` | 500 | S3 denied the metadata read, including a 403 that might hide a missing key. Message: `Media storage could not be accessed.` |
+| `STORAGE_UNAVAILABLE` | 500 | S3 throttled, timed out, or otherwise failed transiently. Message: `Media storage is temporarily unavailable.` |
 | `FORBIDDEN` | 403 | Insufficient role permissions or resource access denied. |
 | `RESOURCE_NOT_FOUND` | 404 | Target entity does not exist or is soft-deleted. |
 | `USER_NOT_FOUND` | 404 | Target user profile not found. |
@@ -637,11 +647,11 @@ From login `user`, and from access-token claims:
 
 ### 11.12 What is live
 
-Live now: registration, email and phone verification, resend, login, refresh, logout, forgot-password, reset-password, the public catalog reads in section 11.13, the authenticated basic profile API in section 11.14, onboarding interests and relationship intentions in section 11.15, profile photos in section 14, dating preferences in section 12.5, location in section 12.6, onboarding status in section 12.1, onboarding completion in section 12.7, `GET /api/v1/discovery` in section 19, PASS, LIKE, SUPER LIKE, and UNDO in sections 20 and 21, and UNMATCH in section 22.2.
+Live now: registration, email and phone verification, resend, login, refresh, logout, forgot-password, reset-password, the public catalog reads in section 11.13, the authenticated basic profile API in section 11.14, onboarding interests and relationship intentions in section 11.15, profile photos in section 14, dating preferences in section 12.5, location in section 12.6, onboarding status in section 12.1, onboarding completion in section 12.7, `GET /api/v1/discovery` in section 19, PASS, LIKE, SUPER LIKE, and UNDO in sections 20 and 21, UNMATCH in section 22.2, block management in section 25, and `POST /api/v1/reports` in section 26.1.
 
 Phase 3 onboarding is complete. Phase 4 — Discovery is complete. Phase 5 slices for PASS, LIKE and match creation, SUPER LIKE, UNDO, and UNMATCH are complete. `GET /api/v1/matches` is not implemented. Rematch is not implemented. Gender and relationship-intention seed data exist. Production interests are not seeded, because the approved interest list is not defined.
 
-Not implemented: `PUT /api/v1/me/interests`, `PUT /api/v1/me/relationship-intentions`, `GET /api/v1/dating-preferences`, `PUT /api/v1/dating-preferences`, `PUT /api/v1/location`, `PATCH /api/v1/onboarding/profile`, the richer profile views in section 13, `GET /api/v1/matches`, who-liked-me, chat, notifications, subscriptions as a public API, payments, and boosts. Do not call those paths. `DELETE /api/v1/matches/:matchId` is live.
+Not implemented: `PUT /api/v1/me/interests`, `PUT /api/v1/me/relationship-intentions`, `GET /api/v1/dating-preferences`, `PUT /api/v1/dating-preferences`, `PUT /api/v1/location`, `PATCH /api/v1/onboarding/profile`, the richer profile views in section 13, `GET /api/v1/matches`, who-liked-me, notifications, subscriptions as a public API, payments, boosts, and admin report review. Do not call those paths. `DELETE /api/v1/matches/:matchId` is live. Chat routes are live where their subsection says implemented.
 
 Later sections remain the planned contract unless a subsection says it is implemented.
 
@@ -1343,7 +1353,7 @@ Photo objects returned after confirm, list, and patch are `{ "id", "url", "displ
 * **Either user has blocked the other:** `409 BLOCKED_USER`. Message: `Interaction prohibited due to an active safety block.`
 * **Caller already has an active action toward the target** (`likes.is_undone = false`, any of `LIKE`, `PASS`, or `SUPER_LIKE`): `409 ALREADY_SWIPED`. Message: `Target user has already been liked or permanently passed.` An undone row does not block a new action.
 * **The pair already has a match with `status = 'ACTIVE'`:** `409 ACTIVE_MATCH_EXISTS`. Message: `Users are already in an active mutual match.` Historical `UNDONE` and `UNMATCHED` matches do not block a new action.
-* **Premium:** an active subscription whose plan code is `PREMIUM_MONTHLY` or `PREMIUM_YEARLY`, whose status is `ACTIVE`, `PAST_DUE`, or `GRACE_PERIOD`, and whose `current_period_end` or `grace_period_end` is still in the future. There is no entitlement-feature lookup and no `entitlements` HTTP API.
+* **Premium:** an active subscription whose plan code is `PREMIUM_MONTHLY` or `PREMIUM_YEARLY`, whose status is `ACTIVE`, `PAST_DUE`, or `GRACE_PERIOD`, and whose `current_period_end` or `grace_period_end` is still in the future. There is no entitlement-feature lookup. PASS, LIKE, SUPER LIKE, and UNDO still call `hasActivePremium` directly. The read-only snapshot is `GET /api/v1/me/entitlements` in section 30.1.
 * **Free LIKE and PASS quota:** metric `DAILY_LIKE_PASS` in `usage_records`. The window is the current UTC calendar day (`period_start` at UTC midnight, `period_end` 24 hours later). The increment is atomic and stops at 10. `remainingDailyActions` is `10 - usage_count`. Premium callers do not write `usage_records` for this metric, and `remainingDailyActions` is `null`. Exhausted free quota is `429 DAILY_LIMIT_REACHED`. Message: `You have reached your daily limit of 10 likes/passes.` A failed write rolls the quota increment back with the rest of the transaction.
 * **SUPER LIKE credits** are separate. A Super Like does not increment `DAILY_LIKE_PASS`.
 
@@ -1450,7 +1460,7 @@ Photo objects returned after confirm, list, and patch are `{ "id", "url", "displ
 
 ## 22. Match APIs
 
-`GET /api/v1/matches` is not mounted. `DELETE /api/v1/matches/:matchId` is implemented in section 22.2. LIKE and SUPER LIKE insert an `ACTIVE` match and an `ACTIVE` conversation when a reciprocal `LIKE` or `SUPER_LIKE` exists. UNDO of that LIKE moves the current `ACTIVE` match to `UNDONE` and closes its `ACTIVE` conversation. UNDO leaves `unmatched_at` and `unmatched_by_user_id` null. UNMATCH is a different action: it sets `UNMATCHED` and records who ended the match. It does not change `likes`. Rematch, which would insert a later `ACTIVE` row, is not implemented. Socket.IO `match:unmatch` is not emitted.
+`GET /api/v1/matches` is not mounted. `DELETE /api/v1/matches/:matchId` is implemented in section 22.2. LIKE and SUPER LIKE insert an `ACTIVE` match and an `ACTIVE` conversation when a reciprocal `LIKE` or `SUPER_LIKE` exists. UNDO of that LIKE moves the current `ACTIVE` match to `UNDONE` and closes its `ACTIVE` conversation. UNDO leaves `unmatched_at` and `unmatched_by_user_id` null. UNMATCH is a different action: it sets `UNMATCHED` and records who ended the match. It does not change `likes`. Rematch, which would insert a later `ACTIVE` row, is not implemented. `DELETE /api/v1/matches/:matchId` does not emit Socket.IO `match:unmatch`. `POST /api/v1/blocks/:userId` emits that event after commit when the block changes an `ACTIVE` match to `UNMATCHED` and the match has a conversation. See section 25.1.
 
 ### 22.1 List Active Matches
 * **Method & Path:** `GET /api/v1/matches`
@@ -1503,7 +1513,7 @@ Photo objects returned after confirm, list, and patch are `{ "id", "url", "displ
 * **Likes:** no `likes` row is inserted, deleted, or marked undone. Reciprocal `LIKE` and `SUPER_LIKE` rows stay, with `is_undone` unchanged. UNMATCH is not UNDO.
 * **Discovery:** this route does not change the discovery query. An `UNMATCHED` match does not by itself exclude a candidate. An active outgoing `LIKE` or `SUPER_LIKE` still does. UNMATCH does not make the two users appear in discovery while those rows remain.
 * **Rematch:** not implemented. The partial unique index still allows a later new `ACTIVE` row. This endpoint does not revive the old row.
-* **Quota and Redis:** no `usage_records` write, no credit change, and no `credit_transactions` row. `Idempotency-Key` is ignored. No notification row is written and no Socket.IO event is emitted.
+* **Quota and Redis:** no `usage_records` write, no credit change, and no `credit_transactions` row. `Idempotency-Key` is ignored. No notification row is written and no Socket.IO event is emitted. Block is the route that emits `match:unmatch`. This route does not.
 * **Success Response (`200 OK`):** Message: `Unmatched successfully.`
   ```json
   {
@@ -1531,7 +1541,7 @@ Photo objects returned after confirm, list, and patch are `{ "id", "url", "displ
 * **Block:** a block in either direction omits that conversation only. The rest of the inbox is still returned. The route does not return `409 BLOCKED_USER` for the list, and it does not change the block, match, or conversation.
 * **Other participant:** `participant` is the other match user. The fields are `userId` and `firstName` only. Bio, occupation, photos, email, phone, and account flags are not returned. The route does not filter on the other account's status.
 * **Order:** `conversations.last_message_at DESC NULLS LAST`, then `conversations.id DESC`. The sort key is the stored `last_message_at`, not the preview message timestamp.
-* **Preview:** `lastMessage` is the latest non-deleted message in that conversation, ordered by `messages.created_at DESC, messages.id DESC`. A conversation with no non-deleted messages returns `lastMessage: null`. Soft-deleted rows are never returned. `content` is the stored value, including null. `mediaUrl` is `null`. `media_storage_key` is not returned.
+* **Preview:** `lastMessage` is the latest non-deleted message in that conversation, ordered by `messages.created_at DESC, messages.id DESC`. A conversation with no non-deleted messages returns `lastMessage: null`. Soft-deleted rows are never returned. `content` is the stored value, including null. `mediaUrl` is `null`. A download URL is not included; section 24.7 issues one for a single confirmed media message. `media_storage_key` is not returned.
 * **Unread count:** incoming non-deleted messages from the other participant with `read_at IS NULL`, every stored message type. The caller's own messages do not count. A conversation with no such rows returns `0`.
 * **Page:** at most `limit` conversations, after eligibility, block exclusion, and the cursor predicate. `hasMore` is true when another eligible row exists. `nextCursor` is then the base64 cursor of the last returned conversation. Otherwise `nextCursor` is `null` and `hasMore` is false. An empty inbox returns `conversations: []`.
 * **Cursor continuation:** a non-null `lastMessageAt` includes rows with an earlier `last_message_at`, rows with the same `last_message_at` and a smaller conversation id, and rows whose `last_message_at` is null. A null `lastMessageAt` includes only rows whose `last_message_at` is null and whose conversation id is smaller. The cursor does not restart at the first page.
@@ -1628,7 +1638,7 @@ Photo objects returned after confirm, list, and patch are `{ "id", "url", "displ
 * **Rows:** non-deleted messages for that conversation only, every stored `message_type`. Soft-deleted rows (`deleted_at` set) are omitted. There is no per-user hide list.
 * **Order:** `created_at DESC, id DESC`. `id` is a tie-break, not a timestamp. A cursor returns rows strictly older than `(createdAt, id)`: `created_at < cursor.createdAt OR (created_at = cursor.createdAt AND id < cursor.id)`.
 * **Page:** at most `limit` items. `hasMore` is true when another row exists. `nextCursor` is then the base64 cursor of the last returned item. Otherwise `nextCursor` is `null` and `hasMore` is false. An authorized conversation with no visible messages returns `items: []`.
-* **Read-only:** no insert, update, or delete. `read_at`, `deleted_at`, `last_message_at`, conversation status, match status, `usage_records`, and credits stay unchanged. No Socket.IO event is emitted. `media_storage_key` and other storage metadata are not returned. `mediaUrl` is `null` until a media URL resolver exists. `readAt` is the stored value. Items do not include `remainingDailyMessages`.
+* **Read-only:** no insert, update, or delete. `read_at`, `deleted_at`, `last_message_at`, conversation status, match status, `usage_records`, and credits stay unchanged. No Socket.IO event is emitted. `media_storage_key` and other storage metadata are not returned. `mediaUrl` is `null`. A participant fetches a private download URL separately, as section 24.7 describes. `readAt` is the stored value. Items do not include `remainingDailyMessages`.
 * **Success Response (`200 OK`):** Message: `Messages retrieved.`
   ```json
   {
@@ -1655,7 +1665,7 @@ Photo objects returned after confirm, list, and patch are `{ "id", "url", "displ
 ---
 
 ### 24.2 Send a Message
-**Implemented (Phase 6 Slice 2 TEXT persistence + Slice 3 free text quota).** TEXT only. This HTTP route stays persistence-only. It does not emit `chat:message:new`. Realtime send and recipient delivery are `chat:message:send` / `chat:message:new` in section 32. History retrieval is section 24.1. Read receipts are section 24.3. Media types are not implemented.
+**Implemented (Phase 6 Slice 2 TEXT persistence + Slice 3 free text quota).** TEXT only. This HTTP route stays persistence-only. It does not emit `chat:message:new`. Realtime send and recipient delivery are `chat:message:send` / `chat:message:new` in section 32. History retrieval is section 24.1. Read receipts are section 24.3. Media confirmation is section 24.6 and does not use this route.
 
 * **Method & Path:** `POST /api/v1/conversations/:conversationId/messages`
 * **Auth:** `Authorization: Bearer <accessToken>` and role `USER`. Middleware is `authenticate` and `requireRole('USER')`. `requireVerified` is not on the route. The service checks verification and returns `403 EMAIL_NOT_VERIFIED` or `403 PHONE_NOT_VERIFIED`. A non-`USER` role is `403 FORBIDDEN`.
@@ -1757,60 +1767,228 @@ Photo objects returned after confirm, list, and patch are `{ "id", "url", "displ
 
 ---
 
-## 25. Block APIs
+### 24.5 Request a Chat Media Upload URL
+**Implemented (Phase 6 media slice 1).** Issues a private S3 `PutObject` presigned URL for a future media message. This route does not confirm the upload, insert a `messages` row, change `last_message_at`, write `usage_records`, or emit a Socket.IO event. Confirmation is section 24.6. History and inbox still return `mediaUrl: null`. `POST /conversations/:conversationId/messages` and `chat:message:send` remain TEXT-only.
 
-### 25.1 Block a User
-* **Method & Path:** `POST /api/v1/blocks/:userId`
-* **Auth:** Authenticated
-* **Business Rules:**
-  * Immediately dissolves active matches, closes open conversations, and permanently isolates both profiles from discovery queues.
-* **Success Response (`200 OK`):**
+* **Method & Path:** `POST /api/v1/conversations/:conversationId/media-upload-url`
+* **Auth:** `Authorization: Bearer <accessToken>` and role `USER`. Middleware is `authenticate`, `requireRole('USER')`, conversation-id validation, then strict body validation. `requireVerified` is not on the route. The service checks verification and returns `403 EMAIL_NOT_VERIFIED` or `403 PHONE_NOT_VERIFIED`. A non-`USER` role is `403 FORBIDDEN`.
+* **Incomplete caller:** `400 PROFILE_INCOMPLETE`, same discovery rule as send. Message: `Onboarding is incomplete.`
+* **Path `conversationId`:** required UUID. A bad value is `400 VALIDATION_ERROR`. Message: `Validation failed`. `details` is `[{ "field": "conversationId", "message": "Conversation id must be a valid UUID." }]`.
+* **Body:** strict JSON with exactly `mediaType`, `mimeType`, and `fileSizeBytes`. Unknown properties, including `storageKey`, `caption`, `filename`, `senderId`, and `uploadId`, are `400 VALIDATION_ERROR`.
+* **Allowed combinations:**
+
+| mediaType | mimeType | fileSizeBytes |
+| :--- | :--- | :--- |
+| `IMAGE` | `image/jpeg`, `image/png`, `image/webp` | integer 1–10485760 |
+| `GIF` | `image/gif` | integer 1–15728640 |
+| `VIDEO` | `video/mp4`, `video/webm` | integer 1–52428800 |
+| `VOICE` | `audio/mpeg`, `audio/mp4`, `audio/ogg`, `audio/webm`, `audio/wav` | integer 1–10485760 |
+
+  A MIME type that does not belong to the selected `mediaType`, a size of 0, a negative size, a decimal, a non-numeric size, and a size one byte over the type maximum are `400 VALIDATION_ERROR`.
+* **Who can request a URL:** either participant of an `ACTIVE` match with an `ACTIVE` conversation. The client does not send `senderId`.
+* **Not found:** `404 RESOURCE_NOT_FOUND`. Message: `Resource not found`. Covers a missing conversation, a non-participant, and an `ACTIVE` conversation whose match is not `ACTIVE`.
+* **Closed conversation:** `404 CONVERSATION_CLOSED`. Message: `Conversation is closed due to unmatch or safety block.`
+* **Block:** either direction returns `409 BLOCKED_USER`. Message: `Interaction prohibited due to an active safety block.`
+* **Premium:** `hasActivePremium` runs inside a Sequelize transaction after the same user, match, and conversation lock order used by TEXT send. A caller without an active Premium subscription receives `403 PREMIUM_REQUIRED`. Message: `Feature requires an active Premium subscription.` There is no `CHAT_MEDIA` entitlement lookup. The route does not call `incrementDailyTextMessages`.
+* **Locks and external calls:** the authorization transaction commits before the presign and the Redis write. Those calls do not hold row locks. A conversation can close, a block can appear, or Premium can lapse after the URL is issued. A future confirmation endpoint must authorize again before it persists a message.
+* **Object key:** server-generated `chat-media/{conversationId}/{uploadId}`. Both ids are server UUIDs. The key is not under `photos/`, has no client filename, and is not forced to `.webp`. It fits `messages.media_storage_key` (`VARCHAR(512)`). No public ACL.
+* **Presign:** existing private `PutObject` signer, 300 seconds, `ContentType` set to the declared MIME type. The installed signer does not enforce `fileSizeBytes` and does not cryptographically bind `Content-Type`. The declared size and MIME type are stored on the reservation for a future check. This route does not prove the uploaded bytes.
+* **Reservation:** Redis key `chat-media:upload:{uploadId}`, JSON, TTL 300 seconds. The payload binds `uploadId`, `userId`, `conversationId`, `storageKey`, `mediaType`, `mimeType`, and `fileSizeBytes`. The reservation is not deleted on success. Signing failure does not write a reservation. A reservation write failure does not return a URL, and a cleanup failure does not replace that error.
+* **Not in this slice:** no confirm route, no media message row, no download URL, no socket media event, and no change to TEXT send.
+* **Success Response (`200 OK`):** Message: `Upload URL created.`
   ```json
   {
     "success": true,
-    "data": { "blocked": true, "targetUserId": "c3e7d81b..." },
+    "data": {
+      "uploadId": "upload-uuid-1",
+      "uploadUrl": "https://example-bucket.s3.amazonaws.com/chat-media/conversation-uuid/upload-uuid-1?X-Amz-...",
+      "storageKey": "chat-media/conversation-uuid/upload-uuid-1",
+      "expiresInSeconds": 300
+    },
+    "message": "Upload URL created."
+  }
+  ```
+  `data` does not include a message id, `mediaUrl`, `remainingDailyMessages`, the bucket name, MIME type, or file size. `storageKey` identifies the private object. Confirmation does not accept it back. The server reads the key from the reservation.
+
+---
+
+### 24.6 Confirm a Chat Media Upload
+**Implemented (Phase 6 media slice 2).** Confirms a reserved private object and inserts one media message. No caption, download URL, malware scan, or transcoding. `HeadObject` checks stored metadata only. It does not prove the bytes match the MIME type. `POST /conversations/:conversationId/messages` and `chat:message:send` stay TEXT-only and HTTP TEXT still does not emit.
+
+* **Method & Path:** `POST /api/v1/conversations/:conversationId/media-confirm`
+* **Auth:** `Authorization: Bearer <accessToken>` and role `USER`. Middleware is `authenticate`, `requireRole('USER')`, conversation-id validation, then strict body validation. Verification is checked in the service: `403 EMAIL_NOT_VERIFIED` or `403 PHONE_NOT_VERIFIED`. A non-`USER` role is `403 FORBIDDEN`.
+* **Incomplete caller:** `400 PROFILE_INCOMPLETE`. Message: `Onboarding is incomplete.`
+* **Path `conversationId`:** required UUID. A bad value is `400 VALIDATION_ERROR` with field `conversationId`.
+* **Body:** strict JSON with exactly `uploadId`, a UUID. It is lowercased before use. Unknown properties, including `storageKey`, `mimeType`, `fileSizeBytes`, `senderId`, `filename`, and `caption`, are `400 VALIDATION_ERROR`.
+* **Reservation:** Redis `chat-media:upload:{uploadId}`. It must be JSON with a matching upload id, caller, and conversation, the canonical key `chat-media/{conversationId}/{uploadId}`, and a `mediaType`, `mimeType`, and `fileSizeBytes` allowed by the section 24.5 allowlist. A missing, expired, malformed, or mismatched reservation does not call S3. The response is `404 RESOURCE_NOT_FOUND`, message `Resource not found`, unless a matching media row already exists for this caller, conversation, and canonical key.
+* **S3:** `HeadObject` on the private bucket and canonical key, before the database transaction. `ContentLength` must be an integer equal to `fileSizeBytes`. `ContentType` must equal `mimeType`. A smaller size is still a mismatch. Missing length is `409 MEDIA_SIZE_MISMATCH`. Missing or different type is `409 MEDIA_MIME_MISMATCH`. A 404 / `NotFound` is `404 MEDIA_NOT_UPLOADED`, message `Uploaded media was not found.` A 403 / `AccessDenied` is `500 STORAGE_ACCESS_DENIED` and is not treated as a missing object. Other provider failures are `500 STORAGE_UNAVAILABLE`. Missing bucket configuration stays `500 STORAGE_NOT_CONFIGURED`. Provider text is not returned. Failures leave the reservation in place.
+* **Reauthorization:** one transaction, same lock order as TEXT send: non-locking load, `lockLikeUsers`, lock match, lock conversation, re-read. Closed conversation: `404 CONVERSATION_CLOSED`. Inactive or missing match, or a non-participant: `404 RESOURCE_NOT_FOUND`. Either-direction block: `409 BLOCKED_USER`. `hasActivePremium` inside the transaction. A lapsed Premium subscription is `403 PREMIUM_REQUIRED`, message `Feature requires an active Premium subscription.` This route does not call `incrementDailyTextMessages`.
+* **Insert:** `messages.id` is the upload id. `content` is null. `media_storage_key` is the canonical key. `media_mime_type` and `media_file_size` are the verified S3 values. `read_at` is null. `last_message_at` is set to the new row's `created_at` in the same transaction. No migration. The primary key is the idempotency constraint.
+* **Replay:** `200 OK` with the same message body when the row already belongs to this caller, conversation, and canonical key. No second insert, no `last_message_at` write, and no socket event. A primary-key race reloads after rollback. If that row matches, the response is `200`. If it does not match, `404 RESOURCE_NOT_FOUND`. If the winning row is not visible yet, `409 CONFLICT`, message `Media confirmation is already in progress.` That is not `IDEMPOTENCY_CONFLICT`.
+* **Redis:** the reservation is deleted only after a new commit. Deletion failure still returns `201`. It is not deleted when S3 or the transaction fails. An orphaned private object can remain. This slice does not delete S3 objects.
+* **Realtime:** after a new commit, `chat:message:new` goes to `user:{recipientUserId}` only. Payload is `id`, `conversationId`, `senderId`, `messageType`, `content` (`null`), and `createdAt`. No storage key, MIME type, file size, or URL. Delivery is best-effort after commit and is not exactly once. A missing Socket.IO server does not fail the HTTP response. Replays do not emit. HTTP TEXT send still does not emit.
+* **Success (`201 Created` for a new row, `200 OK` for a replay):** Message: `Message sent.`
+  ```json
+  {
+    "success": true,
+    "data": {
+      "id": "upload-uuid-1",
+      "conversationId": "conversation-uuid",
+      "senderId": "caller-uuid",
+      "messageType": "IMAGE",
+      "content": null,
+      "mediaUrl": null,
+      "readAt": null,
+      "createdAt": "2026-10-13T08:42:00.000Z"
+    },
+    "message": "Message sent."
+  }
+  ```
+  `messageType` is `IMAGE`, `GIF`, `VIDEO`, or `VOICE`. `data` has no `remainingDailyMessages`, storage key, MIME type, file size, or URL. History, inbox, and `chat:message:new` still omit the download URL. A participant fetches one with section 24.7.
+
+---
+
+### 24.7 Request a Chat Media Download URL
+**Implemented (Phase 6 media slice 3).** Signs a private S3 `GetObject` URL for one already confirmed media message. The route does not call `HeadObject`, insert or update a message, change `read_at`, `deleted_at`, or `last_message_at`, write `usage_records` or credits, write Redis, or emit a Socket.IO event. History, inbox, confirmation, and `chat:message:new` still leave `mediaUrl` unset.
+
+* **Method & Path:** `GET /api/v1/conversations/:conversationId/messages/:messageId/media-download-url`
+* **Auth:** `Authorization: Bearer <accessToken>` and role `USER`. Middleware is `authenticate`, `requireRole('USER')`, then path, query, and empty-body validation. `requireVerified` is not on the route. The service checks verification and returns `403 EMAIL_NOT_VERIFIED` or `403 PHONE_NOT_VERIFIED`. A non-`USER` role is `403 FORBIDDEN`.
+* **Incomplete caller:** `400 PROFILE_INCOMPLETE`, same discovery rule as history. Message: `Onboarding is incomplete.`
+* **Path:** `conversationId` and `messageId` are required UUIDs. They are lowercased before use. A bad `conversationId` is `400 VALIDATION_ERROR` with field `conversationId`, and that check runs before the message id and before query parameters. A bad `messageId` uses field `messageId` and message `Message id must be a valid UUID.`
+* **Query:** none. Any query parameter is `400 VALIDATION_ERROR`. Detail field is the parameter name. Message: `Unsupported query parameter.`
+* **Body:** none. A JSON object must be empty. Unknown properties, including `storageKey`, `uploadId`, `mimeType`, `fileSizeBytes`, `senderId`, and `filename`, are `400 VALIDATION_ERROR`. The client cannot supply an object key.
+* **Who can download:** either participant, using the same rules as section 24.1. The client does not send `senderId`. The sender and the recipient are both allowed. The other account's status and profile are not checked.
+* **Not found:** `404 RESOURCE_NOT_FOUND`. Message: `Resource not found`. Covers a missing conversation, a non-participant, an `ACTIVE` conversation whose match is not `ACTIVE`, a missing message, a soft-deleted message, a message from another conversation, a `TEXT` message, a missing `media_storage_key`, and a key other than the canonical key below. Those cases share one response. It does not reveal whether the message exists.
+* **Closed conversation:** a participant can download retained media when `conversations.status = 'CLOSED'`, including after unmatch or undo, unless a block exists. The route does not return `CONVERSATION_CLOSED` and does not reopen the conversation or match.
+* **Block:** either direction returns `409 BLOCKED_USER`, including when the conversation is `CLOSED`. Message: `Interaction prohibited due to an active safety block.` Authorization runs before the message lookup.
+* **Premium:** not checked. Upload and confirmation still require `hasActivePremium` at those calls. A free recipient can download. A sender or recipient whose Premium lapses after confirmation can still download. This route does not call `incrementDailyTextMessages`.
+* **Canonical key:** the server signs only `chat-media/{conversationId}/{messageId}`, rebuilt from the validated ids with the same builder confirmation uses. The stored `media_storage_key` must equal that string. A different stored value is not signed.
+* **Presign:** existing private `GetObject` signer, 3600 seconds. No ACL, no `HeadObject`, and no Redis cache. The URL is a bearer secret until it expires. Signing does not prove the object still exists. Missing bucket configuration is `500 STORAGE_NOT_CONFIGURED`, message `Photo storage is not configured.` Any other signer failure is `500 STORAGE_UNAVAILABLE`, message `Media storage is temporarily unavailable.` Provider text, credentials, the bucket, and the URL are not returned.
+* **Read-only:** no insert, update, or delete. Repeated calls sign again and can return a different URL string. Each URL is valid for 3600 seconds from its own signing. `read_at`, `deleted_at`, `last_message_at`, conversation status, match status, `usage_records`, and credits stay unchanged. No Socket.IO event is emitted.
+* **Success Response (`200 OK`):** Message: `Download URL created.`
+  ```json
+  {
+    "success": true,
+    "data": {
+      "downloadUrl": "https://example-bucket.s3.amazonaws.com/chat-media/conversation-uuid/message-uuid?X-Amz-...",
+      "expiresInSeconds": 3600
+    },
+    "message": "Download URL created."
+  }
+  ```
+  `data` is exactly those two fields. It does not include the storage key, bucket, MIME type, or file size.
+
+---
+
+## 25. Block APIs
+
+**Implemented.** These routes create, list, and delete the caller's outgoing `blocks` rows. Either direction already excludes discovery and rejects like, pass, super-like, and chat. This feature does not change those checks. Report submission is section 26.1 and does not change these checks. No migration was added.
+
+A block does not require verification, a complete profile, location, dating preferences, or Premium. `authenticate` still rejects a missing token, an invalid token, a deleted account, a suspended account, and a banned account before the handler runs.
+
+### 25.1 Block a User
+* **Method & Path:** `POST /api/v1/blocks/:userId`
+* **Auth:** `Authorization: Bearer <accessToken>` and role `USER`. Middleware is `authenticate`, `requireRole('USER')`, path validation, empty-query validation, then strict empty-body validation. `requireVerified` is not on the route. The service does not check verification or `PROFILE_INCOMPLETE`. A non-`USER` role is `403 FORBIDDEN`.
+* **Path `userId`:** required UUID. It is lowercased before use. A bad value is `400 VALIDATION_ERROR`. Message: `Validation failed`. `details` is `[{ "field": "userId", "message": "User id must be a valid UUID." }]`.
+* **Query:** none. Any query parameter is `400 VALIDATION_ERROR`. Detail field is the parameter name. Message: `Unsupported query parameter.`
+* **Body:** none. A JSON object must be empty. Any property, including `reason`, is `400 VALIDATION_ERROR`. `blocks.reason` is stored as `null`. `Idempotency-Key` is ignored. No Redis key is written.
+* **Self-block:** `400 SELF_INTERACTION`. Message: `You cannot block your own profile.` This is rejected before locks and before insert. `chk_blocks_no_self_block` remains the database backstop.
+* **Target:** the user row must exist and must not be soft-deleted or `status = 'DELETED'`. Otherwise `404 USER_NOT_FOUND`. Message: `Target user profile not found.` A suspended, banned, unverified, or incomplete target can be blocked. Discovery eligibility is not required.
+* **Duplicate:** a second outgoing row for the same ordered pair is `409 CONFLICT`. Message: `User is already blocked.` The check runs after `lockLikeUsers`. `uq_blocks_pair` is caught in the service and returns the same error. The raw constraint text is not returned. A duplicate does not change a match or conversation and does not emit a socket event.
+* **Transaction:** one Sequelize transaction. `lockLikeUsers` locks both users in canonical id order first. The service then locks the pair's `ACTIVE` match and its conversation with the existing `FOR UPDATE` helpers and re-reads them. It inserts `blocker_id = caller` and `blocked_id = target`. If that match is still `ACTIVE`, it becomes `UNMATCHED`, with `unmatched_at` and `updated_at` set to `CURRENT_TIMESTAMP` and `unmatched_by_user_id` set to the caller. The update runs only while `status = 'ACTIVE'`. `UNDONE` and already `UNMATCHED` rows stay unchanged, including their `unmatched_at` and `unmatched_by_user_id`.
+* **Conversation:** when that transition happens and the match has an `ACTIVE` conversation, `closeActiveConversation` sets it to `CLOSED` and sets `closed_at`. `last_message_at` and messages stay. An already `CLOSED` conversation keeps its existing `closed_at` and `last_message_at`. A match with no conversation row still becomes `UNMATCHED`. A block with no `ACTIVE` match still inserts the row and returns `200`.
+* **Likes and other writes:** no `likes` row is inserted, deleted, or marked undone. Messages stay. No `usage_records`, credit, `credit_transactions`, or `notifications` row is written.
+* **Realtime:** after the transaction commits, and only when this request changed an `ACTIVE` match to `UNMATCHED` and that match has a conversation id, the server emits `match:unmatch` to `user:{blockedUserId}` only. The payload is exactly `{ "matchId", "conversationId" }`. The caller's room does not receive it. An already closed conversation still supplies the id, so that case emits. No conversation row, no `ACTIVE` match, a duplicate, a rollback, `GET`, and `DELETE` do not emit. `DELETE /api/v1/matches/:matchId` still does not emit this event. A missing Socket.IO server, or a throw from delivery, does not fail the HTTP response or roll back the commit. There is no conversation room to leave.
+* **Discovery and chat after the row exists:** either direction excludes the pair from discovery and makes like, pass, and super-like return `409 BLOCKED_USER`. Send on the closed thread returns `404 CONVERSATION_CLOSED` because the existing send path sees the closed conversation before the block check. History, read, unread count, and conversation details return `409 BLOCKED_USER`. The inbox omits that conversation.
+* **Success Response (`200 OK`):** Message: `User blocked successfully.`
+  ```json
+  {
+    "success": true,
+    "data": { "blocked": true, "targetUserId": "c3e7d81b-9932-4233-812c-6f5e39482130" },
     "message": "User blocked successfully."
   }
   ```
+  `targetUserId` is the lowercased path id. The body does not include `reason`, match id, conversation id, or profile fields.
 
 ---
 
 ### 25.2 List Blocked Users
 * **Method & Path:** `GET /api/v1/blocks`
-* **Auth:** Authenticated
-* **Success Response (`200 OK`):** Returns list of blocked accounts.
+* **Auth:** same as section 25.1. No path parameter.
+* **Query:** none. Any query parameter is `400 VALIDATION_ERROR`, with the same unsupported-parameter detail as section 25.1.
+* **Body:** none. A non-empty JSON object is `400 VALIDATION_ERROR`.
+* **Rows:** `blocker_id` is the caller. Incoming blocks, where the caller is `blocked_id`, are not returned. Another user's blocks are not returned.
+* **Order:** `created_at DESC`, then `id DESC`.
+* **Fields:** each item is `userId` (`blocked_id`) and `createdAt`. Names, photos, email, phone, and `reason` are not returned. There is no cursor and no `limit`.
+* **Read-only:** no insert, update, delete, or Socket.IO event.
+* **Success Response (`200 OK`):** Message: `Blocked users retrieved.`
+  ```json
+  {
+    "success": true,
+    "data": [
+      {
+        "userId": "c3e7d81b-9932-4233-812c-6f5e39482130",
+        "createdAt": "2026-10-14T04:30:00.000Z"
+      }
+    ],
+    "message": "Blocked users retrieved."
+  }
+  ```
+  An empty list is `data: []`.
 
 ---
 
 ### 25.3 Unblock a User
 * **Method & Path:** `DELETE /api/v1/blocks/:userId`
-* **Auth:** Authenticated
-* **Success Response (`200 OK`):** Removes block record.
+* **Auth:** same as section 25.1.
+* **Path, query, and body:** same validation as section 25.1. `Idempotency-Key` is ignored.
+* **Delete:** one transaction removes the row where `blocker_id` is the caller and `blocked_id` is the lowercased path id. The reverse row is left in place. A missing outgoing row, a reverse-only row, and an unknown id all return `404 RESOURCE_NOT_FOUND`. Message: `Resource not found.` The response does not reveal that an incoming block exists. The target user is not loaded, so a missing user and a missing row share this 404.
+* **State left behind:** matches, conversations, likes, and messages are not updated. An `UNMATCHED` match stays `UNMATCHED`. A `CLOSED` conversation stays `CLOSED`. No new match is inserted. Rematch is not implemented. No Socket.IO event is emitted.
+* **Discovery after delete:** this direction no longer excludes the pair. The other direction still does if that row remains. An active outgoing like, pass, or super-like still excludes the target. When no block remains in either direction and no active outgoing action remains, discovery can return the other user again.
+* **Success Response (`200 OK`):** Message: `User unblocked successfully.`
+  ```json
+  {
+    "success": true,
+    "data": { "blocked": false, "targetUserId": "c3e7d81b-9932-4233-812c-6f5e39482130" },
+    "message": "User unblocked successfully."
+  }
+  ```
 
 ---
 
 ## 26. Report APIs
 
+**Implemented for submission only.** `POST /api/v1/reports` inserts one `PENDING` row. Listing, review, and resolution are section 31.2 and are not mounted. A report does not block the target, change a match or conversation, change likes or messages, write `usage_records` or credits, change discovery eligibility, write `notifications`, or emit a Socket.IO event. No migration was added. There is no rate limit on this route.
+
+A report does not require verification, a complete profile, location, dating preferences, or Premium. `authenticate` still rejects a missing token, an invalid token, a deleted account, a suspended account, and a banned account before the handler runs.
+
 ### 26.1 Report User Misconduct
 * **Method & Path:** `POST /api/v1/reports`
-* **Auth:** Authenticated
-* **Request Body:**
-  ```json
-  {
-    "reportedUserId": "c3e7d81b-9932-4233-812c-6f5e39482130",
-    "reason": "INAPPROPRIATE_CONTENT",
-    "description": "User posted offensive content in chat."
-  }
-  ```
-* **Validation:** `reason` in `['FAKE_PROFILE', 'HARASSMENT', 'SPAM', 'INAPPROPRIATE_CONTENT', 'SCAM', 'OTHER']`.
-* **Success Response (`201 Created`):**
+* **Auth:** `Authorization: Bearer <accessToken>` and role `USER`. Middleware is `authenticate`, `requireRole('USER')`, empty-query validation, then strict body validation. `requireVerified` is not on the route. The service does not check verification or `PROFILE_INCOMPLETE`. A non-`USER` role is `403 FORBIDDEN`. A missing token is `401 AUTH_REQUIRED`.
+* **Query:** none. Any query parameter is `400 VALIDATION_ERROR`. Detail field is the parameter name. Message: `Unsupported query parameter.`
+* **Body:** strict JSON. The fields are `reportedUserId`, `reason`, and optional `description`. Unknown properties, including `status`, `adminNotes`, `resolvedBy`, `resolvedAt`, `resolvedById`, and `reporterId`, are `400 VALIDATION_ERROR`. The caller cannot set status or resolution fields. `Idempotency-Key` is ignored. No Redis key is written.
+* **`reportedUserId`:** required UUID. It is lowercased before use. A missing value is `400 VALIDATION_ERROR` with detail field `reportedUserId` and message `Reported user id is required.` A non-string or malformed value uses message `Reported user id must be a valid UUID.`
+* **`reason`:** required, one of `FAKE_PROFILE`, `HARASSMENT`, `SPAM`, `INAPPROPRIATE_CONTENT`, `SCAM`, `OTHER`. A missing value is `400 VALIDATION_ERROR` with detail field `reason` and message `Reason is required.` Any other value uses message `Reason must be a valid report reason.`
+* **`description`:** optional string. There is no report-specific character limit. The column is `TEXT`, and the migration has no length check. The existing JSON body limit of 100kb still applies to the whole request. A non-string value is `400 VALIDATION_ERROR` with detail field `description` and message `Description must be a string.` Stored text is trimmed. An omitted, empty, or whitespace-only description is stored as `null` unless the reason is `OTHER`.
+* **`OTHER`:** the trimmed description must be non-empty. An omitted, empty, or whitespace-only description is `400 VALIDATION_ERROR`. Detail field: `description`. Message: `A description is required when the reason is OTHER.`
+* **Self-report:** `400 SELF_INTERACTION`. Message: `You cannot report your own profile.` This is rejected before the target lookup and before insert. The `reports` table has no self-report check constraint.
+* **Target:** the user row must exist and must not be soft-deleted or `status = 'DELETED'`. Otherwise `404 USER_NOT_FOUND`. Message: `Target user profile not found.` A suspended, banned, unverified, or incomplete target can be reported. Discovery eligibility is not required. The response does not include the target profile.
+* **Duplicates:** allowed. There is no unique pair constraint. A second report for the same caller and target inserts another `PENDING` row.
+* **Transaction:** one Sequelize transaction. The service re-reads the target, then inserts one row. `reporter_id` is the caller. `reported_user_id` is the lowercased target. `reason` is the validated reason. `description` is the trimmed text, or `null`. `status` is `PENDING`. `admin_notes`, `resolved_by`, and `resolved_at` are null. `created_at` and `updated_at` are set together in that insert.
+* **Unchanged:** blocks, matches, conversations, likes, messages, `usage_records`, credits, and `credit_transactions`. Discovery still does not use `reports` as an exclusion.
+* **Confidentiality:** no `notifications` row is written. No Socket.IO event is emitted. The success body does not include the reporter id, the target profile, admin notes, or resolution metadata.
+* **Success Response (`201 Created`):** Message: `Report submitted. Our safety team will review it.`
   ```json
   {
     "success": true,
-    "data": { "reportId": "rep-uuid-1", "status": "PENDING" },
+    "data": {
+      "reportId": "c3e7d81b-9932-4233-812c-6f5e39482130",
+      "status": "PENDING"
+    },
     "message": "Report submitted. Our safety team will review it."
   }
   ```
+  `data` is exactly `reportId` and `status`. `reportId` is the new `reports.id`. `status` is always `PENDING`.
 
 ---
 
@@ -1997,9 +2175,19 @@ Photo objects returned after confirm, list, and patch are `{ "id", "url", "displ
 
 ## 30. Entitlement & Usage APIs
 
+Section **30.1** is mounted. Section **30.2** is not. This slice does not add `entitlements.service.ts` methods for other modules. PASS, LIKE, SUPER LIKE, UNDO, and chat media still call `hasActivePremium` in `likes.data-access.ts`.
+
 ### 30.1 Get Current User Entitlements
 * **Method & Path:** `GET /api/v1/me/entitlements`
-* **Auth:** Authenticated
+* **Status:** Implemented. Read-only. No migration.
+* **Auth:** `Authorization: Bearer <accessToken>` and `requireRole('USER')`. `requireVerified` is not applied. A completed profile is not required. An unverified `USER` may call this route. A missing token is `401 AUTH_REQUIRED`. An `ADMIN` is `403 FORBIDDEN`. Suspended and banned accounts are rejected by authentication middleware.
+* **Query:** any query parameter is `400 VALIDATION_ERROR`. Detail field is the parameter name and the message is `Unsupported query parameter.`
+* **Body:** not accepted. A JSON property is `400 VALIDATION_ERROR`.
+* **Premium predicate:** the route calls the existing `hasActivePremium` and does not define a second one. Premium is a `subscriptions` row joined to `plans` where `plans.code` is `PREMIUM_MONTHLY` or `PREMIUM_YEARLY`, `subscriptions.status` is `ACTIVE`, `PAST_DUE`, or `GRACE_PERIOD`, and `current_period_end > now` **or** `grace_period_end > now`. The status does not choose which timestamp applies. A null `grace_period_end` does not satisfy the grace comparison. `plans.is_active` and `plan_features` are not read.
+* **Tier:** `PREMIUM` when that predicate is true, otherwise `FREE`. No subscription, a non-Premium plan code, an elapsed `current_period_end` together with a null or elapsed `grace_period_end`, and status `CANCELED` or `EXPIRED` are `FREE`.
+* **Unresolved cancellation conflict:** section 28.3 still says a canceled subscription keeps Premium until `currentPeriodEnd`. The live predicate excludes `CANCELED` and `EXPIRED` even when those timestamps are in the future. This endpoint follows the live predicate. It does not change cancellation behavior.
+* **Capability flags:** `unlimitedSwipes`, `undoAction`, `chatMedia`, and `seeWhoLikedYou` equal the Premium result. `advancedFilters`, `adFree`, and `priorityVisibility` are `false` for both tiers. Those three behaviors are not implemented. Premium does not grant priority discovery ranking.
+* **Credits:** `credits.superLikeBalance` is the stored `user_credit_balances.balance` where `credit_type = 'SUPER_LIKE'`. `credits.boostBalance` is the stored balance where `credit_type = 'BOOST'`. A missing row is `0`. Balances are integers. The route does not insert, update, or delete a balance, a subscription, a usage row, or a credit transaction.
 * **Success Response (`200 OK`):**
   ```json
   {
@@ -2009,19 +2197,21 @@ Photo objects returned after confirm, list, and patch are `{ "id", "url", "displ
       "features": {
         "unlimitedSwipes": true,
         "seeWhoLikedYou": true,
-        "advancedFilters": true,
+        "advancedFilters": false,
         "undoAction": true,
         "chatMedia": true,
-        "adFree": true,
-        "priorityVisibility": true
+        "adFree": false,
+        "priorityVisibility": false
       },
       "credits": {
         "boostBalance": 2,
         "superLikeBalance": 5
       }
-    }
+    },
+    "message": "Entitlements retrieved."
   }
   ```
+  A Free caller uses `"tier": "FREE"` and `false` for every feature flag. Missing credit rows use `0` for both balances.
 
 ---
 
@@ -2061,6 +2251,7 @@ Photo objects returned after confirm, list, and patch are `{ "id", "url", "displ
   * Body: `{ "status": "SUSPENDED", "reason": "Terms violation" }`
 
 ### 31.2 Moderation & Reports
+**Not implemented.** `POST /api/v1/reports` in section 26.1 can insert `PENDING` rows. These admin routes are not mounted.
 * **List Reports Queue:** `GET /api/v1/admin/reports?status=PENDING&page=1&limit=20`
 * **Get Report Details:** `GET /api/v1/admin/reports/:reportId`
 * **Resolve Report:** `PATCH /api/v1/admin/reports/:reportId`
@@ -2080,7 +2271,7 @@ Photo objects returned after confirm, list, and patch are `{ "id", "url", "displ
 
 ## 32. Realtime / Socket.IO Events Specification
 
-**Phase 6 Slices 1, 4, 6, and 7 cover the socket foundation, TEXT send/receive, read receipts, and typing indicators.** Socket.IO is attached to the Express HTTP server with `@socket.io/redis-adapter`. `chat:message:send` persists through `chat.service.sendTextMessage` and then emits `chat:message:new` to the recipient user room. HTTP `POST /api/v1/conversations/:conversationId/messages` does not emit that event. `PATCH /api/v1/conversations/:conversationId/read` emits `chat:message:read` to the other participant's user room after commit, and only when at least one incoming message was newly marked. `GET /api/v1/conversations/:conversationId/unread-count` does not emit a count event and does not change `chat:message:new` or `chat:message:read`. `chat:typing:start` and `chat:typing:stop` relay an ephemeral indicator to that same personal room. Conversation rooms are not joined. `DELETE /api/v1/matches/:matchId` still does not emit `match:unmatch`. HTTP routes keep working when Socket.IO did not start.
+**Phase 6 Slices 1, 4, 6, and 7 cover the socket foundation, TEXT send/receive, read receipts, and typing indicators.** Socket.IO is attached to the Express HTTP server with `@socket.io/redis-adapter`. `chat:message:send` persists through `chat.service.sendTextMessage` and then emits `chat:message:new` to the recipient user room. HTTP `POST /api/v1/conversations/:conversationId/messages` does not emit that event. HTTP `POST /api/v1/conversations/:conversationId/media-confirm` emits it after a new media row commits, and does not emit it for a replay. `PATCH /api/v1/conversations/:conversationId/read` emits `chat:message:read` to the other participant's user room after commit, and only when at least one incoming message was newly marked. `GET /api/v1/conversations/:conversationId/unread-count` does not emit a count event and does not change `chat:message:new` or `chat:message:read`. `chat:typing:start` and `chat:typing:stop` relay an ephemeral indicator to that same personal room. Conversation rooms are not joined. `DELETE /api/v1/matches/:matchId` still does not emit `match:unmatch`. `POST /api/v1/blocks/:userId` emits it after commit when that request changes an `ACTIVE` match to `UNMATCHED` and the match has a conversation. The target is `user:{blockedUserId}` only. HTTP routes keep working when Socket.IO did not start.
 
 ### 32.0 Implemented foundation
 * **Handshake:** Client connects with `auth: { token: "<access JWT>" }`. The token is the same access JWT used by HTTP `Authorization: Bearer`. Refresh tokens are not accepted.
@@ -2088,14 +2279,14 @@ Photo objects returned after confirm, list, and patch are `{ "id", "url", "displ
 * **Socket identity:** Successful handshakes store the live `AuthenticatedUser` on `socket.data.user`. `chat:message:send` uses `socket.data.user.id` as the sender. Unverified or incomplete profiles may connect. The send path reloads the user before it calls the chat service.
 * **User room:** On connect the server joins exactly `user:{userId}` from `socket.data.user.id`. The client cannot choose the room. Conversation rooms are not joined, and there is no conversation-room join event.
 * **Redis:** Socket.IO requires Redis for the adapter. Production fails startup if Redis or the adapter cannot initialize. Development can keep serving HTTP without Socket.IO when Redis is unavailable. Redis is not a message store, a quota store, or a chat idempotency store.
-* **Not in this slice:** No client `chat:message:read` command, no conversation-room join, no media uploads, no offline replay, and no notification or match socket emissions. Read receipts are the HTTP route in section 24.3. That route emits the server event below. It does not add a client listener. Typing indicators are section 32.4.
+* **Not in this slice:** No client `chat:message:read` command, no conversation-room join, no media Socket.IO upload or delivery, no offline replay, and no notification emissions. Block emits `match:unmatch` as section 25.1 describes. Chat handlers in this section do not emit it. Chat media upload URL issuance is the HTTP route in section 24.5. It does not emit a socket event. Confirmation and media-message persistence are not implemented. Read receipts are the HTTP route in section 24.3. That route emits the server event below. It does not add a client listener. Typing indicators are section 32.4.
 
 ### 32.1 Server $\rightarrow$ Client Events
 | Event Name | Room / Target | Payload Structure | Trigger Condition | Status |
 | :--- | :--- | :--- | :--- | :--- |
 | `match:new` | `user:{userId}` | `{"matchId": "...", "matchedUser": { "id": "...", "firstName": "Jordan", "photos": [...] }, "matchedAt": "..."}` | Reciprocal like establishes active match. | Planned |
-| `match:unmatch` | `user:{userId}` | `{"matchId": "...", "conversationId": "..."}` | Participant unmatches or block is triggered. | Planned |
-| `chat:message:new` | `user:{recipientUserId}` | `{"id": "...", "conversationId": "...", "senderId": "...", "messageType": "TEXT", "content": "...", "createdAt": "..."}` | `chat:message:send` committed a TEXT message. Recipient sockets only. | Implemented |
+| `match:unmatch` | `user:{blockedUserId}` | `{"matchId": "...", "conversationId": "..."}` | `POST /api/v1/blocks/:userId` committed a change from `ACTIVE` to `UNMATCHED` and that match has a conversation. The blocked user's sockets only. Not emitted to the blocker, on rollback, on duplicate, on `GET` or `DELETE`, or when there is no conversation. `DELETE /api/v1/matches/:matchId` does not emit it. Delivery after commit is best-effort. | Implemented |
+| `chat:message:new` | `user:{recipientUserId}` | `{"id": "...", "conversationId": "...", "senderId": "...", "messageType": "TEXT", "content": "...", "createdAt": "..."}` | `chat:message:send` committed a TEXT message, or media confirmation committed a new media row (`content` is `null`). Recipient sockets only. Delivery after commit is best-effort. | Implemented |
 | `chat:message:read`| `user:{otherParticipantId}`| `{"conversationId": "...", "readerId": "...", "readAt": "..."}` | `PATCH /conversations/:conversationId/read` committed at least one newly read incoming message. The other participant's sockets only. Not emitted when no row changed, or when the request fails. | Implemented |
 | `chat:typing:start` | `user:{otherParticipantId}` | `{"conversationId": "...", "senderId": "..."}` | A socket became the active typist for that conversation. Recipient sockets only. Repeated starts from the same socket do not emit again. | Implemented |
 | `chat:typing:stop` | `user:{otherParticipantId}` | `{"conversationId": "...", "senderId": "..."}` | That socket stopped, timed out, disconnected, switched conversations, or failed a later authorization check. Recipient sockets only. Emitted once for an active indicator. | Implemented |
@@ -2121,7 +2312,7 @@ The listener is registered only after handshake authentication and the `user:{us
 * **Success acknowledgement:** `{ "success": true, "data": { ... } }`. `data` matches the HTTP message object: `id`, `conversationId`, `senderId`, `messageType`, `content`, `mediaUrl`, `readAt`, `createdAt`, and `remainingDailyMessages`. It does not include the recipient id.
 * **`chat:message:new`:** emitted only after the service promise resolves. Target is `user:{recipientUserId}`, where the recipient is the other match participant from the authorized conversation. The sender's user room does not receive this event. Every connected device of the recipient does, including devices on other server instances through the Redis adapter. An offline recipient still gets a committed row and the sender still gets the acknowledgement. There is no offline queue, push, or replay. A delivery failure after commit is logged and does not fail the acknowledgement or roll back the message.
 * **Event payload:** `id`, `conversationId`, `senderId`, `messageType`, `content`, `createdAt`. No `remainingDailyMessages`, `mediaUrl`, `readAt`, or profile fields.
-* **Not emitted by HTTP:** `POST /api/v1/conversations/:conversationId/messages` does not emit `chat:message:new`.
+* **Not emitted by HTTP TEXT:** `POST /api/v1/conversations/:conversationId/messages` does not emit `chat:message:new`. `POST /api/v1/conversations/:conversationId/media-confirm` emits the same payload after a new commit only. `content` is `null`. A replay does not emit. A missing Socket.IO server does not fail that HTTP response.
 
 ### 32.4 Typing indicators (implemented)
 
@@ -2189,7 +2380,7 @@ Rate limits are enforced using Redis sliding-window algorithms:
 2. **HTTP Security Headers:** Configured via `Helmet` (CSP, HSTS, X-Content-Type-Options).
 3. **CORS:** Restricted to verified web/mobile origin domains with credentials enabled.
 4. **IDOR & Mass Assignment Protection:** Sequelize explicit attribute whitelisting; ownership checks on all user resources.
-5. **Private Media Storage:** Photos uploaded directly to S3 via short-lived presigned URLs; served through signed CloudFront URLs.
+5. **Private Media Storage:** Profile photos and confirmed chat media stay in a private S3 bucket. Clients upload with short-lived `PutObject` URLs and read with short-lived `GetObject` URLs. CloudFront signing is not implemented.
 6. **Zero Coordinate Exposure:** SQL projections strictly exclude `profiles.location` from public serialization.
 
 ---
@@ -2218,11 +2409,12 @@ Rate limits are enforced using Redis sliding-window algorithms:
 | **Inbox** (`GET /conversations`, implemented) | Reads `conversations`, `matches`, `profiles`, `blocks`, and `messages`. Returns `ACTIVE` conversations for an `ACTIVE` match and omits a blocked pair without failing the list. The page is limited before the latest-message and unread aggregate queries. Writes no row, no Redis key, and no socket event. |
 | **Conversation details** (`GET /conversations/:conversationId`, implemented) | Reads one `conversations` row, its `matches` row, `blocks`, the other participant's `profiles.first_name`, and the unread count on `messages` through `idx_messages_unread_count`. Uses the history authorization rules. Writes no row, no Redis key, and no socket event. |
 | **Typing** (`chat:typing:start`, `chat:typing:stop`, implemented) | Reads `conversations`, `matches`, `blocks`, `users`, and the profile context used by send. Writes no row and no Redis key. Process memory on the socket's node holds one active conversation and one timer per socket. The Redis adapter delivers the recipient event only. |
-| **Safety** (`/blocks`, `/reports`) | `blocks`, `reports` |
+| **Blocks** (`POST /blocks/:userId`, `GET /blocks`, `DELETE /blocks/:userId`, implemented) | `blocks`, `matches`, `conversations`. Does not write `reports`, `notifications`, likes, messages, `usage_records`, or credits. `match:unmatch` is emitted after commit only when this request unmatches an `ACTIVE` match that has a conversation. |
+| **Report submission** (`POST /reports`, implemented) | `reports` only. One `PENDING` row. Does not write `notifications` or change `blocks`, matches, conversations, likes, messages, `usage_records`, or credits. No Socket.IO event and no Redis key. |
 | **Notifications** | `notifications` |
 | **Subscriptions & Plans** | `plans`, `features`, `plan_features`, `subscriptions`, `usage_limits` |
 | **Payments & Webhooks** | `payments`, `processed_webhooks`, `subscriptions` |
-| **Entitlements & Usage** | `subscriptions`, `plan_features`, `usage_limits`, `usage_records`, `user_credit_balances`, `credit_transactions` |
+| **Entitlements** (`GET /me/entitlements`, implemented) | Reads `subscriptions`, `plans`, and `user_credit_balances`. Does not read `plan_features`, `usage_limits`, or `usage_records`. Writes nothing. `GET /me/usage` is not mounted. |
 
 ---
 

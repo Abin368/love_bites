@@ -76,6 +76,28 @@ jest.mock('../../src/modules/likes/likes.data-access', () => ({
   lockLikeUsers: async () => undefined,
   insertPass: async () => undefined
 }));
+jest.mock('../../src/modules/entitlements/entitlements.data-access', () => ({
+  findStoredCreditBalances: async () => ({
+    boostBalance: 0,
+    superLikeBalance: 0
+  })
+}));
+jest.mock('../../src/modules/blocks/blocks.data-access', () => ({
+  deleteOutgoingBlock: async () => undefined,
+  findActiveMatchForPair: async () => null,
+  findConversationForMatch: async () => null,
+  findMatchStatusById: async () => null,
+  findOutgoingBlock: async () => null,
+  insertBlock: async () => undefined,
+  isBlockPairConflict: () => false,
+  listOutgoingBlocks: async () => [],
+  unmatchActivePairMatch: async () => null
+}));
+jest.mock('../../src/modules/reports/reports.data-access', () => ({
+  insertReport: async () => {
+    throw new Error('report data access is not used by authentication tests');
+  }
+}));
 jest.mock('../../src/modules/chat/chat.data-access', () => ({
   findConversationWithMatch: async () => null,
   lockMatchById: async () => undefined,

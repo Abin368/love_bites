@@ -136,7 +136,7 @@ The system architecture is structured so that upstream modules provide stable de
 ### Key Domain Dependency Rules:
 1. **Chat depends on Matches:** Conversations can only exist when backed by an active mutual match.
 2. **Discovery depends on Profiles, Preferences, Location, Blocks, and Passes:** A candidate cannot be discovered without completing onboarding, satisfying mutual spatial and demographic preferences, and clearing historical pass/block exclusions.
-3. **Premium Features depend on Centralized Entitlements:** Who Liked You, chat media, and the entitlement HTTP API still depend on the subscription and entitlement engine, which is not implemented. Live unlimited LIKE/PASS, SUPER LIKE, and UNDO already check an active Premium subscription row directly.
+3. **Premium Features depend on Centralized Entitlements:** Who Liked You and the entitlement HTTP API still depend on the subscription and entitlement engine, which is not implemented. Live unlimited LIKE/PASS, SUPER LIKE, UNDO, chat media upload-URL issuance, and chat media confirmation check an active Premium subscription row directly. Chat media download does not.
 4. **Payments depend on Subscription & Plan Taxonomy:** Razorpay checkout and webhook handlers mutate subscription states and refresh user entitlements.
 5. **Admin Moderation depends on Users and Reports:** Administrative user actions (suspend, ban) cascade to active sessions, socket connections, and discovery indexing.
 
@@ -461,13 +461,13 @@ Implement swipe action mechanics (`LIKE`, `PASS`, `SUPER_LIKE`), daily action qu
 * Does not change discovery filtering. An active outgoing `LIKE` or `SUPER_LIKE` can still hide the other user.
 * `uq_matches_single_active_pair` already allows a later `ACTIVE` match after `UNDONE` or `UNMATCHED`. Rematch is not implemented. Do not revive the old row.
 * Do not treat UNDO as unmatch. Undo leaves `unmatched_at` null and sets `is_undone`.
-* No migration was added. `GET /api/v1/matches` remains unmounted. Notifications and Socket.IO `match:unmatch` are not emitted.
+* No migration was added. `GET /api/v1/matches` remains unmounted. Notifications are not written. This route does not emit Socket.IO `match:unmatch`. Block emits that event; see Phase 7.
 
 ---
 
 ## 10. Phase 6 — Chat and Realtime Messaging
 
-**Partly complete (2026-10-13).** Slice 1 Socket.IO foundation, Slice 2 TEXT message persistence, Slice 3 free text-message quota, Slice 4 realtime TEXT send/receive, Slice 5 message history, Slice 6 read receipts, Slice 7 typing indicators, Slice 8 conversation unread counts, Slice 9 conversation inbox, and Slice 10 conversation details are implemented. Conversation rooms and media are not.
+**Partly complete (2026-10-13).** Slice 1 Socket.IO foundation, Slice 2 TEXT message persistence, Slice 3 free text-message quota, Slice 4 realtime TEXT send/receive, Slice 5 message history, Slice 6 read receipts, Slice 7 typing indicators, Slice 8 conversation unread counts, Slice 9 conversation inbox, Slice 10 conversation details, media slice 1 upload-URL issuance, media slice 2 confirmation, and media slice 3 download URLs are implemented. Conversation rooms are not. HTTP and Socket.IO TEXT send remain TEXT-only. HTTP TEXT send still does not emit `chat:message:new`.
 
 ### 10.1 Objectives
 Build real-time messaging using Socket.IO backed by PostgreSQL persistence, enforce message authorization, manage unread counters, support tiered media attachments, and provide cursor-based history pagination.
@@ -508,27 +508,35 @@ Build real-time messaging using Socket.IO backed by PostgreSQL persistence, enfo
    * `GET /api/v1/conversations`: Cursor-paginated inbox for a verified `USER` with a complete profile, location, and dating preferences. Returns `ACTIVE` conversations whose match is `ACTIVE`. A block in either direction omits that conversation only. Order is `last_message_at DESC NULLS LAST, id DESC`. `lastMessage` is the latest non-deleted message, or `null`. `unreadCount` uses the Slice 8 predicate for the page. `limit` defaults to 20 and maxes at 50. The read does not write, cache, or emit a socket event. No migration.
 10. **Conversation details — Implemented (Slice 10):**
    * `GET /api/v1/conversations/:conversationId`: One conversation for a verified `USER` with a complete profile, location, and dating preferences. Authorization matches message history. A participant may read a `CLOSED` conversation, including after unmatch or undo. An `ACTIVE` conversation whose match is not `ACTIVE` is `404 RESOURCE_NOT_FOUND`. A missing other-participant profile is the same 404. A block in either direction is `409 BLOCKED_USER`. The body is the stored status, match id, other participant `userId` and `firstName`, and the Slice 8 unread count. No message preview, write, cache, socket event, or migration.
+11. **Chat media upload URL — Implemented (media slice 1):**
+   * `POST /api/v1/conversations/:conversationId/media-upload-url`: Premium-only presigned private PUT for a future media message. The body is exactly `mediaType`, `mimeType`, and `fileSizeBytes`, with the type-specific allowlist and size caps in the API spec. Authorization matches TEXT send, then `hasActivePremium` inside a short transaction. Row locks are released before signing and Redis. The object key is `chat-media/{conversationId}/{uploadId}`. Redis `chat-media:upload:{uploadId}` stores the reservation for 300 seconds. Success is `200` with `uploadId`, `uploadUrl`, `storageKey`, and `expiresInSeconds`. The presign does not enforce size or bind content type. This route does not insert a message, change `last_message_at`, write `DAILY_TEXT_MESSAGES`, return a download URL, or emit a socket event. No migration.
+12. **Chat media confirmation — Implemented (media slice 2):**
+   * `POST /api/v1/conversations/:conversationId/media-confirm`: body is exactly `uploadId`. The reservation is validated before `HeadObject`. Verified content type and length are stored on a `messages` row whose id is the upload id. `content` is null. `last_message_at` updates in the same TEXT-send lock order, after `hasActivePremium`. No `DAILY_TEXT_MESSAGES` write, download URL in this response, caption, or migration. A new commit is `201` and then emits `chat:message:new` to the recipient only. A matching replay is `200` and does not emit. Reservation deletion is best-effort after commit. `HeadObject` does not prove the object bytes.
+13. **Chat media download URL — Implemented (media slice 3):**
+   * `GET /api/v1/conversations/:conversationId/messages/:messageId/media-download-url`: history authorization, including a closed conversation and either-direction blocks. Premium is not checked. The signed key must equal `chat-media/{conversationId}/{messageId}`. Success is `200` with `downloadUrl` and `expiresInSeconds` `3600`. No `HeadObject`, message write, quota write, Redis key, socket event, or migration. History, inbox, confirmation, and `chat:message:new` still omit the URL.
 
 ---
 
 ## 11. Phase 7 — Safety and Moderation
 
 ### 11.1 Objectives
-Implement instant bidirectional user blocking and auditable misconduct reporting with administrative queue triaging.
+Bidirectional user blocking and user report submission are implemented. Administrative queue triaging is not.
 
 ### 11.2 Implementation Steps
-1. **Bidirectional Blocking (`POST /api/v1/blocks/:userId`):**
-   * Creates record in `blocks` (`blocker_id`, `blocked_id`, `reason`).
-   * Inside a managed transaction:
-     * Immediately dissolves any active match between the pair (`matches.status = 'UNMATCHED'`).
-     * Closes open conversation threads (`conversations.status = 'CLOSED'`).
-     * Emits `match:unmatch` Socket.IO event to disconnect active chat sessions.
-   * `GET /api/v1/blocks`: Returns list of blocked accounts.
-   * `DELETE /api/v1/blocks/:userId`: Removes block record.
-2. **Misconduct Reporting (`POST /api/v1/reports`):**
-   * Validates mandatory reason code (`FAKE_PROFILE`, `HARASSMENT`, `SPAM`, `INAPPROPRIATE_CONTENT`, `SCAM`, `OTHER`) and optional description.
-   * Inserts into `reports` table (`status = 'PENDING'`).
-   * **Confidentiality Rule:** The reported account is never notified of the report or the reporter's identity.
+1. **Bidirectional Blocking — Implemented:**
+   * `POST /api/v1/blocks/:userId` inserts `blocks` with `blocker_id` = caller, `blocked_id` = target, and `reason` = null. The body does not accept `reason`.
+   * Middleware is `authenticate` and `requireRole('USER')`. Verification, profile completion, and Premium are not required. Self-block is `400 SELF_INTERACTION`. A missing or deleted target is `404 USER_NOT_FOUND`. A duplicate outgoing pair is `409 CONFLICT` and does not emit.
+   * Inside one transaction, after `lockLikeUsers` and the match and conversation locks: an `ACTIVE` match becomes `UNMATCHED` with `unmatched_at`, `updated_at`, and `unmatched_by_user_id` set to the blocker. Its `ACTIVE` conversation becomes `CLOSED`. `UNDONE` and already `UNMATCHED` rows stay. Likes and messages stay.
+   * After commit, `match:unmatch` goes to `user:{blockedUserId}` only when that request unmatched an `ACTIVE` match that has a conversation. The payload is `{ matchId, conversationId }`. Unmatch does not emit this event. A missing Socket.IO server does not fail the HTTP response.
+   * `GET /api/v1/blocks` returns the caller's outgoing rows as `{ userId, createdAt }`, ordered by `created_at DESC, id DESC`.
+   * `DELETE /api/v1/blocks/:userId` deletes only that outgoing row. A missing outgoing row is `404 RESOURCE_NOT_FOUND`. The match stays `UNMATCHED` and the conversation stays `CLOSED`. No migration.
+2. **Misconduct Reporting (`POST /api/v1/reports`) — Implemented:**
+   * Middleware is `authenticate` and `requireRole('USER')`. Verification, profile completion, and Premium are not required. Any query parameter is `400 VALIDATION_ERROR`. `Idempotency-Key` is ignored.
+   * The body is exactly `reportedUserId`, `reason`, and optional `description`. Unknown properties, including status and resolution fields, are rejected. `reason` is `FAKE_PROFILE`, `HARASSMENT`, `SPAM`, `INAPPROPRIATE_CONTENT`, `SCAM`, or `OTHER`. `OTHER` requires a trimmed non-empty description. Other reasons store a trimmed description, or `null` when the description is omitted or blank. The `description` column has no length check.
+   * Self-report is `400 SELF_INTERACTION`. A missing, soft-deleted, or `DELETED` target is `404 USER_NOT_FOUND`. A suspended, banned, unverified, or incomplete target can be reported.
+   * One transaction inserts `reports` with `status = 'PENDING'`. `admin_notes`, `resolved_by`, and `resolved_at` stay null. Multiple reports for the same pair are allowed. No unique constraint and no migration were added.
+   * The insert does not change blocks, matches, conversations, likes, messages, usage, or credits. Discovery does not use the row. No notification is written and no Socket.IO event is emitted. The `201` body is `{ reportId, status: "PENDING" }`.
+   * **Confidentiality Rule:** The reported account is never notified of the report or the reporter's identity. Admin listing and resolution remain Phase 11.
 
 ---
 
@@ -543,6 +551,11 @@ User ──► Active Subscription ──► Plan ──► PlanFeatures ──�
 ```
 
 ### 12.3 Implementation Steps
+
+**Slice 1 implemented (2026-10-14).** `GET /api/v1/me/entitlements` is a read-only snapshot for an authenticated `USER`. Email verification, phone verification, and profile completion are not required. `tier` is `PREMIUM` only when the existing `hasActivePremium` in `likes.data-access.ts` is true. That function was not modified or moved. `unlimitedSwipes`, `undoAction`, `chatMedia`, and `seeWhoLikedYou` use the same boolean. `advancedFilters`, `adFree`, and `priorityVisibility` are `false` for both tiers because those behaviors are not implemented. `credits.superLikeBalance` and `credits.boostBalance` are the stored `SUPER_LIKE` and `BOOST` balances, or `0` when the row is absent. The route does not create a balance row. It is not a shared entitlement engine. `GET /api/v1/me/usage`, plan seeding, payments, Who Liked You, notifications, and the rest of this phase are not complete. Focused PostgreSQL integration `tests/postgres/me-entitlements.api.integration.test.ts` passed 11 tests. `npm run build` passed. No migration.
+
+The numbered steps below are still the planned centralized engine. Slice 1 did not implement them.
+
 1. **Entitlement Service (`src/modules/entitlements/entitlements.service.ts`):**
    * Centralized method: `hasEntitlement(userId, featureCode): Promise<boolean>`.
    * Centralized method: `checkAndIncrementUsage(userId, metricKey, cost = 1): Promise<{ allowed: boolean, remaining: number }>`.
@@ -777,7 +790,7 @@ To maintain strict adherence to dependency constraints, development should follo
 20. Conversations & Messages Schema (Conversations, Messages Tables) — schema exists; chat write path not implemented
 21. Chat Service & 6-Step Message Authorization Engine — next. Not implemented.
 22. Socket.IO Realtime Engine (Redis Adapter, Handshake Auth, Rooms) — Slice 1 foundation done (handshake, user room, Redis adapter). Conversation rooms and chat events not implemented.
-23. Safety Module (Blocks Table, Bidirectional Isolation, Reports Table)
+23. Safety Module (Blocks Table, Bidirectional Isolation, Reports Table) — Blocks and `POST /api/v1/reports` are implemented. Admin triage remains step 31.
 24. Notification Engine (Notifications Table, Realtime Dispatch)
 25. "Who Liked You" Admirers Feed (Server-Side Masking for Free Tier)
 26. Subscription & Entitlements Engine (Plans, Features, Usage Limits, Usage Records)
@@ -807,8 +820,8 @@ To maintain strict adherence to dependency constraints, development should follo
 | **Unmatch** | Likes Module | `matches`, `conversations` | `DELETE /matches/:matchId` | Implemented. PostgreSQL integration: 13 passed. No Redis, quota, or credit change. `GET /matches` is not implemented. |
 | **Premium Undo** | Likes, Matches, Premium subscription | `likes`, `matches`, `conversations`, `subscriptions`, `plans` | `POST /discovery/undo` | PostgreSQL integration: 14 passed. No Redis idempotency. |
 | **Chat & Messaging**| Matches Module, S3, Socket.IO | `conversations`, `messages`, `usage_records` | `POST /conversations/:conversationId/messages`, `GET /conversations/:conversationId/messages`, `GET /conversations/:conversationId/unread-count`, `PATCH /conversations/:conversationId/read`, `chat:message:send`, `chat:typing:start`, `chat:typing:stop` | Slices 2–8: TEXT send, free `DAILY_TEXT_MESSAGES` quota (20/UTC day), realtime TEXT delivery, cursor-paginated history, read receipts, ephemeral typing indicators, and a per-conversation unread count. Inbox, media, and rooms remain. |
-| **Blocks & Safety** | Users, Matches, Chat | `blocks` | `/blocks`, `/blocks/:userId` | Integration (Bidirectional Isolation) |
-| **Reports** | Users, Safety | `reports` | `/reports` | Integration (Report Submission) |
+| **Blocks & Safety** | Users, Matches, Chat | `blocks`, `matches`, `conversations` | `POST /blocks/:userId`, `GET /blocks`, `DELETE /blocks/:userId` | Implemented. PostgreSQL integration: `tests/postgres/blocks.api.integration.test.ts`, 26 passed. No migration. |
+| **Reports** | Users, Safety | `reports` | `POST /reports` | Implemented. PostgreSQL integration: `tests/postgres/reports.api.integration.test.ts`, 12 passed. One `PENDING` row. `OTHER` requires a trimmed description. No notification, socket event, or migration. Admin review is not implemented. |
 | **Notifications** | Matches, Chat, Likes | `notifications` | `GET /notifications`, Socket.IO events | Integration (Event Delivery) |
 | **Who Liked You** | Likes, Entitlements | `likes`, `profiles`, `subscriptions` | `GET /likes/who-liked-me` | Integration (Free Redaction vs Premium) |
 | **Entitlements** | Subscriptions Module | `plans`, `features`, `plan_features`, `usage_limits`, `usage_records` | `/me/entitlements`, `/me/usage` | Unit + Integration (Centralized Engine) |
