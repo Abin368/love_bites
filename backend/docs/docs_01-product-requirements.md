@@ -405,22 +405,19 @@ Reports are not a Discovery exclusion. Browsing candidate cards does not consume
 ### 11.1 Safety Mechanics
 
 #### Blocking
-* Users can block any profile from Discovery, Match lists, or Chat windows.
-* **System Effect:**
-  * Instantly closes active matches and hides chats.
-  * Removes both users permanently from each other's Discovery queues.
-  * Prevents all present and future interactions.
+* **Implemented.** `POST /api/v1/blocks/:userId`, `GET /api/v1/blocks`, and `DELETE /api/v1/blocks/:userId`. The caller must be role `USER`. Verification and a complete profile are not required.
+* **While the row exists:** neither user appears in the other's Discovery queue. Like, pass, and super-like return `409 BLOCKED_USER`. An `ACTIVE` match becomes `UNMATCHED` and its `ACTIVE` conversation becomes `CLOSED`. Likes and messages stay.
+* **Unblock:** `DELETE` removes only the caller's row. The old match stays `UNMATCHED` and the old conversation stays `CLOSED`. Discovery can show the other user again only when no block remains in either direction and no active outgoing like, pass, or super-like remains. Rematch is not implemented.
 
 #### Reporting
-* Users can report profiles for misconduct.
-* **Mandatory Report Categories:**
+* **Not implemented.** The planned categories are:
   * Fake Profile / Impersonation
   * Harassment / Abusive Behavior
   * Spam / Commercial Promotion
   * Inappropriate Content / Nudity
   * Scam / Fraud
   * Other (Requires text details)
-* Submitted reports enter the Admin Moderation Queue for review.
+* Submitted reports are planned to enter the Admin Moderation Queue for review.
 
 ### 11.2 Admin Management Capabilities
 The Admin Dashboard provides full operational management over the platform:

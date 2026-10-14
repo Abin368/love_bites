@@ -181,6 +181,30 @@ export function deliverChatMessage(input: ChatMessageEvent): void {
   emitNewChatMessage(io, input);
 }
 
+export function deliverMatchUnmatch(input: {
+  matchId: string;
+  conversationId: string;
+  recipientId: string;
+}): void {
+  const io = activeSocketServer();
+  if (!io) {
+    return;
+  }
+
+  try {
+    io.to(userRoom(input.recipientId)).emit('match:unmatch', {
+      matchId: input.matchId,
+      conversationId: input.conversationId
+    });
+  } catch (error) {
+    logger.error('Failed to deliver match:unmatch', {
+      error: error instanceof Error ? error.message : 'Unknown error',
+      matchId: input.matchId,
+      recipientId: input.recipientId
+    });
+  }
+}
+
 async function handleChatMessageSend(socket: Socket, io: Server, payload: unknown, ack: unknown): Promise<void> {
   const respond = readAck(ack);
   try {

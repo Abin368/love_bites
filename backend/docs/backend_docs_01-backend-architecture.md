@@ -501,11 +501,11 @@ The live LIKE and SUPER LIKE transaction locks both users in canonical id order,
 
 * **`ACTIVE`:** the current mutual match. LIKE and SUPER LIKE insert this row, with `user_one_id < user_two_id`, plus one `ACTIVE` conversation.
 * **`UNDONE`:** Undo of the LIKE that created the current active match sets this status. `unmatched_at` and `unmatched_by_user_id` stay null. The `ACTIVE` conversation becomes `CLOSED` and `closed_at` is set.
-* **`UNMATCHED`:** `DELETE /api/v1/matches/:matchId` sets this status for an `ACTIVE` match. `unmatched_at` is `CURRENT_TIMESTAMP` and `unmatched_by_user_id` is the caller. `updated_at` changes. The `ACTIVE` conversation becomes `CLOSED` and `closed_at` is set. Likes stay unchanged.
+* **`UNMATCHED`:** `DELETE /api/v1/matches/:matchId` or `POST /api/v1/blocks/:userId` sets this status for an `ACTIVE` match. `unmatched_at` is `CURRENT_TIMESTAMP` and `unmatched_by_user_id` is the caller or the blocker. `updated_at` changes. The `ACTIVE` conversation becomes `CLOSED` and `closed_at` is set. Likes stay unchanged. Unblock does not change this status.
 
 The live route is `matches.routes` → `likes.controller.unmatch` → `likes.service.unmatch` → `likes.data-access` → one PostgreSQL transaction. The service reuses `lockLikeUsers` and `closeActiveConversation`. There is no repository layer.
 
-Historical `UNDONE` and `UNMATCHED` rows stay in place. `uq_matches_single_active_pair` allows a later `ACTIVE` row for the same pair. Rematch is not implemented and does not revive the old row. There is no match list API. TEXT send exists under `/conversations/:conversationId/messages`. The match diagram's notification and Socket.IO steps are not implemented. `match:unmatch` is future scope.
+Historical `UNDONE` and `UNMATCHED` rows stay in place. `uq_matches_single_active_pair` allows a later `ACTIVE` row for the same pair. Rematch is not implemented and does not revive the old row. There is no match list API. TEXT send exists under `/conversations/:conversationId/messages`. The match diagram's notification step is not implemented. `match:new` is future scope. `DELETE /api/v1/matches/:matchId` does not emit `match:unmatch`. `POST /api/v1/blocks/:userId` emits it after commit to `user:{blockedUserId}` when the block closes an active match that has a conversation.
 
 ---
 
@@ -561,13 +561,18 @@ Client A                  Server Node                 PostgreSQL              Cl
 Safety features operate independently from matching and communication modules.
 
 ### Blocking Logic
-* **Bidirectional Isolation:** Blocking user $A 
-ightarrow B$ creates a permanent isolation barrier. Neither user can discover, like, message, or view the other.
-* **Execution:** Executing a block immediately terminates active matches between the pair, closes open conversations, and invalidates active Socket.IO room subscriptions.
+`POST /api/v1/blocks/:userId`, `GET /api/v1/blocks`, and `DELETE /api/v1/blocks/:userId` are implemented. The route is `blocks.routes` → `blocks.controller` → `blocks.service` → `blocks.data-access`. There is no repository layer and no new migration.
+
+* **Row:** one directional record, `blocker_id` = caller and `blocked_id` = target. `reason` is stored as null. `uq_blocks_pair` rejects a duplicate ordered pair. `chk_blocks_no_self_block` rejects a self-block. The HTTP self-block response is `400 SELF_INTERACTION` before insert.
+* **Isolation:** either direction already excludes discovery and rejects like, pass, super-like, and chat. Those checks were not changed. A block does not delete likes.
+* **Match:** an `ACTIVE` match becomes `UNMATCHED` in the same transaction, after `lockLikeUsers` and the match and conversation locks. `unmatched_by_user_id` is the blocker. The `ACTIVE` conversation becomes `CLOSED`. `UNDONE` and already `UNMATCHED` rows stay. Unblock deletes only the caller's row and does not reopen the match or conversation.
+* **Realtime:** after commit, `match:unmatch` is emitted to `user:{blockedUserId}` only when this request unmatched a match that has a conversation. The payload is `{ matchId, conversationId }`. Users join `user:{userId}` only. There is no conversation room to invalidate. Unmatch does not emit this event. A missing Socket.IO server does not fail the HTTP response.
 
 ### Report Handling
+**Not implemented.** The planned rules are:
+
 * Support classifications: `FAKE_PROFILE`, `HARASSMENT`, `SPAM`, `INAPPROPRIATE_CONTENT`, `SCAM`, `OTHER`.
-* Submitting a report creates an auditable record in `reports` for Admin Review.
+* Submitting a report would create an auditable record in `reports` for Admin Review.
 
 ---
 

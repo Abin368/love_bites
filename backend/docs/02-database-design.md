@@ -634,10 +634,10 @@ Records established mutual matches between pairs of users. To eliminate duplicat
 | `id` | `UUID` | `NO` | `gen_random_uuid()` | Primary key. |
 | `user_one_id` | `UUID` | `NO` | — | Canonical lower user UUID (`user_one_id < user_two_id`). |
 | `user_two_id` | `UUID` | `NO` | — | Canonical higher user UUID. |
-| `status` | `VARCHAR(20)` | `NO` | `'ACTIVE'` | `ACTIVE`: the current mutual match. `UNDONE`: a LIKE that created this match was undone; `unmatched_at` and `unmatched_by_user_id` stay null. `UNMATCHED`: `DELETE /api/v1/matches/:matchId` set this status, with `unmatched_at` and `unmatched_by_user_id`. The row is kept. Likes are not deleted. |
+| `status` | `VARCHAR(20)` | `NO` | `'ACTIVE'` | `ACTIVE`: the current mutual match. `UNDONE`: a LIKE that created this match was undone; `unmatched_at` and `unmatched_by_user_id` stay null. `UNMATCHED`: `DELETE /api/v1/matches/:matchId` or `POST /api/v1/blocks/:userId` set this status, with `unmatched_at` and `unmatched_by_user_id`. The row is kept. Likes are not deleted. Unblock does not change the status. |
 | `matched_at` | `TIMESTAMPTZ` | `NO` | `CURRENT_TIMESTAMP` | Timestamp when mutual match occurred. |
-| `unmatched_at` | `TIMESTAMPTZ` | `YES` | `NULL` | Timestamp when unmatch occurred. UNMATCH sets `CURRENT_TIMESTAMP`. UNDO leaves this null. |
-| `unmatched_by_user_id`| `UUID` | `YES` | `NULL` | User ID who initiated the unmatch. UNMATCH sets the caller. UNDO leaves this null. |
+| `unmatched_at` | `TIMESTAMPTZ` | `YES` | `NULL` | Timestamp when unmatch occurred. UNMATCH and block set `CURRENT_TIMESTAMP`. UNDO leaves this null. Unblock does not change it. |
+| `unmatched_by_user_id`| `UUID` | `YES` | `NULL` | User ID who initiated the unmatch. UNMATCH sets the caller. Block sets the blocker. UNDO leaves this null. |
 | `created_at` | `TIMESTAMPTZ` | `NO` | `CURRENT_TIMESTAMP` | Creation timestamp. |
 | `updated_at` | `TIMESTAMPTZ` | `NO` | `CURRENT_TIMESTAMP` | Modification timestamp. |
 
@@ -655,7 +655,7 @@ Records established mutual matches between pairs of users. To eliminate duplicat
 
 #### Indexes
 * `CREATE UNIQUE INDEX uq_matches_single_active_pair ON matches (user_one_id, user_two_id) WHERE status = 'ACTIVE';`  
-  *Crucial Index:* Enforces that at most **one ACTIVE match** exists between a pair, while allowing multiple historical rows (`UNMATCHED`, `UNDONE`) so a later new `ACTIVE` row can be inserted. UNMATCH does not revive an old row, and rematch is not implemented. The match row, its conversation, and that conversation's messages are not deleted. `updated_at` is set when the status becomes `UNMATCHED`. No new migration was added for UNMATCH.
+  *Crucial Index:* Enforces that at most **one ACTIVE match** exists between a pair, while allowing multiple historical rows (`UNMATCHED`, `UNDONE`) so a later new `ACTIVE` row can be inserted. UNMATCH and block do not revive an old row, and rematch is not implemented. The match row, its conversation, and that conversation's messages are not deleted. `updated_at` is set when the status becomes `UNMATCHED`. No new migration was added for UNMATCH or block.
 * `CREATE INDEX idx_matches_user_one ON matches (user_one_id, status);`
 * `CREATE INDEX idx_matches_user_two ON matches (user_two_id, status);`
 
@@ -741,7 +741,7 @@ Stores chat messages exchanged within an active conversation. Supports text mess
 ### 13.1 `blocks`
 
 #### Purpose
-Stores bidirectional safety blocking records. When user $A$ blocks user $B$, neither user can discover, match, message, or view the other.
+Stores one directional safety block. While the row exists, neither user can discover, like, or message the other, because discovery, likes, and chat query either direction. `POST /api/v1/blocks/:userId` inserts the caller's row and stores `reason` as null. `DELETE /api/v1/blocks/:userId` deletes that outgoing row only. It does not reopen an `UNMATCHED` match or a `CLOSED` conversation.
 
 #### Columns
 | Column | Type | Nullable | Default | Description |
@@ -749,7 +749,7 @@ Stores bidirectional safety blocking records. When user $A$ blocks user $B$, nei
 | `id` | `UUID` | `NO` | `gen_random_uuid()` | Primary key. |
 | `blocker_id` | `UUID` | `NO` | — | Foreign key of user initiating the block. |
 | `blocked_id` | `UUID` | `NO` | — | Foreign key of user being blocked. |
-| `reason` | `VARCHAR(255)` | `YES` | `NULL` | Optional user-supplied reason. |
+| `reason` | `VARCHAR(255)` | `YES` | `NULL` | Optional reason column. The block API stores null and does not accept a reason in the body. |
 | `created_at` | `TIMESTAMPTZ` | `NO` | `CURRENT_TIMESTAMP` | Timestamp of block. |
 
 #### Primary Key

@@ -1459,7 +1459,7 @@ Photo objects returned after confirm, list, and patch are `{ "id", "url", "displ
 
 ## 22. Match APIs
 
-`GET /api/v1/matches` is not mounted. `DELETE /api/v1/matches/:matchId` is implemented in section 22.2. LIKE and SUPER LIKE insert an `ACTIVE` match and an `ACTIVE` conversation when a reciprocal `LIKE` or `SUPER_LIKE` exists. UNDO of that LIKE moves the current `ACTIVE` match to `UNDONE` and closes its `ACTIVE` conversation. UNDO leaves `unmatched_at` and `unmatched_by_user_id` null. UNMATCH is a different action: it sets `UNMATCHED` and records who ended the match. It does not change `likes`. Rematch, which would insert a later `ACTIVE` row, is not implemented. Socket.IO `match:unmatch` is not emitted.
+`GET /api/v1/matches` is not mounted. `DELETE /api/v1/matches/:matchId` is implemented in section 22.2. LIKE and SUPER LIKE insert an `ACTIVE` match and an `ACTIVE` conversation when a reciprocal `LIKE` or `SUPER_LIKE` exists. UNDO of that LIKE moves the current `ACTIVE` match to `UNDONE` and closes its `ACTIVE` conversation. UNDO leaves `unmatched_at` and `unmatched_by_user_id` null. UNMATCH is a different action: it sets `UNMATCHED` and records who ended the match. It does not change `likes`. Rematch, which would insert a later `ACTIVE` row, is not implemented. `DELETE /api/v1/matches/:matchId` does not emit Socket.IO `match:unmatch`. `POST /api/v1/blocks/:userId` emits that event after commit when the block changes an `ACTIVE` match to `UNMATCHED` and the match has a conversation. See section 25.1.
 
 ### 22.1 List Active Matches
 * **Method & Path:** `GET /api/v1/matches`
@@ -1512,7 +1512,7 @@ Photo objects returned after confirm, list, and patch are `{ "id", "url", "displ
 * **Likes:** no `likes` row is inserted, deleted, or marked undone. Reciprocal `LIKE` and `SUPER_LIKE` rows stay, with `is_undone` unchanged. UNMATCH is not UNDO.
 * **Discovery:** this route does not change the discovery query. An `UNMATCHED` match does not by itself exclude a candidate. An active outgoing `LIKE` or `SUPER_LIKE` still does. UNMATCH does not make the two users appear in discovery while those rows remain.
 * **Rematch:** not implemented. The partial unique index still allows a later new `ACTIVE` row. This endpoint does not revive the old row.
-* **Quota and Redis:** no `usage_records` write, no credit change, and no `credit_transactions` row. `Idempotency-Key` is ignored. No notification row is written and no Socket.IO event is emitted.
+* **Quota and Redis:** no `usage_records` write, no credit change, and no `credit_transactions` row. `Idempotency-Key` is ignored. No notification row is written and no Socket.IO event is emitted. Block is the route that emits `match:unmatch`. This route does not.
 * **Success Response (`200 OK`):** Message: `Unmatched successfully.`
   ```json
   {
@@ -1881,33 +1881,77 @@ Photo objects returned after confirm, list, and patch are `{ "id", "url", "displ
 
 ## 25. Block APIs
 
+**Implemented.** These routes create, list, and delete the caller's outgoing `blocks` rows. Either direction already excludes discovery and rejects like, pass, super-like, and chat. This feature does not change those checks. Reports are not implemented. No migration was added.
+
+A block does not require verification, a complete profile, location, dating preferences, or Premium. `authenticate` still rejects a missing token, an invalid token, a deleted account, a suspended account, and a banned account before the handler runs.
+
 ### 25.1 Block a User
 * **Method & Path:** `POST /api/v1/blocks/:userId`
-* **Auth:** Authenticated
-* **Business Rules:**
-  * Immediately dissolves active matches, closes open conversations, and permanently isolates both profiles from discovery queues.
-* **Success Response (`200 OK`):**
+* **Auth:** `Authorization: Bearer <accessToken>` and role `USER`. Middleware is `authenticate`, `requireRole('USER')`, path validation, empty-query validation, then strict empty-body validation. `requireVerified` is not on the route. The service does not check verification or `PROFILE_INCOMPLETE`. A non-`USER` role is `403 FORBIDDEN`.
+* **Path `userId`:** required UUID. It is lowercased before use. A bad value is `400 VALIDATION_ERROR`. Message: `Validation failed`. `details` is `[{ "field": "userId", "message": "User id must be a valid UUID." }]`.
+* **Query:** none. Any query parameter is `400 VALIDATION_ERROR`. Detail field is the parameter name. Message: `Unsupported query parameter.`
+* **Body:** none. A JSON object must be empty. Any property, including `reason`, is `400 VALIDATION_ERROR`. `blocks.reason` is stored as `null`. `Idempotency-Key` is ignored. No Redis key is written.
+* **Self-block:** `400 SELF_INTERACTION`. Message: `You cannot block your own profile.` This is rejected before locks and before insert. `chk_blocks_no_self_block` remains the database backstop.
+* **Target:** the user row must exist and must not be soft-deleted or `status = 'DELETED'`. Otherwise `404 USER_NOT_FOUND`. Message: `Target user profile not found.` A suspended, banned, unverified, or incomplete target can be blocked. Discovery eligibility is not required.
+* **Duplicate:** a second outgoing row for the same ordered pair is `409 CONFLICT`. Message: `User is already blocked.` The check runs after `lockLikeUsers`. `uq_blocks_pair` is caught in the service and returns the same error. The raw constraint text is not returned. A duplicate does not change a match or conversation and does not emit a socket event.
+* **Transaction:** one Sequelize transaction. `lockLikeUsers` locks both users in canonical id order first. The service then locks the pair's `ACTIVE` match and its conversation with the existing `FOR UPDATE` helpers and re-reads them. It inserts `blocker_id = caller` and `blocked_id = target`. If that match is still `ACTIVE`, it becomes `UNMATCHED`, with `unmatched_at` and `updated_at` set to `CURRENT_TIMESTAMP` and `unmatched_by_user_id` set to the caller. The update runs only while `status = 'ACTIVE'`. `UNDONE` and already `UNMATCHED` rows stay unchanged, including their `unmatched_at` and `unmatched_by_user_id`.
+* **Conversation:** when that transition happens and the match has an `ACTIVE` conversation, `closeActiveConversation` sets it to `CLOSED` and sets `closed_at`. `last_message_at` and messages stay. An already `CLOSED` conversation keeps its existing `closed_at` and `last_message_at`. A match with no conversation row still becomes `UNMATCHED`. A block with no `ACTIVE` match still inserts the row and returns `200`.
+* **Likes and other writes:** no `likes` row is inserted, deleted, or marked undone. Messages stay. No `usage_records`, credit, `credit_transactions`, or `notifications` row is written.
+* **Realtime:** after the transaction commits, and only when this request changed an `ACTIVE` match to `UNMATCHED` and that match has a conversation id, the server emits `match:unmatch` to `user:{blockedUserId}` only. The payload is exactly `{ "matchId", "conversationId" }`. The caller's room does not receive it. An already closed conversation still supplies the id, so that case emits. No conversation row, no `ACTIVE` match, a duplicate, a rollback, `GET`, and `DELETE` do not emit. `DELETE /api/v1/matches/:matchId` still does not emit this event. A missing Socket.IO server, or a throw from delivery, does not fail the HTTP response or roll back the commit. There is no conversation room to leave.
+* **Discovery and chat after the row exists:** either direction excludes the pair from discovery and makes like, pass, and super-like return `409 BLOCKED_USER`. Send on the closed thread returns `404 CONVERSATION_CLOSED` because the existing send path sees the closed conversation before the block check. History, read, unread count, and conversation details return `409 BLOCKED_USER`. The inbox omits that conversation.
+* **Success Response (`200 OK`):** Message: `User blocked successfully.`
   ```json
   {
     "success": true,
-    "data": { "blocked": true, "targetUserId": "c3e7d81b..." },
+    "data": { "blocked": true, "targetUserId": "c3e7d81b-9932-4233-812c-6f5e39482130" },
     "message": "User blocked successfully."
   }
   ```
+  `targetUserId` is the lowercased path id. The body does not include `reason`, match id, conversation id, or profile fields.
 
 ---
 
 ### 25.2 List Blocked Users
 * **Method & Path:** `GET /api/v1/blocks`
-* **Auth:** Authenticated
-* **Success Response (`200 OK`):** Returns list of blocked accounts.
+* **Auth:** same as section 25.1. No path parameter.
+* **Query:** none. Any query parameter is `400 VALIDATION_ERROR`, with the same unsupported-parameter detail as section 25.1.
+* **Body:** none. A non-empty JSON object is `400 VALIDATION_ERROR`.
+* **Rows:** `blocker_id` is the caller. Incoming blocks, where the caller is `blocked_id`, are not returned. Another user's blocks are not returned.
+* **Order:** `created_at DESC`, then `id DESC`.
+* **Fields:** each item is `userId` (`blocked_id`) and `createdAt`. Names, photos, email, phone, and `reason` are not returned. There is no cursor and no `limit`.
+* **Read-only:** no insert, update, delete, or Socket.IO event.
+* **Success Response (`200 OK`):** Message: `Blocked users retrieved.`
+  ```json
+  {
+    "success": true,
+    "data": [
+      {
+        "userId": "c3e7d81b-9932-4233-812c-6f5e39482130",
+        "createdAt": "2026-10-14T04:30:00.000Z"
+      }
+    ],
+    "message": "Blocked users retrieved."
+  }
+  ```
+  An empty list is `data: []`.
 
 ---
 
 ### 25.3 Unblock a User
 * **Method & Path:** `DELETE /api/v1/blocks/:userId`
-* **Auth:** Authenticated
-* **Success Response (`200 OK`):** Removes block record.
+* **Auth:** same as section 25.1.
+* **Path, query, and body:** same validation as section 25.1. `Idempotency-Key` is ignored.
+* **Delete:** one transaction removes the row where `blocker_id` is the caller and `blocked_id` is the lowercased path id. The reverse row is left in place. A missing outgoing row, a reverse-only row, and an unknown id all return `404 RESOURCE_NOT_FOUND`. Message: `Resource not found.` The response does not reveal that an incoming block exists. The target user is not loaded, so a missing user and a missing row share this 404.
+* **State left behind:** matches, conversations, likes, and messages are not updated. An `UNMATCHED` match stays `UNMATCHED`. A `CLOSED` conversation stays `CLOSED`. No new match is inserted. Rematch is not implemented. No Socket.IO event is emitted.
+* **Discovery after delete:** this direction no longer excludes the pair. The other direction still does if that row remains. An active outgoing like, pass, or super-like still excludes the target. When no block remains in either direction and no active outgoing action remains, discovery can return the other user again.
+* **Success Response (`200 OK`):** Message: `User unblocked successfully.`
+  ```json
+  {
+    "success": true,
+    "data": { "blocked": false, "targetUserId": "c3e7d81b-9932-4233-812c-6f5e39482130" },
+    "message": "User unblocked successfully."
+  }
+  ```
 
 ---
 
@@ -2202,7 +2246,7 @@ Photo objects returned after confirm, list, and patch are `{ "id", "url", "displ
 
 ## 32. Realtime / Socket.IO Events Specification
 
-**Phase 6 Slices 1, 4, 6, and 7 cover the socket foundation, TEXT send/receive, read receipts, and typing indicators.** Socket.IO is attached to the Express HTTP server with `@socket.io/redis-adapter`. `chat:message:send` persists through `chat.service.sendTextMessage` and then emits `chat:message:new` to the recipient user room. HTTP `POST /api/v1/conversations/:conversationId/messages` does not emit that event. HTTP `POST /api/v1/conversations/:conversationId/media-confirm` emits it after a new media row commits, and does not emit it for a replay. `PATCH /api/v1/conversations/:conversationId/read` emits `chat:message:read` to the other participant's user room after commit, and only when at least one incoming message was newly marked. `GET /api/v1/conversations/:conversationId/unread-count` does not emit a count event and does not change `chat:message:new` or `chat:message:read`. `chat:typing:start` and `chat:typing:stop` relay an ephemeral indicator to that same personal room. Conversation rooms are not joined. `DELETE /api/v1/matches/:matchId` still does not emit `match:unmatch`. HTTP routes keep working when Socket.IO did not start.
+**Phase 6 Slices 1, 4, 6, and 7 cover the socket foundation, TEXT send/receive, read receipts, and typing indicators.** Socket.IO is attached to the Express HTTP server with `@socket.io/redis-adapter`. `chat:message:send` persists through `chat.service.sendTextMessage` and then emits `chat:message:new` to the recipient user room. HTTP `POST /api/v1/conversations/:conversationId/messages` does not emit that event. HTTP `POST /api/v1/conversations/:conversationId/media-confirm` emits it after a new media row commits, and does not emit it for a replay. `PATCH /api/v1/conversations/:conversationId/read` emits `chat:message:read` to the other participant's user room after commit, and only when at least one incoming message was newly marked. `GET /api/v1/conversations/:conversationId/unread-count` does not emit a count event and does not change `chat:message:new` or `chat:message:read`. `chat:typing:start` and `chat:typing:stop` relay an ephemeral indicator to that same personal room. Conversation rooms are not joined. `DELETE /api/v1/matches/:matchId` still does not emit `match:unmatch`. `POST /api/v1/blocks/:userId` emits it after commit when that request changes an `ACTIVE` match to `UNMATCHED` and the match has a conversation. The target is `user:{blockedUserId}` only. HTTP routes keep working when Socket.IO did not start.
 
 ### 32.0 Implemented foundation
 * **Handshake:** Client connects with `auth: { token: "<access JWT>" }`. The token is the same access JWT used by HTTP `Authorization: Bearer`. Refresh tokens are not accepted.
@@ -2210,13 +2254,13 @@ Photo objects returned after confirm, list, and patch are `{ "id", "url", "displ
 * **Socket identity:** Successful handshakes store the live `AuthenticatedUser` on `socket.data.user`. `chat:message:send` uses `socket.data.user.id` as the sender. Unverified or incomplete profiles may connect. The send path reloads the user before it calls the chat service.
 * **User room:** On connect the server joins exactly `user:{userId}` from `socket.data.user.id`. The client cannot choose the room. Conversation rooms are not joined, and there is no conversation-room join event.
 * **Redis:** Socket.IO requires Redis for the adapter. Production fails startup if Redis or the adapter cannot initialize. Development can keep serving HTTP without Socket.IO when Redis is unavailable. Redis is not a message store, a quota store, or a chat idempotency store.
-* **Not in this slice:** No client `chat:message:read` command, no conversation-room join, no media Socket.IO upload or delivery, no offline replay, and no notification or match socket emissions. Chat media upload URL issuance is the HTTP route in section 24.5. It does not emit a socket event. Confirmation and media-message persistence are not implemented. Read receipts are the HTTP route in section 24.3. That route emits the server event below. It does not add a client listener. Typing indicators are section 32.4.
+* **Not in this slice:** No client `chat:message:read` command, no conversation-room join, no media Socket.IO upload or delivery, no offline replay, and no notification emissions. Block emits `match:unmatch` as section 25.1 describes. Chat handlers in this section do not emit it. Chat media upload URL issuance is the HTTP route in section 24.5. It does not emit a socket event. Confirmation and media-message persistence are not implemented. Read receipts are the HTTP route in section 24.3. That route emits the server event below. It does not add a client listener. Typing indicators are section 32.4.
 
 ### 32.1 Server $\rightarrow$ Client Events
 | Event Name | Room / Target | Payload Structure | Trigger Condition | Status |
 | :--- | :--- | :--- | :--- | :--- |
 | `match:new` | `user:{userId}` | `{"matchId": "...", "matchedUser": { "id": "...", "firstName": "Jordan", "photos": [...] }, "matchedAt": "..."}` | Reciprocal like establishes active match. | Planned |
-| `match:unmatch` | `user:{userId}` | `{"matchId": "...", "conversationId": "..."}` | Participant unmatches or block is triggered. | Planned |
+| `match:unmatch` | `user:{blockedUserId}` | `{"matchId": "...", "conversationId": "..."}` | `POST /api/v1/blocks/:userId` committed a change from `ACTIVE` to `UNMATCHED` and that match has a conversation. The blocked user's sockets only. Not emitted to the blocker, on rollback, on duplicate, on `GET` or `DELETE`, or when there is no conversation. `DELETE /api/v1/matches/:matchId` does not emit it. Delivery after commit is best-effort. | Implemented |
 | `chat:message:new` | `user:{recipientUserId}` | `{"id": "...", "conversationId": "...", "senderId": "...", "messageType": "TEXT", "content": "...", "createdAt": "..."}` | `chat:message:send` committed a TEXT message, or media confirmation committed a new media row (`content` is `null`). Recipient sockets only. Delivery after commit is best-effort. | Implemented |
 | `chat:message:read`| `user:{otherParticipantId}`| `{"conversationId": "...", "readerId": "...", "readAt": "..."}` | `PATCH /conversations/:conversationId/read` committed at least one newly read incoming message. The other participant's sockets only. Not emitted when no row changed, or when the request fails. | Implemented |
 | `chat:typing:start` | `user:{otherParticipantId}` | `{"conversationId": "...", "senderId": "..."}` | A socket became the active typist for that conversation. Recipient sockets only. Repeated starts from the same socket do not emit again. | Implemented |

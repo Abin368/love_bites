@@ -461,7 +461,7 @@ Implement swipe action mechanics (`LIKE`, `PASS`, `SUPER_LIKE`), daily action qu
 * Does not change discovery filtering. An active outgoing `LIKE` or `SUPER_LIKE` can still hide the other user.
 * `uq_matches_single_active_pair` already allows a later `ACTIVE` match after `UNDONE` or `UNMATCHED`. Rematch is not implemented. Do not revive the old row.
 * Do not treat UNDO as unmatch. Undo leaves `unmatched_at` null and sets `is_undone`.
-* No migration was added. `GET /api/v1/matches` remains unmounted. Notifications and Socket.IO `match:unmatch` are not emitted.
+* No migration was added. `GET /api/v1/matches` remains unmounted. Notifications are not written. This route does not emit Socket.IO `match:unmatch`. Block emits that event; see Phase 7.
 
 ---
 
@@ -520,18 +520,17 @@ Build real-time messaging using Socket.IO backed by PostgreSQL persistence, enfo
 ## 11. Phase 7 — Safety and Moderation
 
 ### 11.1 Objectives
-Implement instant bidirectional user blocking and auditable misconduct reporting with administrative queue triaging.
+Bidirectional user blocking is implemented. Auditable misconduct reporting and administrative queue triaging are not.
 
 ### 11.2 Implementation Steps
-1. **Bidirectional Blocking (`POST /api/v1/blocks/:userId`):**
-   * Creates record in `blocks` (`blocker_id`, `blocked_id`, `reason`).
-   * Inside a managed transaction:
-     * Immediately dissolves any active match between the pair (`matches.status = 'UNMATCHED'`).
-     * Closes open conversation threads (`conversations.status = 'CLOSED'`).
-     * Emits `match:unmatch` Socket.IO event to disconnect active chat sessions.
-   * `GET /api/v1/blocks`: Returns list of blocked accounts.
-   * `DELETE /api/v1/blocks/:userId`: Removes block record.
-2. **Misconduct Reporting (`POST /api/v1/reports`):**
+1. **Bidirectional Blocking — Implemented:**
+   * `POST /api/v1/blocks/:userId` inserts `blocks` with `blocker_id` = caller, `blocked_id` = target, and `reason` = null. The body does not accept `reason`.
+   * Middleware is `authenticate` and `requireRole('USER')`. Verification, profile completion, and Premium are not required. Self-block is `400 SELF_INTERACTION`. A missing or deleted target is `404 USER_NOT_FOUND`. A duplicate outgoing pair is `409 CONFLICT` and does not emit.
+   * Inside one transaction, after `lockLikeUsers` and the match and conversation locks: an `ACTIVE` match becomes `UNMATCHED` with `unmatched_at`, `updated_at`, and `unmatched_by_user_id` set to the blocker. Its `ACTIVE` conversation becomes `CLOSED`. `UNDONE` and already `UNMATCHED` rows stay. Likes and messages stay.
+   * After commit, `match:unmatch` goes to `user:{blockedUserId}` only when that request unmatched an `ACTIVE` match that has a conversation. The payload is `{ matchId, conversationId }`. Unmatch does not emit this event. A missing Socket.IO server does not fail the HTTP response.
+   * `GET /api/v1/blocks` returns the caller's outgoing rows as `{ userId, createdAt }`, ordered by `created_at DESC, id DESC`.
+   * `DELETE /api/v1/blocks/:userId` deletes only that outgoing row. A missing outgoing row is `404 RESOURCE_NOT_FOUND`. The match stays `UNMATCHED` and the conversation stays `CLOSED`. No migration.
+2. **Misconduct Reporting (`POST /api/v1/reports`) — not implemented:**
    * Validates mandatory reason code (`FAKE_PROFILE`, `HARASSMENT`, `SPAM`, `INAPPROPRIATE_CONTENT`, `SCAM`, `OTHER`) and optional description.
    * Inserts into `reports` table (`status = 'PENDING'`).
    * **Confidentiality Rule:** The reported account is never notified of the report or the reporter's identity.
@@ -813,7 +812,7 @@ To maintain strict adherence to dependency constraints, development should follo
 | **Unmatch** | Likes Module | `matches`, `conversations` | `DELETE /matches/:matchId` | Implemented. PostgreSQL integration: 13 passed. No Redis, quota, or credit change. `GET /matches` is not implemented. |
 | **Premium Undo** | Likes, Matches, Premium subscription | `likes`, `matches`, `conversations`, `subscriptions`, `plans` | `POST /discovery/undo` | PostgreSQL integration: 14 passed. No Redis idempotency. |
 | **Chat & Messaging**| Matches Module, S3, Socket.IO | `conversations`, `messages`, `usage_records` | `POST /conversations/:conversationId/messages`, `GET /conversations/:conversationId/messages`, `GET /conversations/:conversationId/unread-count`, `PATCH /conversations/:conversationId/read`, `chat:message:send`, `chat:typing:start`, `chat:typing:stop` | Slices 2–8: TEXT send, free `DAILY_TEXT_MESSAGES` quota (20/UTC day), realtime TEXT delivery, cursor-paginated history, read receipts, ephemeral typing indicators, and a per-conversation unread count. Inbox, media, and rooms remain. |
-| **Blocks & Safety** | Users, Matches, Chat | `blocks` | `/blocks`, `/blocks/:userId` | Integration (Bidirectional Isolation) |
+| **Blocks & Safety** | Users, Matches, Chat | `blocks`, `matches`, `conversations` | `POST /blocks/:userId`, `GET /blocks`, `DELETE /blocks/:userId` | Implemented. PostgreSQL integration: `tests/postgres/blocks.api.integration.test.ts`, 26 passed. Reports are not implemented. No migration. |
 | **Reports** | Users, Safety | `reports` | `/reports` | Integration (Report Submission) |
 | **Notifications** | Matches, Chat, Likes | `notifications` | `GET /notifications`, Socket.IO events | Integration (Event Delivery) |
 | **Who Liked You** | Likes, Entitlements | `likes`, `profiles`, `subscriptions` | `GET /likes/who-liked-me` | Integration (Free Redaction vs Premium) |

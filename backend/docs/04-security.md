@@ -412,7 +412,7 @@ The client cannot send a storage key. The signed key is `chat-media/{conversatio
 
 ## 22. Block and Report Security
 
-1. **Bidirectional Block Isolation:** When User A blocks User B, PostgreSQL constraints and discovery queries immediately prevent both users from discovering, matching, or messaging each other.
+1. **Bidirectional Block Isolation:** `POST /api/v1/blocks/:userId` inserts one directional row. `chk_blocks_no_self_block` rejects a self-block and `uq_blocks_pair` rejects a duplicate ordered pair. Discovery, like, pass, super-like, and chat queries treat either direction as a block. `DELETE /api/v1/blocks/:userId` removes only the caller's outgoing row and returns the same `404 RESOURCE_NOT_FOUND` for a missing row and a reverse-only row.
 2. **Report Confidentiality:** Moderation reports and administrative investigation notes are accessible strictly by authenticated administrators. The reported user is never notified of the reporter's identity.
 
 ---
@@ -514,7 +514,8 @@ Before creating a Pull Request or deploying code, verify that all applicable ite
 * [ ] Authenticated endpoints enforce `auth.middleware.ts`.
 * [ ] Admin endpoints enforce `requireRole('ADMIN')`.
 * [ ] Resource ownership verified for all mutating operations (`resource.user_id === req.user.id`).
-* [x] UNMATCH (`DELETE /api/v1/matches/:matchId`) allows either participant of an `ACTIVE` match and returns `404 MATCH_NOT_FOUND` for every other match id. It does not use Redis.
+* [x] UNMATCH (`DELETE /api/v1/matches/:matchId`) allows either participant of an `ACTIVE` match and returns `404 MATCH_NOT_FOUND` for every other match id. It does not use Redis. It does not emit `match:unmatch`.
+* [x] Block (`POST /api/v1/blocks/:userId`, `GET /api/v1/blocks`, `DELETE /api/v1/blocks/:userId`) is limited to role `USER`. List and delete use only the caller's outgoing rows. A duplicate block is `409 CONFLICT`. Self-block is `400 SELF_INTERACTION`.
 * [x] Send message (`POST /api/v1/conversations/:conversationId/messages`) verifies participant ownership, active match/conversation state, and bidirectional blocks. Missing or foreign conversations return `404 RESOURCE_NOT_FOUND`.
 
 ### Privacy & Data Protection
