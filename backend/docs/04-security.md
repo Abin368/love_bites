@@ -376,8 +376,9 @@ The client cannot send a storage key. The signed key is `chat-media/{conversatio
 
 ## 18. Subscription & Entitlement Security
 
-1. **Premium checks today:** `entitlements.service.ts` is not implemented. PASS, LIKE, SUPER LIKE, and UNDO decide Premium by reading `subscriptions` joined to `plans` (`PREMIUM_MONTHLY` or `PREMIUM_YEARLY`) with status `ACTIVE`, `PAST_DUE`, or `GRACE_PERIOD` and a `current_period_end` or `grace_period_end` still in the future. Controllers do not trust a client `isPremium` flag. The centralized entitlement service remains later work.
-2. **Tamper-Proof Plan Pricing:** 
+1. **Premium checks today:** PASS, LIKE, SUPER LIKE, UNDO, and chat media decide Premium by reading `subscriptions` joined to `plans` (`PREMIUM_MONTHLY` or `PREMIUM_YEARLY`) with status `ACTIVE`, `PAST_DUE`, or `GRACE_PERIOD` and a `current_period_end` or `grace_period_end` still in the future. Controllers do not trust a client `isPremium` flag. `GET /api/v1/me/entitlements` uses that same `hasActivePremium` predicate for its snapshot. It is not a shared engine for other routes. The centralized entitlement service remains later work.
+2. **Entitlements snapshot:** `GET /api/v1/me/entitlements` requires a valid access token and role `USER`. It does not require email verification, phone verification, or a completed profile. A missing token is `401 AUTH_REQUIRED`. An `ADMIN` is `403 FORBIDDEN`. The handler reads the caller's subscription and stored `SUPER_LIKE` and `BOOST` balances. It does not insert or update those rows, and it ignores a client-supplied tier or balance. `advancedFilters`, `adFree`, and `priorityVisibility` are returned `false`. A `CANCELED` or `EXPIRED` subscription is `FREE` under the live predicate even when a period end is still in the future. Section 28.3 of the API specification still describes canceled access remaining until period end. That conflict is unresolved.
+3. **Tamper-Proof Plan Pricing:** 
    * Clients submit only `planId` during checkout.
    * The backend resolves `plans.price_in_cents` and `plans.currency` directly from PostgreSQL.
    * Client-supplied prices or currency overrides are completely ignored.

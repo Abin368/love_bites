@@ -269,7 +269,7 @@ modules/likes/
 ```
 *Note: Optional files (e.g., `*.constants.ts`) should only be created when explicitly needed.*
 
-Implemented modules today are `auth`, `users`, `profiles`, `profile-photos`, `genders`, `interests`, `relationship-intentions`, `onboarding`, `discovery`, `likes`, and `chat`. Discovery routes mount the like, pass, super-like, and undo handlers. There is no `passes` table and no separate `likes.routes.ts`. Chat mounts `GET /conversations`, `GET /conversations/:conversationId`, `POST /conversations/:conversationId/messages`, `POST /conversations/:conversationId/media-upload-url`, `POST /conversations/:conversationId/media-confirm`, `GET /conversations/:conversationId/messages/:messageId/media-download-url`, `GET /conversations/:conversationId/messages`, `GET /conversations/:conversationId/unread-count`, and `PATCH /conversations/:conversationId/read`. Notifications, safety, subscriptions, payments, entitlements, match list, and admin modules are not implemented as HTTP modules. Their tables exist from Phase 1.
+Implemented modules today are `auth`, `users`, `profiles`, `profile-photos`, `genders`, `interests`, `relationship-intentions`, `onboarding`, `discovery`, `likes`, `chat`, and `entitlements`. Discovery routes mount the like, pass, super-like, and undo handlers. There is no `passes` table and no separate `likes.routes.ts`. Chat mounts `GET /conversations`, `GET /conversations/:conversationId`, `POST /conversations/:conversationId/messages`, `POST /conversations/:conversationId/media-upload-url`, `POST /conversations/:conversationId/media-confirm`, `GET /conversations/:conversationId/messages/:messageId/media-download-url`, `GET /conversations/:conversationId/messages`, `GET /conversations/:conversationId/unread-count`, and `PATCH /conversations/:conversationId/read`. `entitlements` mounts only `GET /me/entitlements`. Block management and report submission are mounted. Notifications, subscriptions, payments, the match list, and admin modules are not implemented as HTTP modules. Their tables exist from Phase 1.
 
 ---
 
@@ -610,7 +610,9 @@ function formatNotificationForUser(notification, userEntitlements) {
 
 ## 20. Subscription & Entitlement Architecture
 
-**The entitlement service is not implemented.** Live PASS, LIKE, SUPER LIKE, and UNDO read `subscriptions` and `plans` directly. Free LIKE and PASS usage is `usage_records`. Super Like usage is `user_credit_balances`. The pattern below is the planned central engine.
+**There is no shared entitlement engine.** `GET /api/v1/me/entitlements` is a read-only snapshot in `src/modules/entitlements/`. It calls the existing `hasActivePremium` in `likes.data-access.ts` and reads stored `user_credit_balances` rows. It does not move that predicate, and other modules do not call the snapshot service. PASS, LIKE, SUPER LIKE, UNDO, and chat media still call `hasActivePremium` themselves. Free LIKE and PASS usage is `usage_records`. Super Like usage is `user_credit_balances`. `GET /api/v1/me/usage` is not mounted.
+
+The snapshot returns `tier` `PREMIUM` or `FREE`. `unlimitedSwipes`, `undoAction`, `chatMedia`, and `seeWhoLikedYou` follow `hasActivePremium`. `advancedFilters`, `adFree`, and `priorityVisibility` are `false` for both tiers. Premium does not change discovery ranking. Credit fields are the stored `SUPER_LIKE` and `BOOST` balances, or `0` when no row exists. The request does not create a balance row. Authentication and role `USER` are required. Verification and profile completion are not. The pattern below remains the planned central engine, not the live snapshot.
 
 Entitlements are planned to manage feature availability and usage enforcement across the application.
 

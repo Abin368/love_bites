@@ -551,6 +551,11 @@ User ──► Active Subscription ──► Plan ──► PlanFeatures ──�
 ```
 
 ### 12.3 Implementation Steps
+
+**Slice 1 implemented (2026-10-14).** `GET /api/v1/me/entitlements` is a read-only snapshot for an authenticated `USER`. Email verification, phone verification, and profile completion are not required. `tier` is `PREMIUM` only when the existing `hasActivePremium` in `likes.data-access.ts` is true. That function was not modified or moved. `unlimitedSwipes`, `undoAction`, `chatMedia`, and `seeWhoLikedYou` use the same boolean. `advancedFilters`, `adFree`, and `priorityVisibility` are `false` for both tiers because those behaviors are not implemented. `credits.superLikeBalance` and `credits.boostBalance` are the stored `SUPER_LIKE` and `BOOST` balances, or `0` when the row is absent. The route does not create a balance row. It is not a shared entitlement engine. `GET /api/v1/me/usage`, plan seeding, payments, Who Liked You, notifications, and the rest of this phase are not complete. Focused PostgreSQL integration `tests/postgres/me-entitlements.api.integration.test.ts` passed 11 tests. `npm run build` passed. No migration.
+
+The numbered steps below are still the planned centralized engine. Slice 1 did not implement them.
+
 1. **Entitlement Service (`src/modules/entitlements/entitlements.service.ts`):**
    * Centralized method: `hasEntitlement(userId, featureCode): Promise<boolean>`.
    * Centralized method: `checkAndIncrementUsage(userId, metricKey, cost = 1): Promise<{ allowed: boolean, remaining: number }>`.
