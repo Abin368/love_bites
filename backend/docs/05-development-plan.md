@@ -520,7 +520,7 @@ Build real-time messaging using Socket.IO backed by PostgreSQL persistence, enfo
 ## 11. Phase 7 — Safety and Moderation
 
 ### 11.1 Objectives
-Bidirectional user blocking is implemented. Auditable misconduct reporting and administrative queue triaging are not.
+Bidirectional user blocking and user report submission are implemented. Administrative queue triaging is not.
 
 ### 11.2 Implementation Steps
 1. **Bidirectional Blocking — Implemented:**
@@ -530,10 +530,13 @@ Bidirectional user blocking is implemented. Auditable misconduct reporting and a
    * After commit, `match:unmatch` goes to `user:{blockedUserId}` only when that request unmatched an `ACTIVE` match that has a conversation. The payload is `{ matchId, conversationId }`. Unmatch does not emit this event. A missing Socket.IO server does not fail the HTTP response.
    * `GET /api/v1/blocks` returns the caller's outgoing rows as `{ userId, createdAt }`, ordered by `created_at DESC, id DESC`.
    * `DELETE /api/v1/blocks/:userId` deletes only that outgoing row. A missing outgoing row is `404 RESOURCE_NOT_FOUND`. The match stays `UNMATCHED` and the conversation stays `CLOSED`. No migration.
-2. **Misconduct Reporting (`POST /api/v1/reports`) — not implemented:**
-   * Validates mandatory reason code (`FAKE_PROFILE`, `HARASSMENT`, `SPAM`, `INAPPROPRIATE_CONTENT`, `SCAM`, `OTHER`) and optional description.
-   * Inserts into `reports` table (`status = 'PENDING'`).
-   * **Confidentiality Rule:** The reported account is never notified of the report or the reporter's identity.
+2. **Misconduct Reporting (`POST /api/v1/reports`) — Implemented:**
+   * Middleware is `authenticate` and `requireRole('USER')`. Verification, profile completion, and Premium are not required. Any query parameter is `400 VALIDATION_ERROR`. `Idempotency-Key` is ignored.
+   * The body is exactly `reportedUserId`, `reason`, and optional `description`. Unknown properties, including status and resolution fields, are rejected. `reason` is `FAKE_PROFILE`, `HARASSMENT`, `SPAM`, `INAPPROPRIATE_CONTENT`, `SCAM`, or `OTHER`. `OTHER` requires a trimmed non-empty description. Other reasons store a trimmed description, or `null` when the description is omitted or blank. The `description` column has no length check.
+   * Self-report is `400 SELF_INTERACTION`. A missing, soft-deleted, or `DELETED` target is `404 USER_NOT_FOUND`. A suspended, banned, unverified, or incomplete target can be reported.
+   * One transaction inserts `reports` with `status = 'PENDING'`. `admin_notes`, `resolved_by`, and `resolved_at` stay null. Multiple reports for the same pair are allowed. No unique constraint and no migration were added.
+   * The insert does not change blocks, matches, conversations, likes, messages, usage, or credits. Discovery does not use the row. No notification is written and no Socket.IO event is emitted. The `201` body is `{ reportId, status: "PENDING" }`.
+   * **Confidentiality Rule:** The reported account is never notified of the report or the reporter's identity. Admin listing and resolution remain Phase 11.
 
 ---
 
@@ -782,7 +785,7 @@ To maintain strict adherence to dependency constraints, development should follo
 20. Conversations & Messages Schema (Conversations, Messages Tables) — schema exists; chat write path not implemented
 21. Chat Service & 6-Step Message Authorization Engine — next. Not implemented.
 22. Socket.IO Realtime Engine (Redis Adapter, Handshake Auth, Rooms) — Slice 1 foundation done (handshake, user room, Redis adapter). Conversation rooms and chat events not implemented.
-23. Safety Module (Blocks Table, Bidirectional Isolation, Reports Table)
+23. Safety Module (Blocks Table, Bidirectional Isolation, Reports Table) — Blocks and `POST /api/v1/reports` are implemented. Admin triage remains step 31.
 24. Notification Engine (Notifications Table, Realtime Dispatch)
 25. "Who Liked You" Admirers Feed (Server-Side Masking for Free Tier)
 26. Subscription & Entitlements Engine (Plans, Features, Usage Limits, Usage Records)
@@ -812,8 +815,8 @@ To maintain strict adherence to dependency constraints, development should follo
 | **Unmatch** | Likes Module | `matches`, `conversations` | `DELETE /matches/:matchId` | Implemented. PostgreSQL integration: 13 passed. No Redis, quota, or credit change. `GET /matches` is not implemented. |
 | **Premium Undo** | Likes, Matches, Premium subscription | `likes`, `matches`, `conversations`, `subscriptions`, `plans` | `POST /discovery/undo` | PostgreSQL integration: 14 passed. No Redis idempotency. |
 | **Chat & Messaging**| Matches Module, S3, Socket.IO | `conversations`, `messages`, `usage_records` | `POST /conversations/:conversationId/messages`, `GET /conversations/:conversationId/messages`, `GET /conversations/:conversationId/unread-count`, `PATCH /conversations/:conversationId/read`, `chat:message:send`, `chat:typing:start`, `chat:typing:stop` | Slices 2–8: TEXT send, free `DAILY_TEXT_MESSAGES` quota (20/UTC day), realtime TEXT delivery, cursor-paginated history, read receipts, ephemeral typing indicators, and a per-conversation unread count. Inbox, media, and rooms remain. |
-| **Blocks & Safety** | Users, Matches, Chat | `blocks`, `matches`, `conversations` | `POST /blocks/:userId`, `GET /blocks`, `DELETE /blocks/:userId` | Implemented. PostgreSQL integration: `tests/postgres/blocks.api.integration.test.ts`, 26 passed. Reports are not implemented. No migration. |
-| **Reports** | Users, Safety | `reports` | `/reports` | Integration (Report Submission) |
+| **Blocks & Safety** | Users, Matches, Chat | `blocks`, `matches`, `conversations` | `POST /blocks/:userId`, `GET /blocks`, `DELETE /blocks/:userId` | Implemented. PostgreSQL integration: `tests/postgres/blocks.api.integration.test.ts`, 26 passed. No migration. |
+| **Reports** | Users, Safety | `reports` | `POST /reports` | Implemented. PostgreSQL integration: `tests/postgres/reports.api.integration.test.ts`, 12 passed. One `PENDING` row. `OTHER` requires a trimmed description. No notification, socket event, or migration. Admin review is not implemented. |
 | **Notifications** | Matches, Chat, Likes | `notifications` | `GET /notifications`, Socket.IO events | Integration (Event Delivery) |
 | **Who Liked You** | Likes, Entitlements | `likes`, `profiles`, `subscriptions` | `GET /likes/who-liked-me` | Integration (Free Redaction vs Premium) |
 | **Entitlements** | Subscriptions Module | `plans`, `features`, `plan_features`, `usage_limits`, `usage_records` | `/me/entitlements`, `/me/usage` | Unit + Integration (Centralized Engine) |

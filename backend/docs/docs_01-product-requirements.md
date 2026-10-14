@@ -410,14 +410,10 @@ Reports are not a Discovery exclusion. Browsing candidate cards does not consume
 * **Unblock:** `DELETE` removes only the caller's row. The old match stays `UNMATCHED` and the old conversation stays `CLOSED`. Discovery can show the other user again only when no block remains in either direction and no active outgoing like, pass, or super-like remains. Rematch is not implemented.
 
 #### Reporting
-* **Not implemented.** The planned categories are:
-  * Fake Profile / Impersonation
-  * Harassment / Abusive Behavior
-  * Spam / Commercial Promotion
-  * Inappropriate Content / Nudity
-  * Scam / Fraud
-  * Other (Requires text details)
-* Submitted reports are planned to enter the Admin Moderation Queue for review.
+* **Submission is implemented.** `POST /api/v1/reports`. The caller must be role `USER`. Verification and a complete profile are not required.
+* Categories are `FAKE_PROFILE`, `HARASSMENT`, `SPAM`, `INAPPROPRIATE_CONTENT`, `SCAM`, and `OTHER`. `OTHER` requires a non-empty description. The other categories may omit it. The stored description is trimmed, and the column has no character limit.
+* The row is `PENDING`. The reported person is not notified, and the response does not reveal the reporter. A report does not block, unmatch, or hide anyone in Discovery.
+* More than one report for the same pair is allowed. Admin review of those rows is not implemented.
 
 ### 11.2 Admin Management Capabilities
 The Admin Dashboard provides full operational management over the platform:
@@ -488,4 +484,4 @@ The following parameter values are designated as **TBD** and must be populated v
 ## Document Status
 * **Status:** DRAFT
 * **Version:** 1.0
-* **Last Updated:** 13 October 2026. Discovery, pass, like, super like, undo, unmatch, HTTP TEXT send, free text quota, Socket.IO TEXT send/receive, message history, read receipts, typing indicators, per-conversation unread counts, the conversation inbox, and conversation details match the implemented API. Media, rematch, who-liked-you, the match list, and payments remain product scope that is not yet implemented.
+* **Last Updated:** 14 October 2026. Discovery, pass, like, super like, undo, unmatch, chat through media download, block management, and `POST /api/v1/reports` match the implemented API. Rematch, who-liked-you, the match list, notifications, the admin report queue, and payments remain product scope that is not yet implemented.

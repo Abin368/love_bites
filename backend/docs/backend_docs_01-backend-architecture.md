@@ -569,10 +569,13 @@ Safety features operate independently from matching and communication modules.
 * **Realtime:** after commit, `match:unmatch` is emitted to `user:{blockedUserId}` only when this request unmatched a match that has a conversation. The payload is `{ matchId, conversationId }`. Users join `user:{userId}` only. There is no conversation room to invalidate. Unmatch does not emit this event. A missing Socket.IO server does not fail the HTTP response.
 
 ### Report Handling
-**Not implemented.** The planned rules are:
+`POST /api/v1/reports` is implemented. The route is `reports.routes` → `reports.controller` → `reports.service` → `reports.data-access`. There is no repository layer and no new migration. Admin listing and resolution are not implemented.
 
-* Support classifications: `FAKE_PROFILE`, `HARASSMENT`, `SPAM`, `INAPPROPRIATE_CONTENT`, `SCAM`, `OTHER`.
-* Submitting a report would create an auditable record in `reports` for Admin Review.
+* **Caller:** authenticated `USER`. Verification, profile completion, and Premium are not required. A query parameter is rejected. Unknown body properties are rejected.
+* **Row:** `reporter_id` is the caller, `reported_user_id` is the target, and `status` is `PENDING`. `admin_notes`, `resolved_by`, and `resolved_at` are null. Reasons are `FAKE_PROFILE`, `HARASSMENT`, `SPAM`, `INAPPROPRIATE_CONTENT`, `SCAM`, and `OTHER`. `OTHER` requires a trimmed description. Other reasons store trimmed text or `null`. The column has no length check. Duplicate pairs are allowed.
+* **Target:** a missing, soft-deleted, or `DELETED` user is `404 USER_NOT_FOUND`. A self-report is `400 SELF_INTERACTION` before insert. The table has no self-report check.
+* **Isolation:** the insert does not create a block, change a match or conversation, change likes or messages, or change discovery eligibility. Reports remain outside the discovery filter.
+* **Confidentiality:** no notification row and no Socket.IO event. The `201` data is `{ reportId, status: "PENDING" }`.
 
 ---
 

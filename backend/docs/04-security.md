@@ -413,7 +413,7 @@ The client cannot send a storage key. The signed key is `chat-media/{conversatio
 ## 22. Block and Report Security
 
 1. **Bidirectional Block Isolation:** `POST /api/v1/blocks/:userId` inserts one directional row. `chk_blocks_no_self_block` rejects a self-block and `uq_blocks_pair` rejects a duplicate ordered pair. Discovery, like, pass, super-like, and chat queries treat either direction as a block. `DELETE /api/v1/blocks/:userId` removes only the caller's outgoing row and returns the same `404 RESOURCE_NOT_FOUND` for a missing row and a reverse-only row.
-2. **Report Confidentiality:** Moderation reports and administrative investigation notes are accessible strictly by authenticated administrators. The reported user is never notified of the reporter's identity.
+2. **Report Confidentiality:** `POST /api/v1/reports` stores the reporter id and returns only `reportId` and `PENDING`. It does not notify the reported user, emit a Socket.IO event, or return admin notes. There is no user-facing report list. Administrative investigation notes remain admin-only. Those admin routes are not implemented.
 
 ---
 
@@ -479,7 +479,7 @@ The following events must always generate structured audit logs:
 ## 29. Account Deletion and Data Retention
 
 1. **Soft Delete Implementation:** User deletion sets `users.deleted_at = CURRENT_TIMESTAMP`, `status = 'DELETED'`, and revokes all active refresh tokens.
-2. **Cascade Protection:** Financial transaction records (`payments`) and safety moderation records (`reports`) retain references with `ON DELETE SET NULL` to ensure tax and legal compliance.
+2. **Cascade Protection:** Financial transaction records (`payments`) use `ON DELETE SET NULL`. A report row keeps its history when the reporter or resolving admin is removed: `reporter_id` and `resolved_by` use `ON DELETE SET NULL`. `reported_user_id` uses `ON DELETE CASCADE` through `fk_reports_reported`. Product account deletion is still a soft delete. These foreign keys apply when a user row is hard-deleted.
 3. **Hard Purge Window:** An automated background job permanently purges soft-deleted user records and removes S3 media binaries after a **30-day compliance retention window**.
 
 ---

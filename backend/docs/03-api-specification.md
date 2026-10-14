@@ -13,7 +13,7 @@ This document defines the **RESTful API Specification** and **Socket.IO Realtime
 
 ### Implementation status
 
-Phase 2 authentication, Phase 3 onboarding, Phase 4 Discovery, and Phase 5 slices for PASS, LIKE and match creation, SUPER LIKE, UNDO, and UNMATCH are implemented. Sections **4**, **11**, **12**, **14**, **19**, **20**, **21**, and **22.2** describe that live behavior. Sections **13**, **17**, **18**, **22.1**, and **23** onward are the planned contract and are not mounted, except where a subsection says otherwise. Sections **23.1** and **23.2** are mounted. `PUT /api/v1/me/interests`, `PUT /api/v1/me/relationship-intentions`, `GET /api/v1/dating-preferences`, `PUT /api/v1/dating-preferences`, `PUT /api/v1/location`, and `PATCH /api/v1/onboarding/profile` are not implemented. `GET /api/v1/matches` is not implemented. `DELETE /api/v1/matches/:matchId` is implemented. Match and conversation rows are created by LIKE and SUPER LIKE. UNMATCH does not delete them.
+Phase 2 authentication, Phase 3 onboarding, Phase 4 Discovery, and Phase 5 slices for PASS, LIKE and match creation, SUPER LIKE, UNDO, and UNMATCH are implemented. Sections **4**, **11**, **12**, **14**, **19**, **20**, **21**, and **22.2** describe that live behavior. Sections **13**, **17**, **18**, **22.1**, and **23** onward are the planned contract and are not mounted, except where a subsection says otherwise. Sections **23.1**, **23.2**, **25**, and **26.1** are mounted. Admin report review in section **31.2** is not. `PUT /api/v1/me/interests`, `PUT /api/v1/me/relationship-intentions`, `GET /api/v1/dating-preferences`, `PUT /api/v1/dating-preferences`, `PUT /api/v1/location`, and `PATCH /api/v1/onboarding/profile` are not implemented. `GET /api/v1/matches` is not implemented. `DELETE /api/v1/matches/:matchId` is implemented. Match and conversation rows are created by LIKE and SUPER LIKE. UNMATCH does not delete them.
 
 Health checks are also live: `GET /health` and `GET /api/v1/health`.
 
@@ -646,11 +646,11 @@ From login `user`, and from access-token claims:
 
 ### 11.12 What is live
 
-Live now: registration, email and phone verification, resend, login, refresh, logout, forgot-password, reset-password, the public catalog reads in section 11.13, the authenticated basic profile API in section 11.14, onboarding interests and relationship intentions in section 11.15, profile photos in section 14, dating preferences in section 12.5, location in section 12.6, onboarding status in section 12.1, onboarding completion in section 12.7, `GET /api/v1/discovery` in section 19, PASS, LIKE, SUPER LIKE, and UNDO in sections 20 and 21, and UNMATCH in section 22.2.
+Live now: registration, email and phone verification, resend, login, refresh, logout, forgot-password, reset-password, the public catalog reads in section 11.13, the authenticated basic profile API in section 11.14, onboarding interests and relationship intentions in section 11.15, profile photos in section 14, dating preferences in section 12.5, location in section 12.6, onboarding status in section 12.1, onboarding completion in section 12.7, `GET /api/v1/discovery` in section 19, PASS, LIKE, SUPER LIKE, and UNDO in sections 20 and 21, UNMATCH in section 22.2, block management in section 25, and `POST /api/v1/reports` in section 26.1.
 
 Phase 3 onboarding is complete. Phase 4 — Discovery is complete. Phase 5 slices for PASS, LIKE and match creation, SUPER LIKE, UNDO, and UNMATCH are complete. `GET /api/v1/matches` is not implemented. Rematch is not implemented. Gender and relationship-intention seed data exist. Production interests are not seeded, because the approved interest list is not defined.
 
-Not implemented: `PUT /api/v1/me/interests`, `PUT /api/v1/me/relationship-intentions`, `GET /api/v1/dating-preferences`, `PUT /api/v1/dating-preferences`, `PUT /api/v1/location`, `PATCH /api/v1/onboarding/profile`, the richer profile views in section 13, `GET /api/v1/matches`, who-liked-me, chat, notifications, subscriptions as a public API, payments, and boosts. Do not call those paths. `DELETE /api/v1/matches/:matchId` is live.
+Not implemented: `PUT /api/v1/me/interests`, `PUT /api/v1/me/relationship-intentions`, `GET /api/v1/dating-preferences`, `PUT /api/v1/dating-preferences`, `PUT /api/v1/location`, `PATCH /api/v1/onboarding/profile`, the richer profile views in section 13, `GET /api/v1/matches`, who-liked-me, notifications, subscriptions as a public API, payments, boosts, and admin report review. Do not call those paths. `DELETE /api/v1/matches/:matchId` is live. Chat routes are live where their subsection says implemented.
 
 Later sections remain the planned contract unless a subsection says it is implemented.
 
@@ -1881,7 +1881,7 @@ Photo objects returned after confirm, list, and patch are `{ "id", "url", "displ
 
 ## 25. Block APIs
 
-**Implemented.** These routes create, list, and delete the caller's outgoing `blocks` rows. Either direction already excludes discovery and rejects like, pass, super-like, and chat. This feature does not change those checks. Reports are not implemented. No migration was added.
+**Implemented.** These routes create, list, and delete the caller's outgoing `blocks` rows. Either direction already excludes discovery and rejects like, pass, super-like, and chat. This feature does not change those checks. Report submission is section 26.1 and does not change these checks. No migration was added.
 
 A block does not require verification, a complete profile, location, dating preferences, or Premium. `authenticate` still rejects a missing token, an invalid token, a deleted account, a suspended account, and a banned account before the handler runs.
 
@@ -1957,26 +1957,37 @@ A block does not require verification, a complete profile, location, dating pref
 
 ## 26. Report APIs
 
+**Implemented for submission only.** `POST /api/v1/reports` inserts one `PENDING` row. Listing, review, and resolution are section 31.2 and are not mounted. A report does not block the target, change a match or conversation, change likes or messages, write `usage_records` or credits, change discovery eligibility, write `notifications`, or emit a Socket.IO event. No migration was added. There is no rate limit on this route.
+
+A report does not require verification, a complete profile, location, dating preferences, or Premium. `authenticate` still rejects a missing token, an invalid token, a deleted account, a suspended account, and a banned account before the handler runs.
+
 ### 26.1 Report User Misconduct
 * **Method & Path:** `POST /api/v1/reports`
-* **Auth:** Authenticated
-* **Request Body:**
-  ```json
-  {
-    "reportedUserId": "c3e7d81b-9932-4233-812c-6f5e39482130",
-    "reason": "INAPPROPRIATE_CONTENT",
-    "description": "User posted offensive content in chat."
-  }
-  ```
-* **Validation:** `reason` in `['FAKE_PROFILE', 'HARASSMENT', 'SPAM', 'INAPPROPRIATE_CONTENT', 'SCAM', 'OTHER']`.
-* **Success Response (`201 Created`):**
+* **Auth:** `Authorization: Bearer <accessToken>` and role `USER`. Middleware is `authenticate`, `requireRole('USER')`, empty-query validation, then strict body validation. `requireVerified` is not on the route. The service does not check verification or `PROFILE_INCOMPLETE`. A non-`USER` role is `403 FORBIDDEN`. A missing token is `401 AUTH_REQUIRED`.
+* **Query:** none. Any query parameter is `400 VALIDATION_ERROR`. Detail field is the parameter name. Message: `Unsupported query parameter.`
+* **Body:** strict JSON. The fields are `reportedUserId`, `reason`, and optional `description`. Unknown properties, including `status`, `adminNotes`, `resolvedBy`, `resolvedAt`, `resolvedById`, and `reporterId`, are `400 VALIDATION_ERROR`. The caller cannot set status or resolution fields. `Idempotency-Key` is ignored. No Redis key is written.
+* **`reportedUserId`:** required UUID. It is lowercased before use. A missing value is `400 VALIDATION_ERROR` with detail field `reportedUserId` and message `Reported user id is required.` A non-string or malformed value uses message `Reported user id must be a valid UUID.`
+* **`reason`:** required, one of `FAKE_PROFILE`, `HARASSMENT`, `SPAM`, `INAPPROPRIATE_CONTENT`, `SCAM`, `OTHER`. A missing value is `400 VALIDATION_ERROR` with detail field `reason` and message `Reason is required.` Any other value uses message `Reason must be a valid report reason.`
+* **`description`:** optional string. There is no report-specific character limit. The column is `TEXT`, and the migration has no length check. The existing JSON body limit of 100kb still applies to the whole request. A non-string value is `400 VALIDATION_ERROR` with detail field `description` and message `Description must be a string.` Stored text is trimmed. An omitted, empty, or whitespace-only description is stored as `null` unless the reason is `OTHER`.
+* **`OTHER`:** the trimmed description must be non-empty. An omitted, empty, or whitespace-only description is `400 VALIDATION_ERROR`. Detail field: `description`. Message: `A description is required when the reason is OTHER.`
+* **Self-report:** `400 SELF_INTERACTION`. Message: `You cannot report your own profile.` This is rejected before the target lookup and before insert. The `reports` table has no self-report check constraint.
+* **Target:** the user row must exist and must not be soft-deleted or `status = 'DELETED'`. Otherwise `404 USER_NOT_FOUND`. Message: `Target user profile not found.` A suspended, banned, unverified, or incomplete target can be reported. Discovery eligibility is not required. The response does not include the target profile.
+* **Duplicates:** allowed. There is no unique pair constraint. A second report for the same caller and target inserts another `PENDING` row.
+* **Transaction:** one Sequelize transaction. The service re-reads the target, then inserts one row. `reporter_id` is the caller. `reported_user_id` is the lowercased target. `reason` is the validated reason. `description` is the trimmed text, or `null`. `status` is `PENDING`. `admin_notes`, `resolved_by`, and `resolved_at` are null. `created_at` and `updated_at` are set together in that insert.
+* **Unchanged:** blocks, matches, conversations, likes, messages, `usage_records`, credits, and `credit_transactions`. Discovery still does not use `reports` as an exclusion.
+* **Confidentiality:** no `notifications` row is written. No Socket.IO event is emitted. The success body does not include the reporter id, the target profile, admin notes, or resolution metadata.
+* **Success Response (`201 Created`):** Message: `Report submitted. Our safety team will review it.`
   ```json
   {
     "success": true,
-    "data": { "reportId": "rep-uuid-1", "status": "PENDING" },
+    "data": {
+      "reportId": "c3e7d81b-9932-4233-812c-6f5e39482130",
+      "status": "PENDING"
+    },
     "message": "Report submitted. Our safety team will review it."
   }
   ```
+  `data` is exactly `reportId` and `status`. `reportId` is the new `reports.id`. `status` is always `PENDING`.
 
 ---
 
@@ -2227,6 +2238,7 @@ A block does not require verification, a complete profile, location, dating pref
   * Body: `{ "status": "SUSPENDED", "reason": "Terms violation" }`
 
 ### 31.2 Moderation & Reports
+**Not implemented.** `POST /api/v1/reports` in section 26.1 can insert `PENDING` rows. These admin routes are not mounted.
 * **List Reports Queue:** `GET /api/v1/admin/reports?status=PENDING&page=1&limit=20`
 * **Get Report Details:** `GET /api/v1/admin/reports/:reportId`
 * **Resolve Report:** `PATCH /api/v1/admin/reports/:reportId`
@@ -2384,7 +2396,8 @@ Rate limits are enforced using Redis sliding-window algorithms:
 | **Inbox** (`GET /conversations`, implemented) | Reads `conversations`, `matches`, `profiles`, `blocks`, and `messages`. Returns `ACTIVE` conversations for an `ACTIVE` match and omits a blocked pair without failing the list. The page is limited before the latest-message and unread aggregate queries. Writes no row, no Redis key, and no socket event. |
 | **Conversation details** (`GET /conversations/:conversationId`, implemented) | Reads one `conversations` row, its `matches` row, `blocks`, the other participant's `profiles.first_name`, and the unread count on `messages` through `idx_messages_unread_count`. Uses the history authorization rules. Writes no row, no Redis key, and no socket event. |
 | **Typing** (`chat:typing:start`, `chat:typing:stop`, implemented) | Reads `conversations`, `matches`, `blocks`, `users`, and the profile context used by send. Writes no row and no Redis key. Process memory on the socket's node holds one active conversation and one timer per socket. The Redis adapter delivers the recipient event only. |
-| **Safety** (`/blocks`, `/reports`) | `blocks`, `reports` |
+| **Blocks** (`POST /blocks/:userId`, `GET /blocks`, `DELETE /blocks/:userId`, implemented) | `blocks`, `matches`, `conversations`. Does not write `reports`, `notifications`, likes, messages, `usage_records`, or credits. `match:unmatch` is emitted after commit only when this request unmatches an `ACTIVE` match that has a conversation. |
+| **Report submission** (`POST /reports`, implemented) | `reports` only. One `PENDING` row. Does not write `notifications` or change `blocks`, matches, conversations, likes, messages, `usage_records`, or credits. No Socket.IO event and no Redis key. |
 | **Notifications** | `notifications` |
 | **Subscriptions & Plans** | `plans`, `features`, `plan_features`, `subscriptions`, `usage_limits` |
 | **Payments & Webhooks** | `payments`, `processed_webhooks`, `subscriptions` |

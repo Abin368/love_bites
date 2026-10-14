@@ -775,7 +775,7 @@ Stores one directional safety block. While the row exists, neither user can disc
 ### 14.1 `reports`
 
 #### Purpose
-Records user moderation reports submitted against violating profiles for administrative review.
+Records user moderation reports submitted against violating profiles for administrative review. `POST /api/v1/reports` inserts one `PENDING` row. `description` has no length check. The API trims it and stores `null` when it is blank, except `OTHER`, which requires non-empty text. A hard delete of the reported user cascades this row. A hard delete of the reporter or resolver sets that foreign key to null. The submission API does not delete users.
 
 #### Columns
 | Column | Type | Nullable | Default | Description |
@@ -784,7 +784,7 @@ Records user moderation reports submitted against violating profiles for adminis
 | `reporter_id` | `UUID` | `YES` | `NULL` | User submitting the report (`ON DELETE SET NULL`). |
 | `reported_user_id`| `UUID` | `NO` | — | User being reported (`ON DELETE CASCADE`). |
 | `reason` | `VARCHAR(50)` | `NO` | — | Reason: `'FAKE_PROFILE'`, `'HARASSMENT'`, `'SPAM'`, `'INAPPROPRIATE_CONTENT'`, `'SCAM'`, `'OTHER'`. |
-| `description` | `TEXT` | `YES` | `NULL` | Detailed context provided by reporter. |
+| `description` | `TEXT` | `YES` | `NULL` | Reporter context. No length constraint. The submission API stores trimmed text, or `null` when blank. `OTHER` cannot be blank. |
 | `status` | `VARCHAR(30)` | `NO` | `'PENDING'` | Moderation state: `'PENDING'`, `'REVIEWING'`, `'RESOLVED'`, `'DISMISSED'`. |
 | `admin_notes` | `TEXT` | `YES` | `NULL` | Internal investigation notes. |
 | `resolved_by` | `UUID` | `YES` | `NULL` | Admin user who resolved the ticket (`ON DELETE SET NULL`). |

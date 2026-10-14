@@ -10,6 +10,7 @@ import { interestRoutes } from '../modules/interests/interests.routes';
 import { onboardingRoutes } from '../modules/onboarding/onboarding.routes';
 import { profileRoutes } from '../modules/profiles/profiles.routes';
 import { profilePhotoRoutes } from '../modules/profile-photos/profile-photos.routes';
+import { reportsRoutes } from '../modules/reports/reports.routes';
 import { relationshipIntentionRoutes } from '../modules/relationship-intentions/relationship-intentions.routes';
 
 const router = Router();
@@ -21,6 +22,7 @@ router.use('/conversations', chatRoutes);
 router.use('/discovery', discoveryRoutes);
 router.use('/matches', matchesRoutes);
 router.use('/blocks', blocksRoutes);
+router.use('/reports', reportsRoutes);
 router.use('/onboarding', onboardingRoutes);
 router.use('/profile', profileRoutes);
 router.use('/profile-photos', profilePhotoRoutes);
