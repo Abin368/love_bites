@@ -15,4 +15,13 @@ router.get(
   entitlementsController.getEntitlements
 );
 
+router.get(
+  '/usage',
+  authenticate,
+  requireRole('USER'),
+  validateNoQuery,
+  validateEmptyBody,
+  entitlementsController.getUsage
+);
+
 export const entitlementsRoutes = router;

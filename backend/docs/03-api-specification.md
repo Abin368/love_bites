@@ -13,7 +13,7 @@ This document defines the **RESTful API Specification** and **Socket.IO Realtime
 
 ### Implementation status
 
-Phase 2 authentication, Phase 3 onboarding, Phase 4 Discovery, and Phase 5 slices for PASS, LIKE and match creation, SUPER LIKE, UNDO, and UNMATCH are implemented. Sections **4**, **11**, **12**, **14**, **19**, **20**, **21**, and **22.2** describe that live behavior. Sections **13**, **17**, **18**, **22.1**, and **23** onward are the planned contract and are not mounted, except where a subsection says otherwise. Sections **23.1**, **23.2**, **25**, **26.1**, and **30.1** are mounted. Section **30.2** is not. Admin report review in section **31.2** is not. `PUT /api/v1/me/interests`, `PUT /api/v1/me/relationship-intentions`, `GET /api/v1/dating-preferences`, `PUT /api/v1/dating-preferences`, `PUT /api/v1/location`, and `PATCH /api/v1/onboarding/profile` are not implemented. `GET /api/v1/matches` is not implemented. `DELETE /api/v1/matches/:matchId` is implemented. Match and conversation rows are created by LIKE and SUPER LIKE. UNMATCH does not delete them.
+Phase 2 authentication, Phase 3 onboarding, Phase 4 Discovery, and Phase 5 slices for PASS, LIKE and match creation, SUPER LIKE, UNDO, and UNMATCH are implemented. Sections **4**, **11**, **12**, **14**, **19**, **20**, **21**, and **22.2** describe that live behavior. Sections **13**, **17**, **18**, **22.1**, and **23** onward are the planned contract and are not mounted, except where a subsection says otherwise. Sections **23.1**, **23.2**, **25**, **26.1**, **30.1**, and **30.2** are mounted. Admin report review in section **31.2** is not. `PUT /api/v1/me/interests`, `PUT /api/v1/me/relationship-intentions`, `GET /api/v1/dating-preferences`, `PUT /api/v1/dating-preferences`, `PUT /api/v1/location`, and `PATCH /api/v1/onboarding/profile` are not implemented. `GET /api/v1/matches` is not implemented. `DELETE /api/v1/matches/:matchId` is implemented. Match and conversation rows are created by LIKE and SUPER LIKE. UNMATCH does not delete them.
 
 Health checks are also live: `GET /health` and `GET /api/v1/health`.
 
@@ -120,8 +120,9 @@ Live routes that require `Authorization: Bearer <accessToken>`:
 * `GET /api/v1/conversations/:conversationId/unread-count`.
 * `GET /api/v1/conversations/:conversationId`.
 * `GET /api/v1/me/entitlements`.
+* `GET /api/v1/me/usage`.
 
-Those profile, onboarding, photo, discovery, unmatch, message, and entitlements routes also require role `USER`. `requireVerified` is not applied on the route. An unverified `USER` may call profile, onboarding, photo, and entitlements routes. Discovery, PASS, LIKE, SUPER LIKE, UNDO, UNMATCH, the conversation inbox, conversation details, send message, media upload URL, media confirmation, media download, message history, and the conversation unread count check verification in the service and return `403 EMAIL_NOT_VERIFIED` or `403 PHONE_NOT_VERIFIED`. Entitlements does not check verification or profile completion. Any other role, including `ADMIN`, receives `403 FORBIDDEN`. Suspended and banned accounts are rejected with `403` by the authentication middleware.
+Those profile, onboarding, photo, discovery, unmatch, message, entitlements, and usage routes also require role `USER`. `requireVerified` is not applied on the route. An unverified `USER` may call profile, onboarding, photo, entitlements, and usage routes. Discovery, PASS, LIKE, SUPER LIKE, UNDO, UNMATCH, the conversation inbox, conversation details, send message, media upload URL, media confirmation, media download, message history, and the conversation unread count check verification in the service and return `403 EMAIL_NOT_VERIFIED` or `403 PHONE_NOT_VERIFIED`. Entitlements and the usage snapshot do not check verification or profile completion. Any other role, including `ADMIN`, receives `403 FORBIDDEN`. Suspended and banned accounts are rejected with `403` by the authentication middleware.
 
 There is no live admin API yet. `requireRole('ADMIN')` exists for later routes.
 
@@ -2175,7 +2176,7 @@ A report does not require verification, a complete profile, location, dating pre
 
 ## 30. Entitlement & Usage APIs
 
-Section **30.1** is mounted. Section **30.2** is not. This slice does not add `entitlements.service.ts` methods for other modules. PASS, LIKE, SUPER LIKE, UNDO, and chat media still call `hasActivePremium` in `likes.data-access.ts`.
+Sections **30.1** and **30.2** are mounted. Neither route is a shared entitlement engine. PASS, LIKE, SUPER LIKE, UNDO, and chat media still call `hasActivePremium` in `likes.data-access.ts`. The usage snapshot calls that same function and does not move it.
 
 ### 30.1 Get Current User Entitlements
 * **Method & Path:** `GET /api/v1/me/entitlements`
@@ -2217,7 +2218,16 @@ Section **30.1** is mounted. Section **30.2** is not. This slice does not add `e
 
 ### 30.2 Get Daily Usage Quotas
 * **Method & Path:** `GET /api/v1/me/usage`
-* **Auth:** Authenticated
+* **Status:** Implemented. Read-only. No migration.
+* **Auth:** `Authorization: Bearer <accessToken>` and `requireRole('USER')`. `requireVerified` is not applied. A completed profile is not required. An unverified `USER` may call this route. A missing token is `401 AUTH_REQUIRED`. An `ADMIN` is `403 FORBIDDEN`. Suspended and banned accounts are rejected by authentication middleware.
+* **Query:** any query parameter is `400 VALIDATION_ERROR`. Detail field is the parameter name and the message is `Unsupported query parameter.` A user id in the query is rejected. The caller is `req.user.id`.
+* **Body:** not accepted. A JSON property is `400 VALIDATION_ERROR`.
+* **Scope:** one read of the caller's current UTC-day `usage_records` rows for `DAILY_LIKE_PASS` and `DAILY_TEXT_MESSAGES`. Another user's rows are not read. `usage_limits` is not read. Super Like and Boost balances are not returned.
+* **Period:** `currentUtcDayWindow()`. `period_start` is midnight UTC at the start of the current UTC day. `period_end` is midnight UTC at the start of the next UTC day. `quotaResetsAt` is that `periodEnd` as ISO-8601 UTC. Both metrics share it. Rows from earlier UTC days are ignored. There is no reset job.
+* **Missing row:** `used` is `0`. The route does not insert a row.
+* **Free caller:** `hasActivePremium` is false. `dailyLikePass.limit` is `10` and `dailyTextMessages.limit` is `20`, the same constants enforcement uses. `remaining` is `limit - used`. `isUnlimited` is `false`. No subscription, a `FREE` plan, an elapsed Premium period, and status `CANCELED` or `EXPIRED` stay limited. Section 28.3 still says a canceled subscription keeps Premium until `currentPeriodEnd`. This route follows the live predicate and does not change it.
+* **Premium caller:** `hasActivePremium` is true for `PREMIUM_MONTHLY` or `PREMIUM_YEARLY` with status `ACTIVE`, `PAST_DUE`, or `GRACE_PERIOD` and `current_period_end > now` or `grace_period_end > now`. Both metrics return `limit: null`, `remaining: null`, and `isUnlimited: true`. `used` is the stored current-day count, or `0` when no row exists. `-1` is not used. A count written earlier the same UTC day stays visible so Free enforcement can resume from it if Premium eligibility ends later that day.
+* **Read-only:** no insert, update, or delete. `usage_count`, `updated_at`, subscriptions, credits, and quota enforcement stay unchanged.
 * **Success Response (`200 OK`):**
   ```json
   {
@@ -2235,10 +2245,12 @@ Section **30.1** is mounted. Section **30.2** is not. This slice does not add `e
         "remaining": 12,
         "isUnlimited": false
       },
-      "quotaResetsAt": "2026-09-16T00:00:00.000Z"
-    }
+      "quotaResetsAt": "2026-10-15T00:00:00.000Z"
+    },
+    "message": "Usage retrieved."
   }
   ```
+  A Premium metric is `{ "used": 4, "limit": null, "remaining": null, "isUnlimited": true }`. The counts and timestamp above are examples. The live response uses the current UTC window and the caller's stored counts.
 
 ---
 
@@ -2414,7 +2426,8 @@ Rate limits are enforced using Redis sliding-window algorithms:
 | **Notifications** | `notifications` |
 | **Subscriptions & Plans** | `plans`, `features`, `plan_features`, `subscriptions`, `usage_limits` |
 | **Payments & Webhooks** | `payments`, `processed_webhooks`, `subscriptions` |
-| **Entitlements** (`GET /me/entitlements`, implemented) | Reads `subscriptions`, `plans`, and `user_credit_balances`. Does not read `plan_features`, `usage_limits`, or `usage_records`. Writes nothing. `GET /me/usage` is not mounted. |
+| **Entitlements** (`GET /me/entitlements`, implemented) | Reads `subscriptions`, `plans`, and `user_credit_balances`. Does not read `plan_features`, `usage_limits`, or `usage_records`. Writes nothing. |
+| **Usage** (`GET /me/usage`, implemented) | Reads the caller's current UTC-day `usage_records` for `DAILY_LIKE_PASS` and `DAILY_TEXT_MESSAGES`, and reads `subscriptions` and `plans` through the existing `hasActivePremium`. Does not read `usage_limits`. Writes nothing. A missing row is `used: 0`. Premium `limit` and `remaining` are `null`. |
 
 ---
 
