@@ -9,15 +9,14 @@ import {
   ForbiddenError,
   InternalServerError,
   NotFoundError,
-  RateLimitError,
   UnauthorizedError,
   ValidationError
 } from '../../utils/errors';
 import { findViewerDiscoveryContext } from '../discovery/discovery.data-access';
+import { consumeDailyQuota } from '../entitlements/usage.service';
 import {
-  FREE_DAILY_TEXT_MESSAGES_LIMIT,
+  DAILY_TEXT_MESSAGES_METRIC,
   hasActivePremium,
-  incrementDailyTextMessages,
   lockLikeUsers
 } from '../likes/likes.data-access';
 import { findUserById } from '../users/users.data-access';
@@ -70,7 +69,6 @@ import { conversationIdSchema, encodeHistoryCursor, encodeInboxCursor, isAllowed
 const RESOURCE_NOT_FOUND_MESSAGE = 'Resource not found';
 const CONVERSATION_CLOSED_MESSAGE = 'Conversation is closed due to unmatch or safety block.';
 const BLOCKED_USER_MESSAGE = 'Interaction prohibited due to an active safety block.';
-const DAILY_TEXT_LIMIT_MESSAGE = 'You have reached your daily limit of 20 text messages.';
 const PREMIUM_REQUIRED_MESSAGE = 'Feature requires an active Premium subscription.';
 const MEDIA_UPLOAD_TTL_SECONDS = 300;
 const MEDIA_DOWNLOAD_TTL_SECONDS = 3600;
@@ -221,15 +219,11 @@ export async function sendTextMessage(input: SendTextMessageInput): Promise<Send
       throw new ConflictError(BLOCKED_USER_MESSAGE, [], 'BLOCKED_USER');
     }
 
-    const premium = await hasActivePremium(input.callerId, transaction);
-    let remainingDailyMessages: number | null = null;
-    if (!premium) {
-      const usageCount = await incrementDailyTextMessages(input.callerId, transaction);
-      if (usageCount === null) {
-        throw new RateLimitError(DAILY_TEXT_LIMIT_MESSAGE, [], 'DAILY_LIMIT_REACHED');
-      }
-      remainingDailyMessages = FREE_DAILY_TEXT_MESSAGES_LIMIT - usageCount;
-    }
+    const remainingDailyMessages = await consumeDailyQuota(
+      input.callerId,
+      DAILY_TEXT_MESSAGES_METRIC,
+      transaction
+    );
 
     const message = await insertTextMessage(conversationId, input.callerId, input.content, transaction);
     const updated = await updateConversationLastMessageAt(conversationId, message.createdAt, transaction);
