@@ -172,7 +172,15 @@ export async function findPassTarget(
   };
 }
 
-export async function hasActivePremium(userId: string, transaction: Transaction): Promise<boolean> {
+export interface QualifyingPremiumPlan {
+  id: string;
+  code: string;
+}
+
+export async function findQualifyingPremiumPlan(
+  userId: string,
+  transaction: Transaction
+): Promise<QualifyingPremiumPlan | null> {
   const now = new Date();
   const subscription = await Subscription.findOne({
     attributes: ['id'],
@@ -185,15 +193,28 @@ export async function hasActivePremium(userId: string, transaction: Transaction)
       {
         model: Plan,
         as: 'plan',
-        attributes: ['id'],
+        attributes: ['id', 'code'],
         required: true,
         where: { code: { [Op.in]: [...PREMIUM_PLAN_CODES] } }
       }
     ],
     transaction
   });
+  if (!subscription) {
+    return null;
+  }
 
-  return subscription !== null;
+  const plan = subscription.get('plan') as Plan | undefined;
+  if (!plan) {
+    return null;
+  }
+
+  return { id: plan.id, code: plan.code };
+}
+
+export async function hasActivePremium(userId: string, transaction: Transaction): Promise<boolean> {
+  const plan = await findQualifyingPremiumPlan(userId, transaction);
+  return plan !== null;
 }
 
 async function incrementDailyUsage(
@@ -222,12 +243,20 @@ async function incrementDailyUsage(
   return Number(usageCount);
 }
 
-export async function incrementDailyLikePass(userId: string, transaction: Transaction): Promise<number | null> {
-  return incrementDailyUsage(userId, DAILY_LIKE_PASS_METRIC, FREE_DAILY_LIKE_PASS_LIMIT, transaction);
+export async function incrementDailyLikePass(
+  userId: string,
+  transaction: Transaction,
+  limit: number
+): Promise<number | null> {
+  return incrementDailyUsage(userId, DAILY_LIKE_PASS_METRIC, limit, transaction);
 }
 
-export async function incrementDailyTextMessages(userId: string, transaction: Transaction): Promise<number | null> {
-  return incrementDailyUsage(userId, DAILY_TEXT_MESSAGES_METRIC, FREE_DAILY_TEXT_MESSAGES_LIMIT, transaction);
+export async function incrementDailyTextMessages(
+  userId: string,
+  transaction: Transaction,
+  limit: number
+): Promise<number | null> {
+  return incrementDailyUsage(userId, DAILY_TEXT_MESSAGES_METRIC, limit, transaction);
 }
 
 export async function insertPass(fromUserId: string, toUserId: string, transaction: Transaction): Promise<void> {

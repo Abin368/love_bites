@@ -332,13 +332,13 @@ Incoming TEXT payload
 [Step 4] No bidirectional block between participants
          │
          ▼
-[Step 5] Free daily TEXT quota (DAILY_TEXT_MESSAGES, 20 / UTC day)
-         │         consumeDailyQuota calls hasActivePremium; Premium callers skip the write
+[Step 5] Daily TEXT quota from usage_limits (seeded Free limit 20 / UTC day)
+         │         qualifying Premium with catalog limit -1 skips the write
          ▼
 [Persist TEXT in PostgreSQL and update last_message_at]
 ```
 
-Media entitlement (attachments) is not part of TEXT send. Free callers consume `DAILY_TEXT_MESSAGES` through `consumeDailyQuota` after authorization succeeds; exhausted free quota is `429 DAILY_LIMIT_REACHED` with message `You have reached your daily limit of 20 text messages.` Premium callers do not write `usage_records` and return `remainingDailyMessages: null`. The helper uses the caller's transaction and the existing atomic upsert. HTTP send does not emit a Socket.IO event. `chat:message:send` emits `chat:message:new` only after that transaction commits. User locks reuse `lockLikeUsers` so HTTP and socket sends coordinate with UNMATCH and UNDO. Redis is not used for this quota.
+Media entitlement (attachments) is not part of TEXT send. Free callers consume `DAILY_TEXT_MESSAGES` through `consumeDailyQuota` after authorization succeeds. The limit is the seeded Free `usage_limits` row. Exhausted free quota is `429 DAILY_LIMIT_REACHED` with message `You have reached your daily limit of 20 text messages.` A qualifying Premium plan whose catalog limit is `-1` does not write `usage_records` and returns `remainingDailyMessages: null`. A missing or invalid catalog row fails closed and does not fall back to a hardcoded limit. The helper uses the caller's transaction and the existing atomic upsert. HTTP send does not emit a Socket.IO event. `chat:message:send` emits `chat:message:new` only after that transaction commits. User locks reuse `lockLikeUsers` so HTTP and socket sends coordinate with UNMATCH and UNDO. Redis is not used for this quota.
 
 ### 16.2 Chat Media Upload URL (Phase 6 media slice 1)
 `POST /api/v1/conversations/:conversationId/media-upload-url` issues a private 300-second `PutObject` URL for an eligible Premium participant. It uses `hasActivePremium` inside a transaction after `lockLikeUsers`, `lockMatchById`, and `lockConversationById`. The transaction commits before signing and before the Redis write, so those calls do not hold row locks. A later close, block, or Premium lapse is not visible to this response. Confirmation authorizes again, as section 16.3 describes.
@@ -376,7 +376,7 @@ The client cannot send a storage key. The signed key is `chat-media/{conversatio
 
 ## 18. Subscription & Entitlement Security
 
-1. **Premium checks today:** PASS, LIKE, and TEXT quota go through `consumeDailyQuota`, which calls `hasActivePremium` on the caller's transaction. SUPER LIKE, UNDO, chat media, and both snapshots call that same predicate directly. Premium is a `subscriptions` row joined to `plans` (`PREMIUM_MONTHLY` or `PREMIUM_YEARLY`) with status `ACTIVE`, `PAST_DUE`, or `GRACE_PERIOD` and a `current_period_end` or `grace_period_end` still in the future. Controllers do not trust a client `isPremium` flag. The catalog entitlement engine, `usage_limits`, and plan seeding remain later work.
+1. **Premium checks today:** PASS, LIKE, and TEXT quota go through `consumeDailyQuota` on the caller's transaction. Qualifying Premium is a `subscriptions` row joined to `plans` (`PREMIUM_MONTHLY` or `PREMIUM_YEARLY`) with status `ACTIVE`, `PAST_DUE`, or `GRACE_PERIOD` and a `current_period_end` or `grace_period_end` still in the future. `plans.is_active` is not part of that predicate. The two daily limits are then read from `usage_limits`. A positive value is enforced. `-1` on that Premium plan skips the usage write. `-1` on Free and any missing or invalid catalog row fail closed. There is no hardcoded enforcement fallback. SUPER LIKE, UNDO, chat media, and both snapshots still call `hasActivePremium` directly and do not read `usage_limits`. Controllers do not trust a client `isPremium` flag. The catalog entitlement engine and `plan_features` remain later work. Apply the plan catalog seeder before this enforcement runs.
 2. **Entitlements snapshot:** `GET /api/v1/me/entitlements` requires a valid access token and role `USER`. It does not require email verification, phone verification, or a completed profile. A missing token is `401 AUTH_REQUIRED`. An `ADMIN` is `403 FORBIDDEN`. The handler reads the caller's subscription and stored `SUPER_LIKE` and `BOOST` balances. It does not insert or update those rows, and it ignores a client-supplied tier or balance. `advancedFilters`, `adFree`, and `priorityVisibility` are returned `false`. A `CANCELED` or `EXPIRED` subscription is `FREE` under the live predicate even when a period end is still in the future. Section 28.3 of the API specification still describes canceled access remaining until period end. That conflict is unresolved.
 3. **Usage snapshot:** `GET /api/v1/me/usage` uses the same token and `USER` role rules. It does not require verification or a completed profile. The user id comes from `req.user.id`. A query parameter, including a user id, is `400 VALIDATION_ERROR` with message `Unsupported query parameter.` A JSON body is `400 VALIDATION_ERROR`. The read is limited to that caller's current UTC-day `DAILY_LIKE_PASS` and `DAILY_TEXT_MESSAGES` rows. It does not insert a missing row, change `usage_count` or `updated_at`, or change subscriptions, credits, or quota enforcement. Premium `limit` and `remaining` are `null`. `isUnlimited` follows `hasActivePremium`. `CANCELED` and `EXPIRED` stay limited under that predicate.
 4. **Tamper-Proof Plan Pricing:** 
@@ -533,7 +533,7 @@ Before creating a Pull Request or deploying code, verify that all applicable ite
 
 ### Monetization & Payments
 * [ ] Entitlements are evaluated dynamically from server-side subscriptions.
-* [x] Free LIKE and PASS quota (10 per UTC day) is enforced atomically in `usage_records`. Free TEXT message quota (20 per UTC day, metric `DAILY_TEXT_MESSAGES`) is enforced atomically in the same ledger after authorization. Premium callers bypass both quotas and do not write usage for those metrics. Redis is not used for product quotas.
+* [x] Free LIKE and PASS quota is enforced atomically in `usage_records` from the seeded `DAILY_LIKE_PASS` limit (10 per UTC day). Free TEXT message quota is enforced the same way from the seeded `DAILY_TEXT_MESSAGES` limit (20 per UTC day) after authorization. A qualifying Premium catalog limit of `-1` skips both writes. A missing catalog fails closed. Redis is not used for product quotas.
 * [ ] Plan pricing is resolved server-side; client prices are ignored.
 * [ ] Razorpay webhook HMAC signatures are verified before processing.
 * [ ] Webhook processing is idempotent via `processed_webhooks`.

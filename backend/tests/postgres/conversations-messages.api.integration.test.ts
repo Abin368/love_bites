@@ -45,6 +45,7 @@ jest.mock('../../src/config/redis', () => jest.requireActual('../helpers/memory-
 
 import { forgetSocketServer, rememberSocketServer } from '../../src/socket/socket.server';
 import { app } from '../../src/app';
+import { ensurePlanCatalog } from './plan-catalog.fixture';
 
 const PASSWORD_HASH = '$argon2id$v=19$m=65536,t=3,p=4$integration-test-hash';
 const ORIGIN = { latitude: 12.9716, longitude: 77.5946 };
@@ -423,6 +424,10 @@ async function seedTextUsage(userId: string, count: number, period?: { periodSta
 async function textMessageUsageRowCount(): Promise<number> {
   return UsageRecord.count({ where: { metricKey: DAILY_TEXT_MESSAGES_METRIC } });
 }
+
+beforeEach(async () => {
+  await ensurePlanCatalog();
+});
 
 describe('POST /api/v1/conversations/:conversationId/messages', () => {
   it('lets either participant send a TEXT message and updates last_message_at', async () => {

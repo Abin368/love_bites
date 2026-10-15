@@ -37,6 +37,7 @@ jest.mock('../../src/integrations/storage/s3.provider', () => ({
 }));
 
 import { app } from '../../src/app';
+import { ensurePlanCatalog } from './plan-catalog.fixture';
 
 const PASSWORD_HASH = '$argon2id$v=19$m=65536,t=3,p=4$integration-test-hash';
 const ORIGIN = { latitude: 12.9716, longitude: 77.5946 };
@@ -267,6 +268,10 @@ async function eligibleDiscoveryPair() {
   ]);
   return { viewer, candidate };
 }
+
+beforeEach(async () => {
+  await ensurePlanCatalog();
+});
 
 describe('block management', () => {
   it('rejects a missing token and an admin', async () => {
