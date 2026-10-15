@@ -1,12 +1,13 @@
 import { sequelize } from '../../config/database';
 import {
   currentUtcDayWindow,
-  FREE_DAILY_LIKE_PASS_LIMIT,
-  FREE_DAILY_TEXT_MESSAGES_LIMIT,
+  DAILY_LIKE_PASS_METRIC,
+  DAILY_TEXT_MESSAGES_METRIC,
   hasActivePremium
 } from '../likes/likes.data-access';
 import { findCurrentDayUsageCounts, findStoredCreditBalances } from './entitlements.data-access';
 import type { EntitlementsSnapshot, UsageMetricSnapshot, UsageSnapshot } from './entitlements.types';
+import { resolveDailyCatalogLimit, type DailyCatalogLimit } from './usage.service';
 
 export async function getCurrentEntitlements(userId: string): Promise<EntitlementsSnapshot> {
   return sequelize.transaction(async (transaction) => {
@@ -29,8 +30,8 @@ export async function getCurrentEntitlements(userId: string): Promise<Entitlemen
   });
 }
 
-function usageMetric(used: number, limit: number, unlimited: boolean): UsageMetricSnapshot {
-  if (unlimited) {
+function usageMetric(used: number, catalog: DailyCatalogLimit): UsageMetricSnapshot {
+  if (catalog.isUnlimited) {
     return {
       used,
       limit: null,
@@ -41,8 +42,8 @@ function usageMetric(used: number, limit: number, unlimited: boolean): UsageMetr
 
   return {
     used,
-    limit,
-    remaining: limit - used,
+    limit: catalog.limit,
+    remaining: catalog.limit - used,
     isUnlimited: false
   };
 }
@@ -50,12 +51,13 @@ function usageMetric(used: number, limit: number, unlimited: boolean): UsageMetr
 export async function getCurrentUsage(userId: string): Promise<UsageSnapshot> {
   return sequelize.transaction(async (transaction) => {
     const window = currentUtcDayWindow();
-    const premium = await hasActivePremium(userId, transaction);
+    const dailyLikePass = await resolveDailyCatalogLimit(userId, DAILY_LIKE_PASS_METRIC, transaction);
+    const dailyTextMessages = await resolveDailyCatalogLimit(userId, DAILY_TEXT_MESSAGES_METRIC, transaction);
     const counts = await findCurrentDayUsageCounts(userId, window.periodStart, transaction);
 
     return {
-      dailyLikePass: usageMetric(counts.likePassUsed, FREE_DAILY_LIKE_PASS_LIMIT, premium),
-      dailyTextMessages: usageMetric(counts.textMessagesUsed, FREE_DAILY_TEXT_MESSAGES_LIMIT, premium),
+      dailyLikePass: usageMetric(counts.likePassUsed, dailyLikePass),
+      dailyTextMessages: usageMetric(counts.textMessagesUsed, dailyTextMessages),
       quotaResetsAt: window.periodEnd.toISOString()
     };
   });

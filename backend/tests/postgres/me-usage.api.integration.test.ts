@@ -4,6 +4,7 @@ import { QueryTypes } from 'sequelize';
 import { sequelize } from '../../src/config/database';
 import { Plan, PlanBillingInterval } from '../../src/database/models/plan.model';
 import { Subscription, SubscriptionStatus } from '../../src/database/models/subscription.model';
+import { UsageLimit, UsagePeriodType } from '../../src/database/models/usage-limit.model';
 import { UsageRecord } from '../../src/database/models/usage-record.model';
 import { User, UserRole } from '../../src/database/models/user.model';
 import {
@@ -15,6 +16,7 @@ import {
 } from '../../src/modules/likes/likes.data-access';
 import { signAccessToken } from '../../src/utils/jwt';
 import { app } from '../../src/app';
+import { ensurePlanCatalog } from './plan-catalog.fixture';
 
 const PASSWORD_HASH = '$argon2id$v=19$m=65536,t=3,p=4$integration-test-hash';
 const HOUR_MS = 60 * 60 * 1000;
@@ -44,6 +46,10 @@ function getUsage(userId?: string, role: 'USER' | 'ADMIN' = 'USER') {
     return call;
   }
   return call.set(authHeader(userId, role));
+}
+
+function getEntitlements(userId: string) {
+  return request(app).get('/api/v1/me/entitlements').set(authHeader(userId));
 }
 
 async function createUser(input: { role?: UserRole; emailVerified?: boolean; status?: 'UNVERIFIED' | 'ACTIVE' } = {}): Promise<User> {
@@ -125,6 +131,22 @@ async function seedCurrentUsage(userId: string, likePass: number, textMessages: 
   await seedUsage(userId, DAILY_TEXT_MESSAGES_METRIC, textMessages, window.periodStart, window.periodEnd);
 }
 
+async function setLimit(
+  planCode: 'FREE' | 'PREMIUM_MONTHLY' | 'PREMIUM_YEARLY',
+  metricKey: string,
+  limitValue: number,
+  periodType: UsagePeriodType = 'DAILY'
+): Promise<void> {
+  const plan = await Plan.findOne({ where: { code: planCode } });
+  if (!plan) {
+    throw new Error(`Expected ${planCode} plan.`);
+  }
+  const [count] = await UsageLimit.update({ limitValue, periodType }, { where: { planId: plan.id, metricKey } });
+  if (count !== 1) {
+    throw new Error(`Expected one ${planCode} ${metricKey} limit to update.`);
+  }
+}
+
 function limitedMetric(used: number, limit: number) {
   return { used, limit, remaining: limit - used, isUnlimited: false as const };
 }
@@ -195,6 +217,10 @@ async function mutationStats(): Promise<Record<string, string>> {
 }
 
 describe('GET /api/v1/me/usage', () => {
+  beforeEach(async () => {
+    await ensurePlanCatalog();
+  });
+
   it('returns 401 when the token is missing', async () => {
     const response = await getUsage();
 
@@ -432,5 +458,131 @@ describe('GET /api/v1/me/usage', () => {
     expect(likePassBefore?.usageCount).toBe(4);
     expect(textBefore?.usageCount).toBe(8);
     expect(otherBefore?.usageCount).toBe(9);
+  });
+
+  it('returns the changed free DAILY_LIKE_PASS catalog limit and does not insert usage', async () => {
+    const caller = await createUser();
+    await setLimit('FREE', DAILY_LIKE_PASS_METRIC, 7);
+    await seedCurrentUsage(caller.id, 2, 1);
+
+    const before = await UsageRecord.count();
+    await expectUsage(caller.id, limitedMetric(2, 7), limitedMetric(1, FREE_DAILY_TEXT_MESSAGES_LIMIT));
+
+    expect(await UsageRecord.count()).toBe(before);
+  });
+
+  it('returns a positive premium catalog limit instead of unlimited', async () => {
+    const caller = await createUser();
+    await subscribe(caller.id, {
+      code: 'PREMIUM_MONTHLY',
+      status: 'ACTIVE',
+      currentPeriodEnd: new Date(Date.now() + HOUR_MS),
+      gracePeriodEnd: null
+    });
+    await setLimit('PREMIUM_MONTHLY', DAILY_LIKE_PASS_METRIC, 50);
+    await seedCurrentUsage(caller.id, 4, 8);
+
+    const before = await UsageRecord.count();
+    await expectUsage(caller.id, limitedMetric(4, 50), unlimitedMetric(8));
+
+    expect(await UsageRecord.count()).toBe(before);
+  });
+
+  it('returns a catalog limit of zero with remaining zero when usage is zero', async () => {
+    const caller = await createUser();
+    await setLimit('FREE', DAILY_LIKE_PASS_METRIC, 0);
+
+    const before = await UsageRecord.count({ where: { userId: caller.id } });
+    await expectUsage(caller.id, limitedMetric(0, 0), limitedMetric(0, FREE_DAILY_TEXT_MESSAGES_LIMIT));
+
+    expect(before).toBe(0);
+    expect(await UsageRecord.count({ where: { userId: caller.id } })).toBe(0);
+  });
+
+  it('fails closed when the FREE plan is missing and does not write usage', async () => {
+    const caller = await createUser();
+    const window = currentUtcDayWindow();
+    const existing = await seedUsage(caller.id, DAILY_LIKE_PASS_METRIC, 3, window.periodStart, window.periodEnd);
+    const before = await UsageRecord.count();
+
+    await Plan.destroy({ where: { code: 'FREE' } });
+    const response = await getUsage(caller.id);
+
+    expect(response.status).toBe(500);
+    expect(response.body.success).toBe(false);
+    expect(response.body.error.code).toBe('INTERNAL_SERVER_ERROR');
+    expect(await UsageRecord.count()).toBe(before);
+    expect((await UsageRecord.findByPk(existing.id))?.usageCount).toBe(3);
+  });
+
+  it('fails closed when a usage-limit row is missing and still returns entitlements', async () => {
+    const caller = await createUser();
+    const window = currentUtcDayWindow();
+    const existing = await seedUsage(caller.id, DAILY_TEXT_MESSAGES_METRIC, 6, window.periodStart, window.periodEnd);
+    const freePlan = await Plan.findOne({ where: { code: 'FREE' } });
+    if (!freePlan) {
+      throw new Error('Expected FREE plan.');
+    }
+    const before = await UsageRecord.count();
+
+    await UsageLimit.destroy({ where: { planId: freePlan.id, metricKey: DAILY_LIKE_PASS_METRIC } });
+    const response = await getUsage(caller.id);
+    const entitlements = await getEntitlements(caller.id);
+
+    expect(response.status).toBe(500);
+    expect(response.body.success).toBe(false);
+    expect(response.body.error.code).toBe('INTERNAL_SERVER_ERROR');
+    expect(entitlements.status).toBe(200);
+    expect(entitlements.body).toEqual({
+      success: true,
+      data: {
+        tier: 'FREE',
+        features: {
+          unlimitedSwipes: false,
+          seeWhoLikedYou: false,
+          advancedFilters: false,
+          undoAction: false,
+          chatMedia: false,
+          adFree: false,
+          priorityVisibility: false
+        },
+        credits: { boostBalance: 0, superLikeBalance: 0 }
+      },
+      message: 'Entitlements retrieved.'
+    });
+    expect(await UsageRecord.count()).toBe(before);
+    expect((await UsageRecord.findByPk(existing.id))?.usageCount).toBe(6);
+  });
+
+  it('fails closed when the free catalog limit is -1 and does not write usage', async () => {
+    const caller = await createUser();
+    const window = currentUtcDayWindow();
+    const existing = await seedUsage(caller.id, DAILY_LIKE_PASS_METRIC, 1, window.periodStart, window.periodEnd);
+    const before = await UsageRecord.count();
+
+    await setLimit('FREE', DAILY_LIKE_PASS_METRIC, -1);
+    const response = await getUsage(caller.id);
+
+    expect(response.status).toBe(500);
+    expect(response.body.success).toBe(false);
+    expect(response.body.error.code).toBe('INTERNAL_SERVER_ERROR');
+    expect(await UsageRecord.count()).toBe(before);
+    expect((await UsageRecord.findByPk(existing.id))?.usageCount).toBe(1);
+  });
+
+  it('fails closed when the catalog period is not DAILY and does not write usage', async () => {
+    const caller = await createUser();
+    const window = currentUtcDayWindow();
+    const existing = await seedUsage(caller.id, DAILY_TEXT_MESSAGES_METRIC, 2, window.periodStart, window.periodEnd);
+    const before = await UsageRecord.count();
+
+    await setLimit('FREE', DAILY_TEXT_MESSAGES_METRIC, FREE_DAILY_TEXT_MESSAGES_LIMIT, 'MONTHLY');
+    const response = await getUsage(caller.id);
+
+    expect(response.status).toBe(500);
+    expect(response.body.success).toBe(false);
+    expect(response.body.error.code).toBe('INTERNAL_SERVER_ERROR');
+    expect(await UsageRecord.count()).toBe(before);
+    expect((await UsageRecord.findByPk(existing.id))?.usageCount).toBe(2);
   });
 });

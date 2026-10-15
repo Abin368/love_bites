@@ -56,11 +56,13 @@ async function resolveQuotaPlan(
   return { plan: { id: freePlan.id, code: freePlan.code }, premium: false };
 }
 
-export async function consumeDailyQuota(
+export type DailyCatalogLimit = { isUnlimited: true; limit: null } | { isUnlimited: false; limit: number };
+
+export async function resolveDailyCatalogLimit(
   userId: string,
   metricKey: DailyQuotaMetric,
   transaction: Transaction
-): Promise<number | null> {
+): Promise<DailyCatalogLimit> {
   const { plan, premium } = await resolveQuotaPlan(userId, transaction);
   const limitRow = await findUsageLimit(plan.id, metricKey, transaction);
   if (!limitRow) {
@@ -70,11 +72,25 @@ export async function consumeDailyQuota(
   const limit = catalogLimit(limitRow.limitValue, limitRow.periodType);
   if (limit === -1) {
     if (premium) {
-      return null;
+      return { isUnlimited: true, limit: null };
     }
     throw unavailableCatalog();
   }
 
+  return { isUnlimited: false, limit };
+}
+
+export async function consumeDailyQuota(
+  userId: string,
+  metricKey: DailyQuotaMetric,
+  transaction: Transaction
+): Promise<number | null> {
+  const resolved = await resolveDailyCatalogLimit(userId, metricKey, transaction);
+  if (resolved.isUnlimited) {
+    return null;
+  }
+
+  const limit = resolved.limit;
   if (limit === 0) {
     throw new RateLimitError(dailyLimitMessage(metricKey, 0), [], 'DAILY_LIMIT_REACHED');
   }

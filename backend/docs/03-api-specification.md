@@ -2176,7 +2176,7 @@ A report does not require verification, a complete profile, location, dating pre
 
 ## 30. Entitlement & Usage APIs
 
-Sections **30.1** and **30.2** are mounted and remain read-only. LIKE, PASS, and TEXT send consume daily quota through `consumeDailyQuota`, which calls the existing `hasActivePremium` and atomic increment in `likes.data-access.ts` on the caller's transaction. SUPER LIKE, UNDO, and chat media still call `hasActivePremium` themselves. The usage snapshot calls that same function and does not move it. `usage_limits` is not read.
+Sections **30.1** and **30.2** are mounted and remain read-only. LIKE, PASS, and TEXT send consume daily quota through `consumeDailyQuota`, which reads the effective plan's daily `usage_limits` row and calls the existing atomic increment in `likes.data-access.ts` on the caller's transaction. SUPER LIKE, UNDO, and chat media still call `hasActivePremium` themselves. `GET /api/v1/me/usage` uses that same catalog resolution on its read transaction. `GET /api/v1/me/entitlements` calls `hasActivePremium` and does not read `usage_limits`.
 
 ### 30.1 Get Current User Entitlements
 * **Method & Path:** `GET /api/v1/me/entitlements`
@@ -2222,12 +2222,14 @@ Sections **30.1** and **30.2** are mounted and remain read-only. LIKE, PASS, and
 * **Auth:** `Authorization: Bearer <accessToken>` and `requireRole('USER')`. `requireVerified` is not applied. A completed profile is not required. An unverified `USER` may call this route. A missing token is `401 AUTH_REQUIRED`. An `ADMIN` is `403 FORBIDDEN`. Suspended and banned accounts are rejected by authentication middleware.
 * **Query:** any query parameter is `400 VALIDATION_ERROR`. Detail field is the parameter name and the message is `Unsupported query parameter.` A user id in the query is rejected. The caller is `req.user.id`.
 * **Body:** not accepted. A JSON property is `400 VALIDATION_ERROR`.
-* **Scope:** one read of the caller's current UTC-day `usage_records` rows for `DAILY_LIKE_PASS` and `DAILY_TEXT_MESSAGES`. Another user's rows are not read. `usage_limits` is not read. Super Like and Boost balances are not returned.
+* **Scope:** one read of the caller's current UTC-day `usage_records` rows for `DAILY_LIKE_PASS` and `DAILY_TEXT_MESSAGES`, and one read of the effective plan's `usage_limits` row for each metric. Another user's rows are not read. Super Like and Boost balances are not returned.
+* **Catalog limits:** the route uses `resolveDailyCatalogLimit`, the same plan and limit resolution as `consumeDailyQuota`. A qualifying `PREMIUM_MONTHLY` or `PREMIUM_YEARLY` subscription uses that plan. Qualification is status `ACTIVE`, `PAST_DUE`, or `GRACE_PERIOD`, and `current_period_end > now` or `grace_period_end > now`. `plans.is_active` is ignored. Every other caller uses the `FREE` plan. The limit row must have `period_type = DAILY`. A positive integer or `0` is a finite limit for Free and Premium. `-1` is unlimited only for a qualifying Premium plan. Apply and verify `20261015120003-seed-plan-catalog.js` before using this route. Seeded Free limits are 10 and 20. Seeded Premium daily limits are `-1`.
 * **Period:** `currentUtcDayWindow()`. `period_start` is midnight UTC at the start of the current UTC day. `period_end` is midnight UTC at the start of the next UTC day. `quotaResetsAt` is that `periodEnd` as ISO-8601 UTC. Both metrics share it. Rows from earlier UTC days are ignored. There is no reset job.
 * **Missing row:** `used` is `0`. The route does not insert a row.
-* **Free caller:** `hasActivePremium` is false. `dailyLikePass.limit` is `10` and `dailyTextMessages.limit` is `20`, the same constants enforcement uses. `remaining` is `limit - used`. `isUnlimited` is `false`. No subscription, a `FREE` plan, an elapsed Premium period, and status `CANCELED` or `EXPIRED` stay limited. Section 28.3 still says a canceled subscription keeps Premium until `currentPeriodEnd`. This route follows the live predicate and does not change it.
-* **Premium caller:** `hasActivePremium` is true for `PREMIUM_MONTHLY` or `PREMIUM_YEARLY` with status `ACTIVE`, `PAST_DUE`, or `GRACE_PERIOD` and `current_period_end > now` or `grace_period_end > now`. Both metrics return `limit: null`, `remaining: null`, and `isUnlimited: true`. `used` is the stored current-day count, or `0` when no row exists. `-1` is not used. A count written earlier the same UTC day stays visible so Free enforcement can resume from it if Premium eligibility ends later that day.
-* **Read-only:** no insert, update, or delete. `usage_count`, `updated_at`, subscriptions, credits, and quota enforcement stay unchanged.
+* **Finite limit:** `limit` is the catalog integer, including `0`. `remaining` is `limit - used` and is not floored at zero. `isUnlimited` is `false`. No subscription, a `FREE` plan, an elapsed Premium period, and status `CANCELED` or `EXPIRED` use the `FREE` catalog rows. Section 28.3 still says a canceled subscription keeps Premium until `currentPeriodEnd`. This route follows the live predicate and does not change it. A qualifying Premium plan whose catalog limit is a positive integer or `0` uses that finite limit.
+* **Unlimited catalog limit:** `-1` on a qualifying Premium plan returns `limit: null`, `remaining: null`, and `isUnlimited: true`. `used` is the stored current-day count, or `0` when no row exists. A count written earlier the same UTC day stays visible so Free enforcement can resume from it if Premium eligibility ends later that day.
+* **Invalid catalog:** a missing `FREE` plan, a missing limit row, a period other than `DAILY`, a non-integer, a value below `-1`, or `-1` on Free is `500 INTERNAL_SERVER_ERROR`. The route does not fall back to 10 or 20 and does not write a usage row.
+* **Read-only:** no insert, update, or delete. `usage_count`, `updated_at`, subscriptions, credits, and quota enforcement stay unchanged. `GET /api/v1/me/entitlements` does not read `usage_limits` and does not use this failure.
 * **Success Response (`200 OK`):**
   ```json
   {
@@ -2250,7 +2252,7 @@ Sections **30.1** and **30.2** are mounted and remain read-only. LIKE, PASS, and
     "message": "Usage retrieved."
   }
   ```
-  A Premium metric is `{ "used": 4, "limit": null, "remaining": null, "isUnlimited": true }`. The counts and timestamp above are examples. The live response uses the current UTC window and the caller's stored counts.
+  A Premium metric whose catalog limit is `-1` is `{ "used": 4, "limit": null, "remaining": null, "isUnlimited": true }`. The counts, limits, and timestamp above are the seeded Free example. The live response uses the current UTC window, the caller's stored counts, and the effective plan's catalog limits.
 
 ---
 
@@ -2427,7 +2429,7 @@ Rate limits are enforced using Redis sliding-window algorithms:
 | **Subscriptions & Plans** | `plans`, `features`, `plan_features`, `subscriptions`, `usage_limits` |
 | **Payments & Webhooks** | `payments`, `processed_webhooks`, `subscriptions` |
 | **Entitlements** (`GET /me/entitlements`, implemented) | Reads `subscriptions`, `plans`, and `user_credit_balances`. Does not read `plan_features`, `usage_limits`, or `usage_records`. Writes nothing. |
-| **Usage** (`GET /me/usage`, implemented) | Reads the caller's current UTC-day `usage_records` for `DAILY_LIKE_PASS` and `DAILY_TEXT_MESSAGES`, and reads `subscriptions` and `plans` through the existing `hasActivePremium`. Does not read `usage_limits`. Writes nothing. A missing row is `used: 0`. Premium `limit` and `remaining` are `null`. |
+| **Usage** (`GET /me/usage`, implemented) | Reads the caller's current UTC-day `usage_records` for `DAILY_LIKE_PASS` and `DAILY_TEXT_MESSAGES`, and reads the effective plan's `usage_limits` row for each metric through the same resolution as `consumeDailyQuota`. Writes nothing. A missing usage row is `used: 0`. A positive catalog limit or `0` is numeric. Premium `-1` returns `limit` and `remaining` as `null`. A missing or invalid catalog row is `500 INTERNAL_SERVER_ERROR`. |
 
 ---
 
