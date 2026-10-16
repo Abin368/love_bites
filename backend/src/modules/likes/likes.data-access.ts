@@ -1,21 +1,17 @@
-import { Op, QueryTypes, Transaction, UniqueConstraintError } from 'sequelize';
+import { QueryTypes, Transaction, UniqueConstraintError } from 'sequelize';
 import { sequelize } from '../../config/database';
 import '../../database/associations';
 import { Conversation } from '../../database/models/conversation.model';
 import { CreditTransaction } from '../../database/models/credit-transaction.model';
 import { Like } from '../../database/models/like.model';
 import { Match } from '../../database/models/match.model';
-import { Plan } from '../../database/models/plan.model';
-import { Subscription } from '../../database/models/subscription.model';
+import { findQualifyingPremiumSubscription } from '../subscriptions/subscriptions.data-access';
 import type { PassTargetState, UtcDayWindow } from './likes.types';
 
 export const DAILY_LIKE_PASS_METRIC = 'DAILY_LIKE_PASS';
 export const FREE_DAILY_LIKE_PASS_LIMIT = 10;
 export const DAILY_TEXT_MESSAGES_METRIC = 'DAILY_TEXT_MESSAGES';
 export const FREE_DAILY_TEXT_MESSAGES_LIMIT = 20;
-
-const PREMIUM_PLAN_CODES = ['PREMIUM_MONTHLY', 'PREMIUM_YEARLY'] as const;
-const PREMIUM_STATUSES = ['ACTIVE', 'PAST_DUE', 'GRACE_PERIOD'] as const;
 
 interface PassTargetRow {
   status: string;
@@ -181,35 +177,12 @@ export async function findQualifyingPremiumPlan(
   userId: string,
   transaction: Transaction
 ): Promise<QualifyingPremiumPlan | null> {
-  const now = new Date();
-  const subscription = await Subscription.findOne({
-    attributes: ['id'],
-    where: {
-      userId,
-      status: { [Op.in]: [...PREMIUM_STATUSES] },
-      [Op.or]: [{ currentPeriodEnd: { [Op.gt]: now } }, { gracePeriodEnd: { [Op.gt]: now } }]
-    },
-    include: [
-      {
-        model: Plan,
-        as: 'plan',
-        attributes: ['id', 'code'],
-        required: true,
-        where: { code: { [Op.in]: [...PREMIUM_PLAN_CODES] } }
-      }
-    ],
-    transaction
-  });
-  if (!subscription) {
+  const row = await findQualifyingPremiumSubscription(userId, transaction);
+  if (!row?.plan) {
     return null;
   }
 
-  const plan = subscription.get('plan') as Plan | undefined;
-  if (!plan) {
-    return null;
-  }
-
-  return { id: plan.id, code: plan.code };
+  return { id: row.plan.id, code: row.plan.code };
 }
 
 export async function hasActivePremium(userId: string, transaction: Transaction): Promise<boolean> {

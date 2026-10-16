@@ -202,6 +202,22 @@ async function grantPremium(userIds: string | string[]): Promise<void> {
   }
 }
 
+async function markCanceled(userId: string, currentPeriodEnd: Date, gracePeriodEnd: Date | null): Promise<void> {
+  const [count] = await Subscription.update(
+    {
+      status: 'CANCELED',
+      autoRenew: false,
+      currentPeriodEnd,
+      gracePeriodEnd,
+      canceledAt: new Date()
+    },
+    { where: { userId } }
+  );
+  if (count !== 1) {
+    throw new Error('Expected one subscription to cancel.');
+  }
+}
+
 async function seedCredits(userId: string, balance: number, creditType = 'SUPER_LIKE'): Promise<void> {
   await UserCreditBalance.create({
     userId,
@@ -343,6 +359,44 @@ describe('POST /api/v1/discovery/:userId/super-like', () => {
     expect(await Match.count()).toBe(0);
     expect(await Conversation.count()).toBe(0);
     expect(await Notification.count()).toBe(0);
+  });
+
+  it('lets an in-period canceled premium subscription spend a super like', async () => {
+    const { caller, target } = await pair();
+    await grantPremium(caller.id);
+    await markCanceled(caller.id, new Date(Date.now() + 60 * 60 * 1000), new Date(Date.now() + 2 * 60 * 60 * 1000));
+    await seedCredits(caller.id, 5);
+
+    const response = await superLike(caller.id, target.id);
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.action).toBe('SUPER_LIKE');
+    expect(response.body.data.remainingSuperLikeCredits).toBe(4);
+    expect(await superLikeBalance(caller.id)).toBe(4);
+  });
+
+  it('rejects an ended or grace-only canceled subscription before spending a super like', async () => {
+    const catalogGender = await gender();
+    const endedCaller = await buildUser({ genderId: catalogGender.id });
+    const graceCaller = await buildUser({ genderId: catalogGender.id });
+    const endedTarget = await buildUser({ genderId: catalogGender.id });
+    const graceTarget = await buildUser({ genderId: catalogGender.id });
+    await grantPremium([endedCaller.id, graceCaller.id]);
+    await markCanceled(endedCaller.id, new Date(Date.now() - 60_000), null);
+    await markCanceled(graceCaller.id, new Date(Date.now() - 60_000), new Date(Date.now() + 60 * 60 * 1000));
+    await seedCredits(endedCaller.id, 4);
+    await seedCredits(graceCaller.id, 4);
+
+    const ended = await superLike(endedCaller.id, endedTarget.id);
+    const graceOnly = await superLike(graceCaller.id, graceTarget.id);
+
+    expect(ended.status).toBe(403);
+    expect(ended.body.error.code).toBe('PREMIUM_REQUIRED');
+    expect(graceOnly.status).toBe(403);
+    expect(graceOnly.body.error.code).toBe('PREMIUM_REQUIRED');
+    expect(await superLikeBalance(endedCaller.id)).toBe(4);
+    expect(await superLikeBalance(graceCaller.id)).toBe(4);
+    expect(await Like.count()).toBe(0);
   });
 
   it('rejects a non-premium caller and does not spend an existing super like balance', async () => {

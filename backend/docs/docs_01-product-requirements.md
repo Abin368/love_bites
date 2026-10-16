@@ -356,12 +356,12 @@ Reports are not a Discovery exclusion. Browsing candidate cards does not consume
 ### 10.2 Payment Gateway Abstraction & Provider
 * **Primary Provider:** Razorpay.
 * **Architectural Abstraction:** The billing layer must be decoupled behind a Payment Abstraction Interface to allow secondary gateway integration in the future.
-* **Source of Truth Rule:** Subscription state changes must be driven **exclusively by authenticated webhook events** from the payment provider, rather than frontend success callbacks.
+* **Source of Truth Rule:** Provider subscription activation, renewal, and payment failure remain driven by authenticated webhook events from the payment provider, rather than frontend success callbacks. Those webhooks are not implemented. `POST /api/v1/subscriptions/cancel` is a local state change for an `ACTIVE` subscription. It does not call the payment provider.
 
 ### 10.3 Auto-Renewal & Cancellation Flow
 * **Auto-Renewal Default:** Enabled upon subscription purchase.
-* **Cancellation:** Users can cancel subscription auto-renewal at any time.
-* **Effect of Cancellation:** Halts future recurring charges. Premium entitlements **remain active** until the conclusion of the current paid billing period. No mid-term prorated refunds are issued.
+* **Cancellation:** An authenticated user can cancel an `ACTIVE` subscription through `POST /api/v1/subscriptions/cancel`. `PAST_DUE` and `GRACE_PERIOD` subscriptions are not canceled by that route.
+* **Effect of Cancellation:** Sets local auto-renew off and status `CANCELED`. It does not call the payment provider and does not issue a refund. Premium entitlements **remain active** until `current_period_end`. A future grace timestamp does not extend a canceled subscription. No mid-term prorated refunds are issued.
 * **Reactivation Constraint:** A cancelled subscription cannot be "reactivated" mid-cycle. Upon expiration, the user must initiate a new subscription.
 
 ### 10.4 Subscription Renewal Failure & Grace Period Flow

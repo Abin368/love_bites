@@ -1225,13 +1225,13 @@ Enforces webhook idempotency across asynchronous payment notifications. Duplicat
 
 ### State Definitions:
 1. **`ACTIVE`:** Paid billing period is current. All Premium entitlements are active.
-2. **`CANCELED`:** User disabled auto-renew. Premium entitlements **remain active** until `current_period_end`.
+2. **`CANCELED`:** User disabled auto-renew through `POST /api/v1/subscriptions/cancel`. That route sets `status = CANCELED`, `auto_renew = false`, and `canceled_at`. It leaves `ended_at` null. Premium entitlements **remain active** only while `current_period_end` is still in the future. A future `grace_period_end` does not extend a canceled subscription. `PAST_DUE` and `GRACE_PERIOD` are not canceled by that route.
 3. **`PAST_DUE`:** Payment provider reported an initial recurring payment failure. Retry attempts are in progress.
 4. **`GRACE_PERIOD`:** Billing cycle reached `current_period_end` after failed renewal. User receives a **24-hour grace window** with full Premium entitlements.
 5. **`EXPIRED`:** Grace period concluded without payment recovery. User is downgraded to Free plan limits. Historical subscription record remains preserved.
 
 ### Plan Switching Mechanics (Monthly $\leftrightarrow$ Yearly):
-* When switching plans, the previous subscription record transitions to `EXPIRED` (or `CANCELED` with `ended_at = CURRENT_TIMESTAMP`), and a new subscription record is inserted immediately inside a managed transaction.
+* Plan switching is not implemented. When it is, the previous subscription record transitions to `EXPIRED` (or `CANCELED` with `ended_at = CURRENT_TIMESTAMP`), and a new subscription record is inserted immediately inside a managed transaction. That transition is separate from user cancellation. User cancellation does not set `ended_at`.
 * No prorated refunds are calculated. Historical records are preserved for auditing.
 
 ---
