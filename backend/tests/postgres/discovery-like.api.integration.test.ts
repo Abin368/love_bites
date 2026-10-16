@@ -26,6 +26,7 @@ import { UserRelationshipIntention } from '../../src/database/models/user-relati
 import { User, UserStatus } from '../../src/database/models/user.model';
 import { currentUtcDayWindow, DAILY_LIKE_PASS_METRIC } from '../../src/modules/likes/likes.data-access';
 import { signAccessToken } from '../../src/utils/jwt';
+import { ensurePlanCatalog } from './plan-catalog.fixture';
 
 const mockPhotoStorage = {
   createUploadUrl: jest.fn(),
@@ -260,16 +261,10 @@ async function redisIsReachable(): Promise<boolean> {
 }
 
 async function grantPremium(userId: string): Promise<void> {
-  const plan = await Plan.create({
-    code: 'PREMIUM_MONTHLY',
-    name: 'Love Bite Premium (Monthly)',
-    billingInterval: 'MONTH',
-    priceInCents: 49900,
-    currency: 'INR',
-    isActive: true,
-    displayOrder: 1,
-    ...timestamps()
-  });
+  const plan = await Plan.findOne({ where: { code: 'PREMIUM_MONTHLY' } });
+  if (!plan) {
+    throw new Error('PREMIUM_MONTHLY catalog plan is missing.');
+  }
   const now = new Date();
   await Subscription.create({
     userId,
@@ -280,6 +275,10 @@ async function grantPremium(userId: string): Promise<void> {
     ...timestamps()
   });
 }
+
+beforeEach(async () => {
+  await ensurePlanCatalog();
+});
 
 describe('POST /api/v1/discovery/:userId/like', () => {
   it('rejects a missing token, an admin, and a suspended caller without a like or usage row', async () => {

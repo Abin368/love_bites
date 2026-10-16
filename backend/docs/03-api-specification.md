@@ -13,7 +13,7 @@ This document defines the **RESTful API Specification** and **Socket.IO Realtime
 
 ### Implementation status
 
-Phase 2 authentication, Phase 3 onboarding, Phase 4 Discovery, and Phase 5 slices for PASS, LIKE and match creation, SUPER LIKE, UNDO, and UNMATCH are implemented. Sections **4**, **11**, **12**, **14**, **19**, **20**, **21**, and **22.2** describe that live behavior. Sections **13**, **17**, **18**, **22.1**, and **23** onward are the planned contract and are not mounted, except where a subsection says otherwise. Sections **23.1**, **23.2**, **25**, **26.1**, and **30.1** are mounted. Section **30.2** is not. Admin report review in section **31.2** is not. `PUT /api/v1/me/interests`, `PUT /api/v1/me/relationship-intentions`, `GET /api/v1/dating-preferences`, `PUT /api/v1/dating-preferences`, `PUT /api/v1/location`, and `PATCH /api/v1/onboarding/profile` are not implemented. `GET /api/v1/matches` is not implemented. `DELETE /api/v1/matches/:matchId` is implemented. Match and conversation rows are created by LIKE and SUPER LIKE. UNMATCH does not delete them.
+Phase 2 authentication, Phase 3 onboarding, Phase 4 Discovery, and Phase 5 slices for PASS, LIKE and match creation, SUPER LIKE, UNDO, and UNMATCH are implemented. Sections **4**, **11**, **12**, **14**, **19**, **20**, **21**, and **22.2** describe that live behavior. Sections **13**, **17**, **18**, **22.1**, and **23** onward are the planned contract and are not mounted, except where a subsection says otherwise. Sections **23.1**, **23.2**, **25**, **26.1**, **28.1**, **30.1**, and **30.2** are mounted. Admin report review in section **31.2** is not. `PUT /api/v1/me/interests`, `PUT /api/v1/me/relationship-intentions`, `GET /api/v1/dating-preferences`, `PUT /api/v1/dating-preferences`, `PUT /api/v1/location`, and `PATCH /api/v1/onboarding/profile` are not implemented. `GET /api/v1/matches` is not implemented. `DELETE /api/v1/matches/:matchId` is implemented. Match and conversation rows are created by LIKE and SUPER LIKE. UNMATCH does not delete them.
 
 Health checks are also live: `GET /health` and `GET /api/v1/health`.
 
@@ -120,8 +120,9 @@ Live routes that require `Authorization: Bearer <accessToken>`:
 * `GET /api/v1/conversations/:conversationId/unread-count`.
 * `GET /api/v1/conversations/:conversationId`.
 * `GET /api/v1/me/entitlements`.
+* `GET /api/v1/me/usage`.
 
-Those profile, onboarding, photo, discovery, unmatch, message, and entitlements routes also require role `USER`. `requireVerified` is not applied on the route. An unverified `USER` may call profile, onboarding, photo, and entitlements routes. Discovery, PASS, LIKE, SUPER LIKE, UNDO, UNMATCH, the conversation inbox, conversation details, send message, media upload URL, media confirmation, media download, message history, and the conversation unread count check verification in the service and return `403 EMAIL_NOT_VERIFIED` or `403 PHONE_NOT_VERIFIED`. Entitlements does not check verification or profile completion. Any other role, including `ADMIN`, receives `403 FORBIDDEN`. Suspended and banned accounts are rejected with `403` by the authentication middleware.
+Those profile, onboarding, photo, discovery, unmatch, message, entitlements, and usage routes also require role `USER`. `requireVerified` is not applied on the route. An unverified `USER` may call profile, onboarding, photo, entitlements, and usage routes. Discovery, PASS, LIKE, SUPER LIKE, UNDO, UNMATCH, the conversation inbox, conversation details, send message, media upload URL, media confirmation, media download, message history, and the conversation unread count check verification in the service and return `403 EMAIL_NOT_VERIFIED` or `403 PHONE_NOT_VERIFIED`. Entitlements and the usage snapshot do not check verification or profile completion. Any other role, including `ADMIN`, receives `403 FORBIDDEN`. Suspended and banned accounts are rejected with `403` by the authentication middleware.
 
 There is no live admin API yet. `requireRole('ADMIN')` exists for later routes.
 
@@ -1353,7 +1354,7 @@ Photo objects returned after confirm, list, and patch are `{ "id", "url", "displ
 * **Either user has blocked the other:** `409 BLOCKED_USER`. Message: `Interaction prohibited due to an active safety block.`
 * **Caller already has an active action toward the target** (`likes.is_undone = false`, any of `LIKE`, `PASS`, or `SUPER_LIKE`): `409 ALREADY_SWIPED`. Message: `Target user has already been liked or permanently passed.` An undone row does not block a new action.
 * **The pair already has a match with `status = 'ACTIVE'`:** `409 ACTIVE_MATCH_EXISTS`. Message: `Users are already in an active mutual match.` Historical `UNDONE` and `UNMATCHED` matches do not block a new action.
-* **Premium:** an active subscription whose plan code is `PREMIUM_MONTHLY` or `PREMIUM_YEARLY`, whose status is `ACTIVE`, `PAST_DUE`, or `GRACE_PERIOD`, and whose `current_period_end` or `grace_period_end` is still in the future. There is no entitlement-feature lookup. PASS, LIKE, SUPER LIKE, and UNDO still call `hasActivePremium` directly. The read-only snapshot is `GET /api/v1/me/entitlements` in section 30.1.
+* **Premium:** an active subscription whose plan code is `PREMIUM_MONTHLY` or `PREMIUM_YEARLY`, whose status is `ACTIVE`, `PAST_DUE`, or `GRACE_PERIOD`, and whose `current_period_end` or `grace_period_end` is still in the future. There is no entitlement-feature lookup. LIKE and PASS consume the free daily quota through `consumeDailyQuota`, which calls `hasActivePremium` and `incrementDailyLikePass` on the action transaction. SUPER LIKE and UNDO still call `hasActivePremium` directly. The read-only snapshot is `GET /api/v1/me/entitlements` in section 30.1.
 * **Free LIKE and PASS quota:** metric `DAILY_LIKE_PASS` in `usage_records`. The window is the current UTC calendar day (`period_start` at UTC midnight, `period_end` 24 hours later). The increment is atomic and stops at 10. `remainingDailyActions` is `10 - usage_count`. Premium callers do not write `usage_records` for this metric, and `remainingDailyActions` is `null`. Exhausted free quota is `429 DAILY_LIMIT_REACHED`. Message: `You have reached your daily limit of 10 likes/passes.` A failed write rolls the quota increment back with the rest of the transaction.
 * **SUPER LIKE credits** are separate. A Super Like does not increment `DAILY_LIKE_PASS`.
 
@@ -1679,8 +1680,8 @@ Photo objects returned after confirm, list, and patch are `{ "id", "url", "displ
 * **Block:** either direction returns `409 BLOCKED_USER`. Message: `Interaction prohibited due to an active safety block.`
 * **Transaction:** one Sequelize transaction. Non-locking conversation/match load, then `lockLikeUsers` in canonical id order, then lock the match and conversation rows, re-read state, validate authorization, then evaluate Premium / free text quota, then insert the message, and set `last_message_at` to the message `created_at` while `status = 'ACTIVE'`. Concurrent UNMATCH and UNDO share the same user locks. Quota is never consumed for authorization failures.
 * **Persistence:** inserts `messages.message_type = 'TEXT'` with null media columns and null `read_at`. Updates only `conversations.last_message_at`. Does not change match status, conversation status, or `closed_at`.
-* **Free text quota:** metric `DAILY_TEXT_MESSAGES` in `usage_records`. The window is the current UTC calendar day (`period_start` at UTC midnight, `period_end` 24 hours later). The increment is atomic (`INSERT ... ON CONFLICT ... DO UPDATE ... WHERE usage_count < 20 RETURNING`) and stops at 20. `remainingDailyMessages` is `20 - usage_count`. Authorization failures do not write usage. A failed message insert rolls the quota increment back with the rest of the transaction. PostgreSQL is the source of truth. Redis is not used for this product quota.
-* **Premium:** callers with an active Premium subscription (`hasActivePremium` inside the same transaction) do not write `usage_records` for this metric and return `remainingDailyMessages: null`.
+* **Free text quota:** metric `DAILY_TEXT_MESSAGES` in `usage_records`. The window is the current UTC calendar day (`period_start` at UTC midnight, `period_end` 24 hours later). `sendTextMessage` calls `consumeDailyQuota` after authorization and before the message insert. That helper uses the existing atomic increment (`INSERT ... ON CONFLICT ... DO UPDATE ... WHERE usage_count < 20 RETURNING`) and stops at 20. `remainingDailyMessages` is `20 - usage_count`. Authorization failures do not write usage. A failed message insert rolls the quota increment back with the rest of the transaction. PostgreSQL is the source of truth. Redis is not used for this product quota.
+* **Premium:** callers with an active Premium subscription (`hasActivePremium` inside the same transaction, through `consumeDailyQuota`) do not write `usage_records` for this metric and return `remainingDailyMessages: null`.
 * **Exhausted free quota:** `429 DAILY_LIMIT_REACHED`. Message: `You have reached your daily limit of 20 text messages.` No `Retry-After`. The error envelope does not include `remainingDailyMessages`.
 * **Realtime:** this HTTP route does not emit a Socket.IO event and does not use Redis idempotency. A socket send is a separate write that calls the same service. See section 32.3.
 * **Success Response (`201 Created`):** Message: `Message sent.`
@@ -2047,15 +2048,20 @@ A report does not require verification, a complete profile, location, dating pre
 ## 28. Subscription APIs
 
 ### 28.1 List Subscription Plans
+**Implemented.** Public read-only catalog of active `plans` rows. This route does not require a token, does not read the caller, and does not change when a bearer token is present. `GET /api/v1/subscriptions/me` and `POST /api/v1/subscriptions/cancel` are not mounted. Cancellation-period semantics remain unresolved.
+
 * **Method & Path:** `GET /api/v1/subscriptions/plans`
-* **Auth:** Public / Authenticated
-* **Success Response (`200 OK`):**
+* **Auth:** Public. No `authenticate` and no `requireVerified`. An unverified `USER` token and an `ADMIN` token receive the same list as an anonymous request.
+* **Rate limit:** Shared public catalog limiter, 100 requests / 60 seconds / IP, Redis key `ratelimit:public:<ip>`. Over the limit: `429 RATE_LIMITED`, message `Too many requests. Please try again later.`
+* **Rows:** `is_active = true` only, ordered by `display_order` ascending. Values come from PostgreSQL. An empty active catalog is `200` with `data: []`.
+* **Fields:** each item is exactly `id`, `code`, `name`, `priceInCents`, `currency`, and `billingInterval`. `isActive`, `displayOrder`, timestamps, features, usage limits, and subscription state are omitted. The route does not join `plan_features`, `usage_limits`, or `subscriptions`, and it does not write.
+* **Success Response (`200 OK`):** Message: `Plans retrieved successfully.`
   ```json
   {
     "success": true,
     "data": [
       {
-        "id": "plan-free",
+        "id": "6e6e0001-0000-4000-8000-000000000001",
         "code": "FREE",
         "name": "Free Tier",
         "priceInCents": 0,
@@ -2063,7 +2069,7 @@ A report does not require verification, a complete profile, location, dating pre
         "billingInterval": "NONE"
       },
       {
-        "id": "plan-premium-monthly",
+        "id": "6e6e0001-0000-4000-8000-000000000002",
         "code": "PREMIUM_MONTHLY",
         "name": "Love Bite Premium (Monthly)",
         "priceInCents": 49900,
@@ -2071,16 +2077,18 @@ A report does not require verification, a complete profile, location, dating pre
         "billingInterval": "MONTH"
       },
       {
-        "id": "plan-premium-yearly",
+        "id": "6e6e0001-0000-4000-8000-000000000003",
         "code": "PREMIUM_YEARLY",
         "name": "Love Bite Premium (Yearly)",
         "priceInCents": 399900,
         "currency": "INR",
         "billingInterval": "YEAR"
       }
-    ]
+    ],
+    "message": "Plans retrieved successfully."
   }
   ```
+  The prices and intervals above are the seeded catalog values when `20261015120003-seed-plan-catalog.js` has been applied. The route returns whatever active rows exist. `love_bites_dev` has not been seeded.
 
 ---
 
@@ -2175,7 +2183,7 @@ A report does not require verification, a complete profile, location, dating pre
 
 ## 30. Entitlement & Usage APIs
 
-Section **30.1** is mounted. Section **30.2** is not. This slice does not add `entitlements.service.ts` methods for other modules. PASS, LIKE, SUPER LIKE, UNDO, and chat media still call `hasActivePremium` in `likes.data-access.ts`.
+Sections **30.1** and **30.2** are mounted and remain read-only. LIKE, PASS, and TEXT send consume daily quota through `consumeDailyQuota`, which reads the effective plan's daily `usage_limits` row and calls the existing atomic increment in `likes.data-access.ts` on the caller's transaction. SUPER LIKE, UNDO, and chat media still call `hasActivePremium` themselves. `GET /api/v1/me/usage` uses that same catalog resolution on its read transaction. `GET /api/v1/me/entitlements` calls `hasActivePremium` and does not read `usage_limits`.
 
 ### 30.1 Get Current User Entitlements
 * **Method & Path:** `GET /api/v1/me/entitlements`
@@ -2217,7 +2225,18 @@ Section **30.1** is mounted. Section **30.2** is not. This slice does not add `e
 
 ### 30.2 Get Daily Usage Quotas
 * **Method & Path:** `GET /api/v1/me/usage`
-* **Auth:** Authenticated
+* **Status:** Implemented. Read-only. No migration.
+* **Auth:** `Authorization: Bearer <accessToken>` and `requireRole('USER')`. `requireVerified` is not applied. A completed profile is not required. An unverified `USER` may call this route. A missing token is `401 AUTH_REQUIRED`. An `ADMIN` is `403 FORBIDDEN`. Suspended and banned accounts are rejected by authentication middleware.
+* **Query:** any query parameter is `400 VALIDATION_ERROR`. Detail field is the parameter name and the message is `Unsupported query parameter.` A user id in the query is rejected. The caller is `req.user.id`.
+* **Body:** not accepted. A JSON property is `400 VALIDATION_ERROR`.
+* **Scope:** one read of the caller's current UTC-day `usage_records` rows for `DAILY_LIKE_PASS` and `DAILY_TEXT_MESSAGES`, and one read of the effective plan's `usage_limits` row for each metric. Another user's rows are not read. Super Like and Boost balances are not returned.
+* **Catalog limits:** the route uses `resolveDailyCatalogLimit`, the same plan and limit resolution as `consumeDailyQuota`. A qualifying `PREMIUM_MONTHLY` or `PREMIUM_YEARLY` subscription uses that plan. Qualification is status `ACTIVE`, `PAST_DUE`, or `GRACE_PERIOD`, and `current_period_end > now` or `grace_period_end > now`. `plans.is_active` is ignored. Every other caller uses the `FREE` plan. The limit row must have `period_type = DAILY`. A positive integer or `0` is a finite limit for Free and Premium. `-1` is unlimited only for a qualifying Premium plan. Apply and verify `20261015120003-seed-plan-catalog.js` before using this route. Seeded Free limits are 10 and 20. Seeded Premium daily limits are `-1`.
+* **Period:** `currentUtcDayWindow()`. `period_start` is midnight UTC at the start of the current UTC day. `period_end` is midnight UTC at the start of the next UTC day. `quotaResetsAt` is that `periodEnd` as ISO-8601 UTC. Both metrics share it. Rows from earlier UTC days are ignored. There is no reset job.
+* **Missing row:** `used` is `0`. The route does not insert a row.
+* **Finite limit:** `limit` is the catalog integer, including `0`. `remaining` is `limit - used` and is not floored at zero. `isUnlimited` is `false`. No subscription, a `FREE` plan, an elapsed Premium period, and status `CANCELED` or `EXPIRED` use the `FREE` catalog rows. Section 28.3 still says a canceled subscription keeps Premium until `currentPeriodEnd`. This route follows the live predicate and does not change it. A qualifying Premium plan whose catalog limit is a positive integer or `0` uses that finite limit.
+* **Unlimited catalog limit:** `-1` on a qualifying Premium plan returns `limit: null`, `remaining: null`, and `isUnlimited: true`. `used` is the stored current-day count, or `0` when no row exists. A count written earlier the same UTC day stays visible so Free enforcement can resume from it if Premium eligibility ends later that day.
+* **Invalid catalog:** a missing `FREE` plan, a missing limit row, a period other than `DAILY`, a non-integer, a value below `-1`, or `-1` on Free is `500 INTERNAL_SERVER_ERROR`. The route does not fall back to 10 or 20 and does not write a usage row.
+* **Read-only:** no insert, update, or delete. `usage_count`, `updated_at`, subscriptions, credits, and quota enforcement stay unchanged. `GET /api/v1/me/entitlements` does not read `usage_limits` and does not use this failure.
 * **Success Response (`200 OK`):**
   ```json
   {
@@ -2235,10 +2254,12 @@ Section **30.1** is mounted. Section **30.2** is not. This slice does not add `e
         "remaining": 12,
         "isUnlimited": false
       },
-      "quotaResetsAt": "2026-09-16T00:00:00.000Z"
-    }
+      "quotaResetsAt": "2026-10-15T00:00:00.000Z"
+    },
+    "message": "Usage retrieved."
   }
   ```
+  A Premium metric whose catalog limit is `-1` is `{ "used": 4, "limit": null, "remaining": null, "isUnlimited": true }`. The counts, limits, and timestamp above are the seeded Free example. The live response uses the current UTC window, the caller's stored counts, and the effective plan's catalog limits.
 
 ---
 
@@ -2414,7 +2435,8 @@ Rate limits are enforced using Redis sliding-window algorithms:
 | **Notifications** | `notifications` |
 | **Subscriptions & Plans** | `plans`, `features`, `plan_features`, `subscriptions`, `usage_limits` |
 | **Payments & Webhooks** | `payments`, `processed_webhooks`, `subscriptions` |
-| **Entitlements** (`GET /me/entitlements`, implemented) | Reads `subscriptions`, `plans`, and `user_credit_balances`. Does not read `plan_features`, `usage_limits`, or `usage_records`. Writes nothing. `GET /me/usage` is not mounted. |
+| **Entitlements** (`GET /me/entitlements`, implemented) | Reads `subscriptions`, `plans`, and `user_credit_balances`. Does not read `plan_features`, `usage_limits`, or `usage_records`. Writes nothing. |
+| **Usage** (`GET /me/usage`, implemented) | Reads the caller's current UTC-day `usage_records` for `DAILY_LIKE_PASS` and `DAILY_TEXT_MESSAGES`, and reads the effective plan's `usage_limits` row for each metric through the same resolution as `consumeDailyQuota`. Writes nothing. A missing usage row is `used: 0`. A positive catalog limit or `0` is numeric. Premium `-1` returns `limit` and `remaining` as `null`. A missing or invalid catalog row is `500 INTERNAL_SERVER_ERROR`. |
 
 ---
 

@@ -20,6 +20,7 @@ import { UsageRecord } from '../../src/database/models/usage-record.model';
 import { User, UserStatus } from '../../src/database/models/user.model';
 import { currentUtcDayWindow, DAILY_LIKE_PASS_METRIC } from '../../src/modules/likes/likes.data-access';
 import { signAccessToken } from '../../src/utils/jwt';
+import { ensurePlanCatalog } from './plan-catalog.fixture';
 
 const mockPhotoStorage = {
   createUploadUrl: jest.fn(),
@@ -231,6 +232,10 @@ async function insertMatch(leftUserId: string, rightUserId: string): Promise<voi
     { replacements: { leftUserId, rightUserId } }
   );
 }
+
+beforeEach(async () => {
+  await ensurePlanCatalog();
+});
 
 describe('POST /api/v1/discovery/:userId/pass', () => {
   it('rejects a missing token, an admin, and a suspended caller', async () => {
@@ -489,16 +494,10 @@ describe('POST /api/v1/discovery/:userId/pass', () => {
     const catalogGender = await gender();
     const caller = await buildUser({ genderId: catalogGender.id });
     const target = await buildUser({ genderId: catalogGender.id });
-    const plan = await Plan.create({
-      code: 'PREMIUM_MONTHLY',
-      name: 'Love Bite Premium (Monthly)',
-      billingInterval: 'MONTH',
-      priceInCents: 49900,
-      currency: 'INR',
-      isActive: true,
-      displayOrder: 1,
-      ...timestamps()
-    });
+    const plan = await Plan.findOne({ where: { code: 'PREMIUM_MONTHLY' } });
+    if (!plan) {
+      throw new Error('PREMIUM_MONTHLY catalog plan is missing.');
+    }
     const now = new Date();
     await Subscription.create({
       userId: caller.id,

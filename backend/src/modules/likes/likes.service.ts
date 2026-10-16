@@ -3,14 +3,14 @@ import { sequelize } from '../../config/database';
 import { redis } from '../../config/redis';
 import { findViewerDiscoveryContext } from '../discovery/discovery.data-access';
 import { findUserById } from '../users/users.data-access';
-import { ConflictError, ForbiddenError, NotFoundError, RateLimitError, UnauthorizedError, ValidationError } from '../../utils/errors';
+import { ConflictError, ForbiddenError, NotFoundError, UnauthorizedError, ValidationError } from '../../utils/errors';
+import { consumeDailyQuota } from '../entitlements/usage.service';
 import {
   consumeSuperLikeCredit,
   findPassTarget,
-  FREE_DAILY_LIKE_PASS_LIMIT,
+  DAILY_LIKE_PASS_METRIC,
   hasActivePremium,
   hasReciprocalLike,
-  incrementDailyLikePass,
   insertActiveConversation,
   insertActiveMatch,
   insertLike,
@@ -42,7 +42,6 @@ import type {
 } from './likes.types';
 import { matchIdSchema, targetUserIdSchema } from './likes.validator';
 
-const DAILY_LIMIT_MESSAGE = 'You have reached your daily limit of 10 likes/passes.';
 const LIKE_MESSAGE = 'Profile liked.';
 const SUPER_LIKE_MESSAGE = 'Profile super liked.';
 const MATCH_MESSAGE = "It's a Match!";
@@ -245,15 +244,7 @@ async function runLikeTransaction(callerId: string, targetUserId: string): Promi
         }
       }
 
-      const premium = await hasActivePremium(callerId, transaction);
-      let remainingDailyActions: number | null = null;
-      if (!premium) {
-        const usageCount = await incrementDailyLikePass(callerId, transaction);
-        if (usageCount === null) {
-          throw new RateLimitError(DAILY_LIMIT_MESSAGE, [], 'DAILY_LIMIT_REACHED');
-        }
-        remainingDailyActions = FREE_DAILY_LIKE_PASS_LIMIT - usageCount;
-      }
+      const remainingDailyActions = await consumeDailyQuota(callerId, DAILY_LIKE_PASS_METRIC, transaction);
 
       return {
         success: true,
@@ -484,15 +475,7 @@ export async function passProfile(input: PassProfileInput): Promise<PassProfileR
       const target = await findPassTarget(input.callerId, targetUserId, transaction);
       assertTarget(target);
 
-      const premium = await hasActivePremium(input.callerId, transaction);
-      let remainingDailyActions: number | null = null;
-      if (!premium) {
-        const usageCount = await incrementDailyLikePass(input.callerId, transaction);
-        if (usageCount === null) {
-          throw new RateLimitError(DAILY_LIMIT_MESSAGE, [], 'DAILY_LIMIT_REACHED');
-        }
-        remainingDailyActions = FREE_DAILY_LIKE_PASS_LIMIT - usageCount;
-      }
+      const remainingDailyActions = await consumeDailyQuota(input.callerId, DAILY_LIKE_PASS_METRIC, transaction);
 
       try {
         await insertPass(input.callerId, targetUserId, transaction);

@@ -21,6 +21,7 @@ import { Subscription } from '../../src/database/models/subscription.model';
 import { UsageRecord } from '../../src/database/models/usage-record.model';
 import { User, UserStatus } from '../../src/database/models/user.model';
 import { app } from '../../src/app';
+import { ensurePlanCatalog } from './plan-catalog.fixture';
 import {
   currentUtcDayWindow,
   DAILY_TEXT_MESSAGES_METRIC
@@ -449,6 +450,10 @@ function textPayload(conversationId: string, content: string, extra?: Record<str
     ...extra
   };
 }
+
+beforeEach(async () => {
+  await ensurePlanCatalog();
+});
 
 describe('Socket.IO chat:message:send', () => {
   beforeAll(async () => {

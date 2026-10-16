@@ -10,3 +10,8 @@ export const getEntitlements = asyncHandler(async (req, res) => {
   const snapshot = await entitlementsService.getCurrentEntitlements(req.user!.id);
   send(res, snapshot, 'Entitlements retrieved.');
 });
+
+export const getUsage = asyncHandler(async (req, res) => {
+  const snapshot = await entitlementsService.getCurrentUsage(req.user!.id);
+  send(res, snapshot, 'Usage retrieved.');
+});

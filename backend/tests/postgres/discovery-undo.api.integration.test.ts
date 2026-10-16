@@ -16,6 +16,7 @@ import { UsageRecord } from '../../src/database/models/usage-record.model';
 import { User, UserStatus } from '../../src/database/models/user.model';
 import { currentUtcDayWindow, DAILY_LIKE_PASS_METRIC } from '../../src/modules/likes/likes.data-access';
 import { signAccessToken } from '../../src/utils/jwt';
+import { ensurePlanCatalog } from './plan-catalog.fixture';
 
 const mockPhotoStorage = {
   createUploadUrl: jest.fn(),
@@ -156,16 +157,10 @@ function like(callerId: string, targetUserId: string) {
 
 async function grantPremium(userIds: string | string[]): Promise<void> {
   const ids = Array.isArray(userIds) ? userIds : [userIds];
-  const plan = await Plan.create({
-    code: 'PREMIUM_MONTHLY',
-    name: 'Love Bite Premium (Monthly)',
-    billingInterval: 'MONTH',
-    priceInCents: 49900,
-    currency: 'INR',
-    isActive: true,
-    displayOrder: 1,
-    ...timestamps()
-  });
+  const plan = await Plan.findOne({ where: { code: 'PREMIUM_MONTHLY' } });
+  if (!plan) {
+    throw new Error('PREMIUM_MONTHLY catalog plan is missing.');
+  }
   const now = new Date();
   for (const userId of ids) {
     await Subscription.create({
@@ -240,6 +235,10 @@ async function insertMatch(
   }
   return match;
 }
+
+beforeEach(async () => {
+  await ensurePlanCatalog();
+});
 
 describe('POST /api/v1/discovery/undo', () => {
   it('rejects a missing token and an admin', async () => {
