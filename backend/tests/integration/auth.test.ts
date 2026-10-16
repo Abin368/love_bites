@@ -41,6 +41,9 @@ jest.mock('../../src/modules/interests/interests.data-access', () => ({
 jest.mock('../../src/modules/relationship-intentions/relationship-intentions.data-access', () => ({
   findActiveRelationshipIntentions: async () => []
 }));
+jest.mock('../../src/modules/subscriptions/subscriptions.data-access', () => ({
+  findActivePlans: async () => []
+}));
 jest.mock('../../src/modules/profiles/profiles.data-access', () => ({
   findGenderById: async () => null,
   findProfileByUserId: async () => null,

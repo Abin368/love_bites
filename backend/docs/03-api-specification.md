@@ -13,7 +13,7 @@ This document defines the **RESTful API Specification** and **Socket.IO Realtime
 
 ### Implementation status
 
-Phase 2 authentication, Phase 3 onboarding, Phase 4 Discovery, and Phase 5 slices for PASS, LIKE and match creation, SUPER LIKE, UNDO, and UNMATCH are implemented. Sections **4**, **11**, **12**, **14**, **19**, **20**, **21**, and **22.2** describe that live behavior. Sections **13**, **17**, **18**, **22.1**, and **23** onward are the planned contract and are not mounted, except where a subsection says otherwise. Sections **23.1**, **23.2**, **25**, **26.1**, **30.1**, and **30.2** are mounted. Admin report review in section **31.2** is not. `PUT /api/v1/me/interests`, `PUT /api/v1/me/relationship-intentions`, `GET /api/v1/dating-preferences`, `PUT /api/v1/dating-preferences`, `PUT /api/v1/location`, and `PATCH /api/v1/onboarding/profile` are not implemented. `GET /api/v1/matches` is not implemented. `DELETE /api/v1/matches/:matchId` is implemented. Match and conversation rows are created by LIKE and SUPER LIKE. UNMATCH does not delete them.
+Phase 2 authentication, Phase 3 onboarding, Phase 4 Discovery, and Phase 5 slices for PASS, LIKE and match creation, SUPER LIKE, UNDO, and UNMATCH are implemented. Sections **4**, **11**, **12**, **14**, **19**, **20**, **21**, and **22.2** describe that live behavior. Sections **13**, **17**, **18**, **22.1**, and **23** onward are the planned contract and are not mounted, except where a subsection says otherwise. Sections **23.1**, **23.2**, **25**, **26.1**, **28.1**, **30.1**, and **30.2** are mounted. Admin report review in section **31.2** is not. `PUT /api/v1/me/interests`, `PUT /api/v1/me/relationship-intentions`, `GET /api/v1/dating-preferences`, `PUT /api/v1/dating-preferences`, `PUT /api/v1/location`, and `PATCH /api/v1/onboarding/profile` are not implemented. `GET /api/v1/matches` is not implemented. `DELETE /api/v1/matches/:matchId` is implemented. Match and conversation rows are created by LIKE and SUPER LIKE. UNMATCH does not delete them.
 
 Health checks are also live: `GET /health` and `GET /api/v1/health`.
 
@@ -2048,15 +2048,20 @@ A report does not require verification, a complete profile, location, dating pre
 ## 28. Subscription APIs
 
 ### 28.1 List Subscription Plans
+**Implemented.** Public read-only catalog of active `plans` rows. This route does not require a token, does not read the caller, and does not change when a bearer token is present. `GET /api/v1/subscriptions/me` and `POST /api/v1/subscriptions/cancel` are not mounted. Cancellation-period semantics remain unresolved.
+
 * **Method & Path:** `GET /api/v1/subscriptions/plans`
-* **Auth:** Public / Authenticated
-* **Success Response (`200 OK`):**
+* **Auth:** Public. No `authenticate` and no `requireVerified`. An unverified `USER` token and an `ADMIN` token receive the same list as an anonymous request.
+* **Rate limit:** Shared public catalog limiter, 100 requests / 60 seconds / IP, Redis key `ratelimit:public:<ip>`. Over the limit: `429 RATE_LIMITED`, message `Too many requests. Please try again later.`
+* **Rows:** `is_active = true` only, ordered by `display_order` ascending. Values come from PostgreSQL. An empty active catalog is `200` with `data: []`.
+* **Fields:** each item is exactly `id`, `code`, `name`, `priceInCents`, `currency`, and `billingInterval`. `isActive`, `displayOrder`, timestamps, features, usage limits, and subscription state are omitted. The route does not join `plan_features`, `usage_limits`, or `subscriptions`, and it does not write.
+* **Success Response (`200 OK`):** Message: `Plans retrieved successfully.`
   ```json
   {
     "success": true,
     "data": [
       {
-        "id": "plan-free",
+        "id": "6e6e0001-0000-4000-8000-000000000001",
         "code": "FREE",
         "name": "Free Tier",
         "priceInCents": 0,
@@ -2064,7 +2069,7 @@ A report does not require verification, a complete profile, location, dating pre
         "billingInterval": "NONE"
       },
       {
-        "id": "plan-premium-monthly",
+        "id": "6e6e0001-0000-4000-8000-000000000002",
         "code": "PREMIUM_MONTHLY",
         "name": "Love Bite Premium (Monthly)",
         "priceInCents": 49900,
@@ -2072,16 +2077,18 @@ A report does not require verification, a complete profile, location, dating pre
         "billingInterval": "MONTH"
       },
       {
-        "id": "plan-premium-yearly",
+        "id": "6e6e0001-0000-4000-8000-000000000003",
         "code": "PREMIUM_YEARLY",
         "name": "Love Bite Premium (Yearly)",
         "priceInCents": 399900,
         "currency": "INR",
         "billingInterval": "YEAR"
       }
-    ]
+    ],
+    "message": "Plans retrieved successfully."
   }
   ```
+  The prices and intervals above are the seeded catalog values when `20261015120003-seed-plan-catalog.js` has been applied. The route returns whatever active rows exist. `love_bites_dev` has not been seeded.
 
 ---
 

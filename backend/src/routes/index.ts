@@ -13,6 +13,7 @@ import { profileRoutes } from '../modules/profiles/profiles.routes';
 import { profilePhotoRoutes } from '../modules/profile-photos/profile-photos.routes';
 import { reportsRoutes } from '../modules/reports/reports.routes';
 import { relationshipIntentionRoutes } from '../modules/relationship-intentions/relationship-intentions.routes';
+import { subscriptionsRoutes } from '../modules/subscriptions/subscriptions.routes';
 
 const router = Router();
 
@@ -31,5 +32,6 @@ router.use('/profile-photos', profilePhotoRoutes);
 router.use('/genders', genderRoutes);
 router.use('/interests', interestRoutes);
 router.use('/relationship-intentions', relationshipIntentionRoutes);
+router.use('/subscriptions', subscriptionsRoutes);
 
 export const apiRoutes = router;
