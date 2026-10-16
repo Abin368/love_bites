@@ -879,6 +879,45 @@ Defines billing tiers (`FREE`, `PREMIUM_MONTHLY`, `PREMIUM_YEARLY`) and base con
 * `CONSTRAINT chk_plans_interval CHECK (billing_interval IN ('NONE', 'MONTH', 'YEAR'))`
 * `CONSTRAINT chk_plans_price CHECK (price_in_cents >= 0)`
 
+`price_in_cents` and `currency` are the live catalog price. There is no separate approved-price column. `PATCH /api/v1/admin/config/plans/:planId` is the writer. `PREMIUM_MONTHLY` and `PREMIUM_YEARLY` must stay above `0`. `FREE` may be `0`. Stored currency for a committed admin update is `INR`. `updated_at` is not an audit trail. Seeded prices are placeholders. Product prices remain TBD.
+
+### 16.1a `plan_price_changes`
+
+#### Purpose
+Append-only history of administrator plan-price changes. One row is inserted in the same transaction as the `plans` price update. An unchanged price does not insert a row.
+
+#### Columns
+| Column | Type | Nullable | Default | Description |
+| :--- | :--- | :--- | :--- | :--- |
+| `id` | `UUID` | `NO` | `gen_random_uuid()` | Primary key. |
+| `admin_user_id` | `UUID` | `YES` | `NULL` | Administrator who made the change. Null after that user row is hard-deleted. |
+| `plan_id` | `UUID` | `NO` | — | Plan whose price changed. |
+| `old_price_in_cents` | `INTEGER` | `NO` | — | Price before the change. |
+| `new_price_in_cents` | `INTEGER` | `NO` | — | Price after the change. |
+| `old_currency` | `VARCHAR(3)` | `NO` | — | Currency before the change. May be a legacy non-`INR` value. |
+| `new_currency` | `VARCHAR(3)` | `NO` | — | Currency after the change. Committed updates store `INR`. |
+| `action` | `VARCHAR(50)` | `NO` | — | `PLAN_PRICE_CHANGED`. |
+| `reason` | `TEXT` | `NO` | — | Trimmed administrator reason. |
+| `created_at` | `TIMESTAMPTZ` | `NO` | `CURRENT_TIMESTAMP` | Time the change committed. |
+
+#### Primary Key
+* `PRIMARY KEY (id)`
+
+#### Foreign Keys
+* `CONSTRAINT fk_plan_price_changes_admin FOREIGN KEY (admin_user_id) REFERENCES users(id) ON DELETE SET NULL ON UPDATE CASCADE`
+* `CONSTRAINT fk_plan_price_changes_plan FOREIGN KEY (plan_id) REFERENCES plans(id) ON DELETE RESTRICT ON UPDATE CASCADE`
+
+#### Constraints
+* `CONSTRAINT chk_plan_price_changes_prices CHECK (old_price_in_cents >= 0 AND new_price_in_cents >= 0)`
+* `CONSTRAINT chk_plan_price_changes_new_currency CHECK (new_currency = 'INR')`
+* `CONSTRAINT chk_plan_price_changes_action CHECK (action = 'PLAN_PRICE_CHANGED')`
+* `CONSTRAINT chk_plan_price_changes_reason CHECK (char_length(btrim(reason)) > 0)`
+
+#### Indexes
+* `CREATE INDEX idx_plan_price_changes_plan_created ON plan_price_changes (plan_id, created_at DESC);`
+
+A hard delete of the administrator nulls `admin_user_id` and keeps the row. A soft delete does not fire that foreign key. Deleting a plan that has a price-change row is rejected. There is no `updated_at` column because the row is not edited.
+
 ---
 
 ### 16.2 `features`
@@ -1257,6 +1296,10 @@ Enforces webhook idempotency across asynchronous payment notifications. Duplicat
 | `user_credit_balances`| `chk_user_credit_balances_non_negative`| CHECK | `balance >= 0` |
 | `credit_transactions`| `chk_credit_transactions_delta_nonzero`| CHECK | `delta != 0` |
 | `payments` | `chk_payments_amount` | CHECK | `amount_in_cents > 0` |
+| `plan_price_changes` | `chk_plan_price_changes_prices` | CHECK | `old_price_in_cents >= 0 AND new_price_in_cents >= 0` |
+| `plan_price_changes` | `chk_plan_price_changes_new_currency` | CHECK | `new_currency = 'INR'` |
+| `plan_price_changes` | `chk_plan_price_changes_action` | CHECK | `action = 'PLAN_PRICE_CHANGED'` |
+| `plan_price_changes` | `chk_plan_price_changes_reason` | CHECK | `char_length(btrim(reason)) > 0` |
 
 ---
 
@@ -1287,6 +1330,8 @@ Enforces webhook idempotency across asynchronous payment notifications. Duplicat
 | `subscriptions` | `plan_id` | `plans` | `id` | `RESTRICT` | `CASCADE` | Cannot delete plan if subscribed users exist. |
 | `payments` | `user_id` | `users` | `id` | `SET NULL` | `CASCADE` | Financial ledger must NEVER be deleted upon account removal. |
 | `payments` | `subscription_id`| `subscriptions`| `id` | `SET NULL` | `CASCADE` | Payment invoice preserved for tax/auditing. |
+| `plan_price_changes` | `admin_user_id` | `users` | `id` | `SET NULL` | `CASCADE` | Price history remains after the administrator row is hard-deleted. |
+| `plan_price_changes` | `plan_id` | `plans` | `id` | `RESTRICT` | `CASCADE` | A plan with price history cannot be deleted. |
 
 ---
 
@@ -1491,6 +1536,8 @@ User A Likes User B
 ]
 ```
 
+These amounts are seed placeholders. Product prices remain TBD. `20261015120003-seed-plan-catalog.js` inserts them on first load. On `code` conflict it still updates `name`, `billing_interval`, `is_active`, `display_order`, and `updated_at`. It does not update `price_in_cents` or `currency`, so an administrator price survives a later seed run. The conflict update still sets `is_active` from the seed value, which is `TRUE`.
+
 ### 28.4 Features Seed (`features`)
 ```json
 [
@@ -1560,6 +1607,7 @@ User A Likes User B
 | 28 | `payments` | Payments | Gateway payment invoices, statuses, amounts, and metadata. | Unique provider payment ID index, `SET NULL` on user deletion. |
 | 29 | `processed_webhooks` | Payments | Webhook idempotency ledger preventing duplicate event executions. | Primary key on provider `event_id`. |
 | 30 | `usage_records` | Usage Tracking | Aggregated usage consumption tracking across daily/monthly windows. | Unique window index `(user_id, metric_key, period_start)`. |
+| 31 | `plan_price_changes` | Monetization | Append-only administrator plan price and currency history. | `SET NULL` on admin hard delete, `RESTRICT` on plan delete, new currency `INR`. |
 
 ---
 

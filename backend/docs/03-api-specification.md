@@ -125,7 +125,7 @@ Live routes that require `Authorization: Bearer <accessToken>`:
 
 Those profile, onboarding, photo, discovery, unmatch, message, entitlements, usage, and current-subscription routes also require role `USER`. `requireVerified` is not applied on the route. An unverified `USER` may call profile, onboarding, photo, entitlements, usage, and `GET /api/v1/subscriptions/me`. Discovery, PASS, LIKE, SUPER LIKE, UNDO, UNMATCH, the conversation inbox, conversation details, send message, media upload URL, media confirmation, media download, message history, and the conversation unread count check verification in the service and return `403 EMAIL_NOT_VERIFIED` or `403 PHONE_NOT_VERIFIED`. Entitlements, the usage snapshot, and the current-subscription read do not check verification or profile completion. Any other role, including `ADMIN`, receives `403 FORBIDDEN`. Suspended and banned accounts are rejected with `403` by the authentication middleware.
 
-There is no live admin API yet. `requireRole('ADMIN')` exists for later routes.
+The live admin route is `PATCH /api/v1/admin/config/plans/:planId` in section 31.3. It uses `authenticate` and `requireRole('ADMIN')`. `requireVerified` is not applied. Other admin routes are not mounted.
 
 ---
 
@@ -2311,10 +2311,44 @@ Sections **30.1** and **30.2** are mounted and remain read-only. LIKE, PASS, and
   * Body: `{ "status": "RESOLVED", "adminNotes": "User banned for harassment", "actionTaken": "BAN_USER" }`
 
 ### 31.3 Dynamic Configuration Management
+Genders, interests, relationship intentions, and plan limit editing are not mounted.
+
 * **Manage Genders:** `GET`, `POST`, `PATCH /api/v1/admin/config/genders`
 * **Manage Interests:** `GET`, `POST`, `PATCH /api/v1/admin/config/interests`
 * **Manage Relationship Intentions:** `GET`, `POST`, `PATCH /api/v1/admin/config/relationship-intentions`
-* **Manage Plans & Limits:** `GET`, `PATCH /api/v1/admin/config/plans/:planId`
+
+#### Update plan price
+**Implemented.** Changes `price_in_cents` and `currency` on one `plans` row and appends `plan_price_changes` in the same transaction. It does not change `name`, `code`, `billing_interval`, `is_active`, `display_order`, features, or usage limits. It does not write `subscriptions` or `payments`, and it does not create a Razorpay Order or activate Premium.
+
+* **Method & Path:** `PATCH /api/v1/admin/config/plans/:planId`
+* **Auth:** `authenticate`, then `requireRole('ADMIN')`. A missing or non-Bearer header is `401 AUTH_REQUIRED`. An invalid token is `401 INVALID_TOKEN`. A `USER` is `403 FORBIDDEN`. Suspended and banned accounts are rejected by authentication middleware. `requireVerified` is not applied.
+* **Path:** `planId` must be a UUID. Otherwise `400 VALIDATION_ERROR` with field `planId` and message `Plan id must be a valid UUID.` An unknown plan is `404 RESOURCE_NOT_FOUND`, message `Resource not found`.
+* **Query:** any query parameter is `400 VALIDATION_ERROR`.
+* **Body:** `priceInCents` and `currency` are optional, and at least one is required. `reason` is required. Unknown properties are rejected. `reason` is trimmed, and a blank reason is `400 VALIDATION_ERROR`.
+  * `priceInCents` is an integer from `0` through `2147483647`. Fractions, strings, and null are rejected.
+  * `currency` must be the exact string `INR`. Other values are rejected and are not converted.
+  * The service validates the price and currency that would be stored. A price-only update of a non-`INR` row is rejected and does not rewrite that currency. Sending `currency: "INR"` may correct a non-`INR` row when the resulting price is valid.
+  * `PREMIUM_MONTHLY` and `PREMIUM_YEARLY` must remain greater than `0`. `FREE` and any other plan code may be `0`.
+* **Inactive plans:** an inactive plan may be edited. `is_active` stays as stored, so the public catalog still omits it.
+* **No-op:** when the resulting price and currency already match the locked row, the response is `200`, no audit row is inserted, and `updated_at` is not changed. Message: `Plan price is unchanged.`
+* **Write:** the plan row is locked with `FOR UPDATE`. A real change updates only `price_in_cents` and `currency`, then inserts one `plan_price_changes` row with the administrator, the plan, the old and new price, the old and new currency, action `PLAN_PRICE_CHANGED`, the trimmed reason, and `created_at`. If the audit insert fails, the price update rolls back.
+* **Catalog effect:** the next `GET /api/v1/subscriptions/plans` returns the stored price for an active plan. Seeded amounts are not an approved price list. Product prices remain TBD until an administrator sets them.
+* **Success Response (`200 OK`):** Message: `Plan price updated.`
+  ```json
+  {
+    "success": true,
+    "data": {
+      "id": "6e6e0001-0000-4000-8000-000000000002",
+      "code": "PREMIUM_MONTHLY",
+      "priceInCents": 59900,
+      "currency": "INR",
+      "isActive": true,
+      "updatedAt": "2026-10-16T12:00:00.000Z"
+    },
+    "message": "Plan price updated."
+  }
+  ```
+  `data` is exactly those six fields. The no-op response uses the same shape and the unchanged message.
 
 ### 31.4 System KPI Dashboard
 * **Get System Statistics:** `GET /api/v1/admin/dashboard/stats`

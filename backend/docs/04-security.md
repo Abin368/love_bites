@@ -383,6 +383,7 @@ The client cannot send a storage key. The signed key is `chat-media/{conversatio
    * Clients submit only `planId` during checkout.
    * The backend resolves `plans.price_in_cents` and `plans.currency` directly from PostgreSQL.
    * Client-supplied prices or currency overrides are completely ignored.
+   * An administrator changes those columns only through `PATCH /api/v1/admin/config/plans/:planId`. The supported currency is `INR`. Premium plan codes must stay above zero. Checkout is not implemented in that route.
 
 ---
 
@@ -408,7 +409,7 @@ The client cannot send a storage key. The signed key is `chat-media/{conversatio
 ## 21. Admin Security
 
 1. **Server-Side Enforcement:** All `/api/v1/admin/*` routes require `role.middleware.ts` verifying `req.user.role === 'ADMIN'`.
-2. **Admin Action Audit Trails:** All state-altering administrative actions (e.g., suspending a user, banning an account, resolving reports, modifying plan prices) are logged to structured audit streams with `adminId`, `targetId`, `action`, `reason`, and `timestamp`.
+2. **Admin Action Audit Trails:** All state-altering administrative actions (e.g., suspending a user, banning an account, resolving reports, modifying plan prices) are logged to structured audit streams with `adminId`, `targetId`, `action`, `reason`, and `timestamp`. Plan price changes are the implemented case. They insert `plan_price_changes` in the same transaction as the `plans` update. The row stores the administrator, the plan, the old and new price, the old and new currency, action `PLAN_PRICE_CHANGED`, the reason, and `created_at`. An unchanged price writes nothing. Hard-deleting the administrator sets `admin_user_id` null and keeps the row. Deleting the plan is restricted while a row exists. Suspension, ban, and report-resolution audit rows are not implemented.
 
 ---
 
