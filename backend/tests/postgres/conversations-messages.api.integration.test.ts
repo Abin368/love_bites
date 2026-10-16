@@ -401,6 +401,22 @@ async function grantPremium(userId: string): Promise<void> {
   });
 }
 
+async function markCanceled(userId: string, currentPeriodEnd: Date, gracePeriodEnd: Date | null): Promise<void> {
+  const [count] = await Subscription.update(
+    {
+      status: 'CANCELED',
+      autoRenew: false,
+      currentPeriodEnd,
+      gracePeriodEnd,
+      canceledAt: new Date()
+    },
+    { where: { userId } }
+  );
+  if (count !== 1) {
+    throw new Error('Expected one subscription to cancel.');
+  }
+}
+
 async function textMessageUsageCount(userId: string): Promise<number> {
   const { periodStart } = currentUtcDayWindow();
   const row = await UsageRecord.findOne({
@@ -4286,6 +4302,46 @@ describe('POST /api/v1/conversations/:conversationId/media-upload-url', () => {
     socket.detach();
   });
 
+  it('issues an upload URL for an in-period canceled subscription and rejects ended or grace-only cancellation', async () => {
+    const allowed = await activeThread();
+    await grantPremium(allowed.caller.id);
+    await markCanceled(
+      allowed.caller.id,
+      new Date(Date.now() + 60 * 60 * 1000),
+      new Date(Date.now() + 2 * 60 * 60 * 1000)
+    );
+    const issued = await requestMediaUpload(allowed.caller.id, allowed.conversation.id, {
+      mediaType: 'IMAGE',
+      mimeType: 'image/jpeg',
+      fileSizeBytes: 128
+    });
+    expect(issued.status).toBe(200);
+    expect(issued.body.message).toBe('Upload URL created.');
+
+    const ended = await activeThread();
+    await grantPremium(ended.caller.id);
+    await markCanceled(ended.caller.id, new Date(Date.now() - 60_000), null);
+    const endedResponse = await requestMediaUpload(ended.caller.id, ended.conversation.id, {
+      mediaType: 'IMAGE',
+      mimeType: 'image/jpeg',
+      fileSizeBytes: 128
+    });
+    expect(endedResponse.status).toBe(403);
+    expect(endedResponse.body.error.code).toBe('PREMIUM_REQUIRED');
+
+    const graceOnly = await activeThread();
+    await grantPremium(graceOnly.caller.id);
+    await markCanceled(graceOnly.caller.id, new Date(Date.now() - 60_000), new Date(Date.now() + 60 * 60 * 1000));
+    const graceResponse = await requestMediaUpload(graceOnly.caller.id, graceOnly.conversation.id, {
+      mediaType: 'IMAGE',
+      mimeType: 'image/jpeg',
+      fileSizeBytes: 128
+    });
+    expect(graceResponse.status).toBe(403);
+    expect(graceResponse.body.error.code).toBe('PREMIUM_REQUIRED');
+    expect(await Message.count()).toBe(0);
+  });
+
   it('issues a private upload URL and a 300-second reservation without writing a message', async () => {
     const { caller, conversation } = await activeThread();
     await grantPremium(caller.id);
@@ -5049,6 +5105,54 @@ describe('POST /api/v1/conversations/:conversationId/media-confirm', () => {
     expect(await textMessageUsageCount(target.id)).toBe(1);
     socket.detach();
   });
+
+  it('confirms media for an in-period canceled subscription and rejects ended or grace-only cancellation', async () => {
+    const allowed = await activeThread();
+    await grantPremium(allowed.caller.id);
+    await markCanceled(allowed.caller.id, new Date(Date.now() + 60 * 60 * 1000), null);
+    stubMediaHead('image/jpeg', 64);
+    const issued = await requestMediaUpload(allowed.caller.id, allowed.conversation.id, {
+      mediaType: 'IMAGE',
+      mimeType: 'image/jpeg',
+      fileSizeBytes: 64
+    });
+    const confirmed = await confirmMedia(allowed.caller.id, allowed.conversation.id, {
+      uploadId: issued.body.data.uploadId
+    });
+    expect(issued.status).toBe(200);
+    expect(confirmed.status).toBe(201);
+    expect(confirmed.body.data.messageType).toBe('IMAGE');
+
+    const ended = await activeThread();
+    await grantPremium(ended.caller.id);
+    stubMediaHead('image/png', 32);
+    const endedIssued = await requestMediaUpload(ended.caller.id, ended.conversation.id, {
+      mediaType: 'IMAGE',
+      mimeType: 'image/png',
+      fileSizeBytes: 32
+    });
+    await markCanceled(ended.caller.id, new Date(Date.now() - 60_000), null);
+    const endedConfirm = await confirmMedia(ended.caller.id, ended.conversation.id, {
+      uploadId: endedIssued.body.data.uploadId
+    });
+    expect(endedConfirm.status).toBe(403);
+    expect(endedConfirm.body.error.code).toBe('PREMIUM_REQUIRED');
+
+    const graceOnly = await activeThread();
+    await grantPremium(graceOnly.caller.id);
+    stubMediaHead('image/webp', 16);
+    const graceIssued = await requestMediaUpload(graceOnly.caller.id, graceOnly.conversation.id, {
+      mediaType: 'IMAGE',
+      mimeType: 'image/webp',
+      fileSizeBytes: 16
+    });
+    await markCanceled(graceOnly.caller.id, new Date(Date.now() - 60_000), new Date(Date.now() + 2 * 60 * 60 * 1000));
+    const graceConfirm = await confirmMedia(graceOnly.caller.id, graceOnly.conversation.id, {
+      uploadId: graceIssued.body.data.uploadId
+    });
+    expect(graceConfirm.status).toBe(403);
+    expect(graceConfirm.body.error.code).toBe('PREMIUM_REQUIRED');
+  });
 });
 
 function requestMediaDownload(
@@ -5218,6 +5322,20 @@ describe('GET /api/v1/conversations/:conversationId/messages/:messageId/media-do
     expect(lapsed.body.message).toBe('Download URL created.');
     expect(await textMessageUsageCount(caller.id)).toBe(0);
     expect(await textMessageUsageCount(target.id)).toBe(0);
+
+    await Subscription.update(
+      {
+        status: 'CANCELED',
+        autoRenew: false,
+        currentPeriodEnd: new Date(Date.now() - 60_000),
+        gracePeriodEnd: new Date(Date.now() + 60 * 60 * 1000),
+        canceledAt: new Date()
+      },
+      { where: { userId: caller.id } }
+    );
+    const canceled = await requestMediaDownload(caller.id, conversation.id, messageId);
+    expect(canceled.status).toBe(200);
+    expect(canceled.body.message).toBe('Download URL created.');
   });
 
   it('signs IMAGE, GIF, VIDEO, and VOICE with the canonical key and a 3600 second TTL', async () => {

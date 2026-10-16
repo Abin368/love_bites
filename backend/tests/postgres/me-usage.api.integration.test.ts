@@ -349,15 +349,23 @@ describe('GET /api/v1/me/usage', () => {
     await expectUsage(elapsed.id, limitedMetric(1, FREE_DAILY_LIKE_PASS_LIMIT), limitedMetric(2, FREE_DAILY_TEXT_MESSAGES_LIMIT));
   });
 
-  it('keeps CANCELED and EXPIRED subscriptions limited when the period end is still in the future', async () => {
+  it('treats an in-period canceled subscription as unlimited and keeps ended or expired rows limited', async () => {
     const canceled = await createUser();
+    const graceOnly = await createUser();
     const expired = await createUser();
     const future = new Date(Date.now() + HOUR_MS);
+    const past = new Date(Date.now() - HOUR_MS);
 
     await subscribe(canceled.id, {
       code: 'PREMIUM_MONTHLY',
       status: 'CANCELED',
       currentPeriodEnd: future,
+      gracePeriodEnd: future
+    });
+    await subscribe(graceOnly.id, {
+      code: 'PREMIUM_YEARLY',
+      status: 'CANCELED',
+      currentPeriodEnd: past,
       gracePeriodEnd: future
     });
     await subscribe(expired.id, {
@@ -367,9 +375,11 @@ describe('GET /api/v1/me/usage', () => {
       gracePeriodEnd: future
     });
     await seedCurrentUsage(canceled.id, 4, 8);
+    await seedCurrentUsage(graceOnly.id, 2, 3);
     await seedCurrentUsage(expired.id, 10, 20);
 
-    await expectUsage(canceled.id, limitedMetric(4, FREE_DAILY_LIKE_PASS_LIMIT), limitedMetric(8, FREE_DAILY_TEXT_MESSAGES_LIMIT));
+    await expectUsage(canceled.id, unlimitedMetric(4), unlimitedMetric(8));
+    await expectUsage(graceOnly.id, limitedMetric(2, FREE_DAILY_LIKE_PASS_LIMIT), limitedMetric(3, FREE_DAILY_TEXT_MESSAGES_LIMIT));
     await expectUsage(
       expired.id,
       limitedMetric(FREE_DAILY_LIKE_PASS_LIMIT, FREE_DAILY_LIKE_PASS_LIMIT),

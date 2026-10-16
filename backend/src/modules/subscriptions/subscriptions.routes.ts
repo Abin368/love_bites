@@ -16,5 +16,13 @@ router.get(
   validateEmptyBody,
   subscriptionsController.getCurrentSubscription
 );
+router.post(
+  '/cancel',
+  authenticate,
+  requireRole('USER'),
+  validateNoQuery,
+  validateEmptyBody,
+  subscriptionsController.cancelSubscription
+);
 
 export const subscriptionsRoutes = router;

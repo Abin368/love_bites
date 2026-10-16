@@ -470,7 +470,7 @@ The Discovery engine delivers one candidate profile at a time based on algorithm
 ## 14. Like / Pass Architecture
 
 ### Daily Counter Rule
-Free users have a **shared quota of 10 LIKE and PASS actions per UTC calendar day**. The count lives in `usage_records` with metric `DAILY_LIKE_PASS`. Premium subscribers with plan `PREMIUM_MONTHLY` or `PREMIUM_YEARLY` and a current `ACTIVE`, `PAST_DUE`, or `GRACE_PERIOD` period do not consume that quota. SUPER LIKE uses `user_credit_balances` where `credit_type = 'SUPER_LIKE'` and does not increment `DAILY_LIKE_PASS`. UNDO does not change `usage_records`.
+Free users have a **shared quota of 10 LIKE and PASS actions per UTC calendar day**. The count lives in `usage_records` with metric `DAILY_LIKE_PASS`. Premium subscribers with plan `PREMIUM_MONTHLY` or `PREMIUM_YEARLY` do not consume that quota while `hasActivePremium` is true. That includes `ACTIVE`, `PAST_DUE`, and `GRACE_PERIOD` while the period or grace end is still in the future, and `CANCELED` only while `current_period_end` is still in the future. SUPER LIKE uses `user_credit_balances` where `credit_type = 'SUPER_LIKE'` and does not increment `DAILY_LIKE_PASS`. UNDO does not change `usage_records`.
 
 *Example:* A Free user recording 6 Likes and 4 Passes reaches the daily limit of 10. A Super Like is not one of those 10.
 

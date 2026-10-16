@@ -341,14 +341,39 @@ describe('GET /api/v1/subscriptions/me', () => {
     expect(graceWithCurrentResponse.body.data.subscription.gracePeriodEnd).toBeNull();
   });
 
-  it('returns the empty state for a future-dated CANCELED subscription', async () => {
+  it('returns an in-period CANCELED premium subscription', async () => {
     await ensurePlanCatalog();
+    const monthly = await Plan.findOne({ where: { code: 'PREMIUM_MONTHLY' } });
+    if (!monthly) {
+      throw new Error('Missing monthly plan');
+    }
     const caller = await createUser();
     const future = new Date(Date.now() + HOUR_MS);
-    await subscribe(caller.id, {
+    const canceled = await subscribe(caller.id, {
       code: 'PREMIUM_MONTHLY',
       status: 'CANCELED',
       currentPeriodEnd: future,
+      gracePeriodEnd: future,
+      autoRenew: false
+    });
+
+    const response = await getSubscription(caller.id);
+
+    expect(response.body).toEqual(await activeBody(canceled.id, monthly));
+    expect(response.body.data.subscription.status).toBe('CANCELED');
+    expect(response.body.data.subscription.autoRenew).toBe(false);
+    expectApprovedFields(response.body);
+  });
+
+  it('returns the empty state when a canceled paid period has ended even if grace remains', async () => {
+    await ensurePlanCatalog();
+    const caller = await createUser();
+    const past = new Date(Date.now() - HOUR_MS);
+    const future = new Date(Date.now() + HOUR_MS);
+    await subscribe(caller.id, {
+      code: 'PREMIUM_YEARLY',
+      status: 'CANCELED',
+      currentPeriodEnd: past,
       gracePeriodEnd: future,
       autoRenew: false
     });
@@ -425,11 +450,15 @@ describe('GET /api/v1/subscriptions/me', () => {
     expect(response.body).toEqual(emptyBody());
   });
 
-  it('does not return an arbitrary historical row when no subscription qualifies', async () => {
+  it('returns the in-period canceled row and ignores an expired row', async () => {
     await ensurePlanCatalog();
+    const monthly = await Plan.findOne({ where: { code: 'PREMIUM_MONTHLY' } });
+    if (!monthly) {
+      throw new Error('Missing monthly plan');
+    }
     const caller = await createUser();
     const future = new Date(Date.now() + HOUR_MS);
-    await subscribe(caller.id, {
+    const canceled = await subscribe(caller.id, {
       code: 'PREMIUM_MONTHLY',
       status: 'CANCELED',
       currentPeriodEnd: future,
@@ -446,8 +475,38 @@ describe('GET /api/v1/subscriptions/me', () => {
 
     const response = await getSubscription(caller.id);
 
-    expect(response.body).toEqual(emptyBody());
+    expect(response.body).toEqual(await activeBody(canceled.id, monthly));
     expect(await Subscription.count({ where: { userId: caller.id } })).toBe(2);
+  });
+
+  it('prefers a qualifying non-canceled row over a future-dated canceled row', async () => {
+    await ensurePlanCatalog();
+    const yearly = await Plan.findOne({ where: { code: 'PREMIUM_YEARLY' } });
+    if (!yearly) {
+      throw new Error('Missing yearly plan');
+    }
+    const caller = await createUser();
+    const sooner = new Date(Date.now() + HOUR_MS);
+    const later = new Date(Date.now() + 2 * HOUR_MS);
+    await subscribe(caller.id, {
+      code: 'PREMIUM_MONTHLY',
+      status: 'CANCELED',
+      currentPeriodEnd: later,
+      gracePeriodEnd: later,
+      autoRenew: false
+    });
+    const active = await subscribe(caller.id, {
+      code: 'PREMIUM_YEARLY',
+      status: 'ACTIVE',
+      currentPeriodEnd: sooner,
+      gracePeriodEnd: null,
+      autoRenew: true
+    });
+
+    const response = await getSubscription(caller.id);
+
+    expect(response.body).toEqual(await activeBody(active.id, yearly));
+    expect(response.body.data.subscription.status).toBe('ACTIVE');
   });
 
   it('does not write or mutate subscription rows', async () => {
@@ -505,10 +564,11 @@ describe('GET /api/v1/subscriptions/me', () => {
     expect(premiumUsage.body.data.dailyTextMessages).toEqual({ used: 0, limit: null, remaining: null, isUnlimited: true });
     expect(premiumUsage.body.data.quotaResetsAt).toBe(quotaResetsAt);
 
-    expect(canceledSubscription.body).toEqual(emptyBody());
-    expect(canceledEntitlements.body.data.tier).toBe('FREE');
-    expect(canceledUsage.body.data.dailyLikePass).toEqual({ used: 0, limit: 10, remaining: 10, isUnlimited: false });
-    expect(canceledUsage.body.data.dailyTextMessages).toEqual({ used: 0, limit: 20, remaining: 20, isUnlimited: false });
+    expect(canceledSubscription.body.data.hasActiveSubscription).toBe(true);
+    expect(canceledSubscription.body.data.subscription.status).toBe('CANCELED');
+    expect(canceledEntitlements.body.data.tier).toBe('PREMIUM');
+    expect(canceledUsage.body.data.dailyLikePass).toEqual({ used: 0, limit: null, remaining: null, isUnlimited: true });
+    expect(canceledUsage.body.data.dailyTextMessages).toEqual({ used: 0, limit: null, remaining: null, isUnlimited: true });
     expect(canceledUsage.body.data.quotaResetsAt).toBe(quotaResetsAt);
   });
 });

@@ -47,3 +47,8 @@ export type CurrentSubscriptionState =
       hasActiveSubscription: false;
       subscription: null;
     };
+
+export interface CancelSubscriptionResult {
+  autoRenew: false;
+  activeUntil: Date;
+}

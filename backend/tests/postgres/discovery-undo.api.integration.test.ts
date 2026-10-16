@@ -174,6 +174,22 @@ async function grantPremium(userIds: string | string[]): Promise<void> {
   }
 }
 
+async function markCanceled(userId: string, currentPeriodEnd: Date, gracePeriodEnd: Date | null): Promise<void> {
+  const [count] = await Subscription.update(
+    {
+      status: 'CANCELED',
+      autoRenew: false,
+      currentPeriodEnd,
+      gracePeriodEnd,
+      canceledAt: new Date()
+    },
+    { where: { userId } }
+  );
+  if (count !== 1) {
+    throw new Error('Expected one subscription to cancel.');
+  }
+}
+
 async function usageCount(userId: string): Promise<number> {
   const { periodStart } = currentUtcDayWindow();
   const row = await UsageRecord.findOne({
@@ -289,6 +305,60 @@ describe('POST /api/v1/discovery/undo', () => {
     const locationResponse = await undo(missingLocation.id);
     expect(locationResponse.status).toBe(400);
     expect(locationResponse.body.error.code).toBe('PROFILE_INCOMPLETE');
+  });
+
+  it('undoes a recent like for an in-period canceled premium subscription', async () => {
+    const { caller, target } = await pair();
+    await grantPremium(caller.id);
+    await markCanceled(caller.id, new Date(Date.now() + 60 * 60 * 1000), new Date(Date.now() + 2 * 60 * 60 * 1000));
+    const likeRow = await Like.create({
+      fromUserId: caller.id,
+      toUserId: target.id,
+      action: 'LIKE',
+      isUndone: false,
+      ...timestamps()
+    });
+
+    const response = await undo(caller.id);
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.undoneAction).toBe('LIKE');
+    await likeRow.reload();
+    expect(likeRow.isUndone).toBe(true);
+  });
+
+  it('rejects an ended or grace-only canceled subscription without undoing the like', async () => {
+    const ended = await pair();
+    const graceOnly = await pair();
+    await grantPremium([ended.caller.id, graceOnly.caller.id]);
+    await markCanceled(ended.caller.id, new Date(Date.now() - 60_000), null);
+    await markCanceled(graceOnly.caller.id, new Date(Date.now() - 60_000), new Date(Date.now() + 60 * 60 * 1000));
+    const endedLike = await Like.create({
+      fromUserId: ended.caller.id,
+      toUserId: ended.target.id,
+      action: 'PASS',
+      isUndone: false,
+      ...timestamps()
+    });
+    const graceLike = await Like.create({
+      fromUserId: graceOnly.caller.id,
+      toUserId: graceOnly.target.id,
+      action: 'LIKE',
+      isUndone: false,
+      ...timestamps()
+    });
+
+    const endedResponse = await undo(ended.caller.id);
+    const graceResponse = await undo(graceOnly.caller.id);
+
+    expect(endedResponse.status).toBe(403);
+    expect(endedResponse.body.error.code).toBe('PREMIUM_REQUIRED');
+    expect(graceResponse.status).toBe(403);
+    expect(graceResponse.body.error.code).toBe('PREMIUM_REQUIRED');
+    await endedLike.reload();
+    await graceLike.reload();
+    expect(endedLike.isUndone).toBe(false);
+    expect(graceLike.isUndone).toBe(false);
   });
 
   it('rejects a non-premium caller without undoing the like', async () => {

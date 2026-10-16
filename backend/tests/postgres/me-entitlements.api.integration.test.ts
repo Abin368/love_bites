@@ -299,15 +299,30 @@ describe('GET /api/v1/me/entitlements', () => {
     }
   });
 
-  it('returns FREE for CANCELED and EXPIRED subscriptions under the current predicate', async () => {
+  it('returns PREMIUM for an in-period canceled subscription and FREE when that period has ended', async () => {
     const canceled = await createUser();
+    const elapsed = await createUser();
+    const graceOnly = await createUser();
     const expired = await createUser();
     const future = new Date(Date.now() + HOUR_MS);
+    const past = new Date(Date.now() - HOUR_MS);
 
     await subscribe(canceled.id, {
       code: 'PREMIUM_MONTHLY',
       status: 'CANCELED',
       currentPeriodEnd: future,
+      gracePeriodEnd: future
+    });
+    await subscribe(elapsed.id, {
+      code: 'PREMIUM_YEARLY',
+      status: 'CANCELED',
+      currentPeriodEnd: past,
+      gracePeriodEnd: null
+    });
+    await subscribe(graceOnly.id, {
+      code: 'PREMIUM_MONTHLY',
+      status: 'CANCELED',
+      currentPeriodEnd: past,
       gracePeriodEnd: future
     });
     await subscribe(expired.id, {
@@ -317,14 +332,11 @@ describe('GET /api/v1/me/entitlements', () => {
       gracePeriodEnd: future
     });
 
-    const canceledResponse = await getEntitlements(canceled.id);
-    const expiredResponse = await getEntitlements(expired.id);
     const zeroCredits = { boostBalance: 0, superLikeBalance: 0 };
-
-    expect(canceledResponse.status).toBe(200);
-    expect(canceledResponse.body).toEqual(successBody('FREE', zeroCredits));
-    expect(expiredResponse.status).toBe(200);
-    expect(expiredResponse.body).toEqual(successBody('FREE', zeroCredits));
+    expect((await getEntitlements(canceled.id)).body).toEqual(successBody('PREMIUM', zeroCredits));
+    expect((await getEntitlements(elapsed.id)).body).toEqual(successBody('FREE', zeroCredits));
+    expect((await getEntitlements(graceOnly.id)).body).toEqual(successBody('FREE', zeroCredits));
+    expect((await getEntitlements(expired.id)).body).toEqual(successBody('FREE', zeroCredits));
   });
 
   it('returns the caller’s stored Super Like and boost balances', async () => {

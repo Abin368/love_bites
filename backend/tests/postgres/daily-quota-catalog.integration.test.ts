@@ -295,7 +295,7 @@ describe('catalog-backed daily quota', () => {
     const past = new Date(Date.now() - HOUR_MS);
     const cases: Array<{ code: string; status: SubscriptionStatus; currentPeriodEnd: Date; gracePeriodEnd: Date | null }> = [
       { code: 'FREE', status: 'ACTIVE', currentPeriodEnd: future, gracePeriodEnd: future },
-      { code: 'PREMIUM_MONTHLY', status: 'CANCELED', currentPeriodEnd: future, gracePeriodEnd: future },
+      { code: 'PREMIUM_MONTHLY', status: 'CANCELED', currentPeriodEnd: past, gracePeriodEnd: future },
       { code: 'PREMIUM_YEARLY', status: 'EXPIRED', currentPeriodEnd: future, gracePeriodEnd: future },
       { code: 'PREMIUM_MONTHLY', status: 'ACTIVE', currentPeriodEnd: past, gracePeriodEnd: null }
     ];
@@ -333,6 +333,27 @@ describe('catalog-backed daily quota', () => {
     expect(otherResponse.status).toBe(200);
     expect(otherResponse.body.data.remainingDailyActions).toBe(9);
     expect(await usageCount(other.caller.id, DAILY_LIKE_PASS_METRIC)).toBe(1);
+  });
+
+  it('treats an in-period canceled premium subscription as unlimited', async () => {
+    await ensurePlanCatalog();
+    const future = new Date(Date.now() + HOUR_MS);
+    const monthly = await pair();
+    await subscribe(monthly.caller.id, 'PREMIUM_MONTHLY', 'CANCELED', future, future);
+    await seedUsage(monthly.caller.id, DAILY_LIKE_PASS_METRIC, 10);
+
+    const likePass = await pass(monthly.caller.id, monthly.target.id);
+    expect(likePass.status).toBe(200);
+    expect(likePass.body.data.remainingDailyActions).toBeNull();
+    expect(await usageCount(monthly.caller.id, DAILY_LIKE_PASS_METRIC)).toBe(10);
+
+    const thread = await activeThread();
+    await subscribe(thread.caller.id, 'PREMIUM_YEARLY', 'CANCELED', future, null);
+    await seedUsage(thread.caller.id, DAILY_TEXT_MESSAGES_METRIC, 20);
+    const text = await sendMessage(thread.caller.id, thread.conversation.id);
+    expect(text.status).toBe(201);
+    expect(text.body.data.remainingDailyMessages).toBeNull();
+    expect(await usageCount(thread.caller.id, DAILY_TEXT_MESSAGES_METRIC)).toBe(20);
   });
 
   it('treats past-due, grace, and inactive Premium plans with -1 as unlimited', async () => {
