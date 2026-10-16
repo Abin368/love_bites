@@ -13,7 +13,7 @@ This document defines the **RESTful API Specification** and **Socket.IO Realtime
 
 ### Implementation status
 
-Phase 2 authentication, Phase 3 onboarding, Phase 4 Discovery, and Phase 5 slices for PASS, LIKE and match creation, SUPER LIKE, UNDO, and UNMATCH are implemented. Sections **4**, **11**, **12**, **14**, **19**, **20**, **21**, and **22.2** describe that live behavior. Sections **13**, **17**, **18**, **22.1**, and **23** onward are the planned contract and are not mounted, except where a subsection says otherwise. Sections **23.1**, **23.2**, **25**, **26.1**, **28.1**, **30.1**, and **30.2** are mounted. Admin report review in section **31.2** is not. `PUT /api/v1/me/interests`, `PUT /api/v1/me/relationship-intentions`, `GET /api/v1/dating-preferences`, `PUT /api/v1/dating-preferences`, `PUT /api/v1/location`, and `PATCH /api/v1/onboarding/profile` are not implemented. `GET /api/v1/matches` is not implemented. `DELETE /api/v1/matches/:matchId` is implemented. Match and conversation rows are created by LIKE and SUPER LIKE. UNMATCH does not delete them.
+Phase 2 authentication, Phase 3 onboarding, Phase 4 Discovery, and Phase 5 slices for PASS, LIKE and match creation, SUPER LIKE, UNDO, and UNMATCH are implemented. Sections **4**, **11**, **12**, **14**, **19**, **20**, **21**, and **22.2** describe that live behavior. Sections **13**, **17**, **18**, **22.1**, and **23** onward are the planned contract and are not mounted, except where a subsection says otherwise. Sections **23.1**, **23.2**, **25**, **26.1**, **28.1**, **28.2**, **30.1**, and **30.2** are mounted. Admin report review in section **31.2** is not. `PUT /api/v1/me/interests`, `PUT /api/v1/me/relationship-intentions`, `GET /api/v1/dating-preferences`, `PUT /api/v1/dating-preferences`, `PUT /api/v1/location`, and `PATCH /api/v1/onboarding/profile` are not implemented. `GET /api/v1/matches` is not implemented. `DELETE /api/v1/matches/:matchId` is implemented. Match and conversation rows are created by LIKE and SUPER LIKE. UNMATCH does not delete them.
 
 Health checks are also live: `GET /health` and `GET /api/v1/health`.
 
@@ -100,7 +100,7 @@ Refreshing rotates the token: the previous refresh row is revoked and a new cook
 
 ### 4.2 Which calls need a token
 
-Live public routes (no `Authorization` header): register, verify-email, verify-phone, resend-verification, login, refresh, forgot-password, reset-password, `GET /genders`, `GET /interests`, and `GET /relationship-intentions`.
+Live public routes (no `Authorization` header): register, verify-email, verify-phone, resend-verification, login, refresh, forgot-password, reset-password, `GET /genders`, `GET /interests`, `GET /relationship-intentions`, and `GET /subscriptions/plans`.
 
 Live routes that require `Authorization: Bearer <accessToken>`:
 
@@ -121,8 +121,9 @@ Live routes that require `Authorization: Bearer <accessToken>`:
 * `GET /api/v1/conversations/:conversationId`.
 * `GET /api/v1/me/entitlements`.
 * `GET /api/v1/me/usage`.
+* `GET /api/v1/subscriptions/me`.
 
-Those profile, onboarding, photo, discovery, unmatch, message, entitlements, and usage routes also require role `USER`. `requireVerified` is not applied on the route. An unverified `USER` may call profile, onboarding, photo, entitlements, and usage routes. Discovery, PASS, LIKE, SUPER LIKE, UNDO, UNMATCH, the conversation inbox, conversation details, send message, media upload URL, media confirmation, media download, message history, and the conversation unread count check verification in the service and return `403 EMAIL_NOT_VERIFIED` or `403 PHONE_NOT_VERIFIED`. Entitlements and the usage snapshot do not check verification or profile completion. Any other role, including `ADMIN`, receives `403 FORBIDDEN`. Suspended and banned accounts are rejected with `403` by the authentication middleware.
+Those profile, onboarding, photo, discovery, unmatch, message, entitlements, usage, and current-subscription routes also require role `USER`. `requireVerified` is not applied on the route. An unverified `USER` may call profile, onboarding, photo, entitlements, usage, and `GET /api/v1/subscriptions/me`. Discovery, PASS, LIKE, SUPER LIKE, UNDO, UNMATCH, the conversation inbox, conversation details, send message, media upload URL, media confirmation, media download, message history, and the conversation unread count check verification in the service and return `403 EMAIL_NOT_VERIFIED` or `403 PHONE_NOT_VERIFIED`. Entitlements, the usage snapshot, and the current-subscription read do not check verification or profile completion. Any other role, including `ADMIN`, receives `403 FORBIDDEN`. Suspended and banned accounts are rejected with `403` by the authentication middleware.
 
 There is no live admin API yet. `requireRole('ADMIN')` exists for later routes.
 
@@ -2048,7 +2049,7 @@ A report does not require verification, a complete profile, location, dating pre
 ## 28. Subscription APIs
 
 ### 28.1 List Subscription Plans
-**Implemented.** Public read-only catalog of active `plans` rows. This route does not require a token, does not read the caller, and does not change when a bearer token is present. `GET /api/v1/subscriptions/me` and `POST /api/v1/subscriptions/cancel` are not mounted. Cancellation-period semantics remain unresolved.
+**Implemented.** Public read-only catalog of active `plans` rows. This route does not require a token, does not read the caller, and does not change when a bearer token is present. `GET /api/v1/subscriptions/me` is the separate read in section 28.2. `POST /api/v1/subscriptions/cancel` is not mounted. Cancellation-period semantics remain unresolved.
 
 * **Method & Path:** `GET /api/v1/subscriptions/plans`
 * **Auth:** Public. No `authenticate` and no `requireVerified`. An unverified `USER` token and an `ADMIN` token receive the same list as an anonymous request.
@@ -2092,25 +2093,50 @@ A report does not require verification, a complete profile, location, dating pre
 
 ---
 
-### 28.2 Get Current Active Subscription
+### 28.2 Get Current Subscription
+**Implemented.** Read-only snapshot of the authenticated caller's qualifying subscription. This route does not create, cancel, renew, or expire a subscription. `POST /api/v1/subscriptions/cancel` is not mounted. Cancellation-period semantics remain unresolved. This endpoint follows the live Premium predicate and does not settle that conflict.
+
 * **Method & Path:** `GET /api/v1/subscriptions/me`
-* **Auth:** Authenticated
-* **Success Response (`200 OK`):**
+* **Auth:** `Authorization: Bearer <accessToken>` and `requireRole('USER')`. `requireVerified` is not applied. A completed profile is not required. An unverified `USER` may call this route. A missing token is `401 AUTH_REQUIRED`. An `ADMIN` is `403 FORBIDDEN`. Suspended and banned accounts are rejected by authentication middleware.
+* **Query:** any query parameter is `400 VALIDATION_ERROR`. Detail field is the parameter name and the message is `Unsupported query parameter.` A user id in the query is rejected. The caller is `req.user.id`.
+* **Body:** not accepted. A JSON property is `400 VALIDATION_ERROR`.
+* **Read:** one lookup of the caller's qualifying `subscriptions` row and its required `plans` row, inside a short Sequelize transaction. The transaction does not lock rows. The route writes nothing. It does not read `plan_features`, `usage_limits`, `usage_records`, payments, or credit balances.
+* **Qualification:** the lookup is `findQualifyingPremiumSubscription` in `subscriptions.data-access.ts`. `findQualifyingPremiumPlan` and `hasActivePremium` call that same function and do not keep a second predicate. A qualifying row has plan code `PREMIUM_MONTHLY` or `PREMIUM_YEARLY`, status `ACTIVE`, `PAST_DUE`, or `GRACE_PERIOD`, and `current_period_end > now` or `grace_period_end > now`. `plans.is_active` is not part of the check. A null `grace_period_end` does not satisfy the grace comparison.
+* **One current row:** `uq_subscriptions_single_active_per_user` allows at most one row per user in `ACTIVE`, `PAST_DUE`, or `GRACE_PERIOD`. That constraint plus the predicate selects the row. Historical `CANCELED` and `EXPIRED` rows do not qualify. A future-dated `CANCELED` subscription is the empty state, matching `hasActivePremium`. An `EXPIRED` row is the empty state. An elapsed `ACTIVE`, `PAST_DUE`, or `GRACE_PERIOD` row is the empty state when neither timestamp is still in the future. A `FREE` plan row does not qualify. When no row qualifies, the route does not choose a historical row.
+* **Unresolved cancellation conflict:** section 28.3, product requirements section 10.3, and database design section 19 still say a canceled subscription keeps Premium until `currentPeriodEnd`. The live predicate excludes `CANCELED` and `EXPIRED` even when those timestamps are in the future. This endpoint follows that live predicate. It does not change `hasActivePremium`, `GET /api/v1/me/entitlements`, `GET /api/v1/me/usage`, or daily quota enforcement.
+* **Missing plan:** the plan join is required. If a qualifying subscription row is returned without its plan association, the route fails closed with `500 INTERNAL_SERVER_ERROR`. It does not invent plan `code` or `name`.
+* **Fields:** `data` is exactly `hasActiveSubscription` and `subscription`. When a row qualifies, `hasActiveSubscription` is `true` and `subscription` is exactly `plan.code`, `plan.name`, `status`, `autoRenew`, `currentPeriodStart`, `currentPeriodEnd`, and `gracePeriodEnd`. `plan` is exactly `code` and `name`. When no row qualifies, `hasActiveSubscription` is `false` and `subscription` is `null`. Dates use the existing JSON ISO-8601 UTC serialization. `gracePeriodEnd` is JSON `null` when the column is null. Provider ids, payment fields, subscription id, `canceledAt`, `endedAt`, feature flags, usage limits, and credit balances are omitted.
+* **Success Response (`200 OK`):** Message: `Subscription retrieved successfully.`
   ```json
   {
     "success": true,
     "data": {
       "hasActiveSubscription": true,
-      "plan": {
-        "code": "PREMIUM_MONTHLY",
-        "name": "Love Bite Premium (Monthly)"
-      },
-      "status": "ACTIVE",
-      "autoRenew": true,
-      "currentPeriodStart": "2026-09-01T00:00:00.000Z",
-      "currentPeriodEnd": "2026-10-01T00:00:00.000Z",
-      "gracePeriodEnd": null
-    }
+      "subscription": {
+        "plan": {
+          "code": "PREMIUM_MONTHLY",
+          "name": "Love Bite Premium (Monthly)"
+        },
+        "status": "ACTIVE",
+        "autoRenew": true,
+        "currentPeriodStart": "2026-09-01T00:00:00.000Z",
+        "currentPeriodEnd": "2026-10-01T00:00:00.000Z",
+        "gracePeriodEnd": null
+      }
+    },
+    "message": "Subscription retrieved successfully."
+  }
+  ```
+  `PAST_DUE` and `GRACE_PERIOD` use the same shape when they qualify. `autoRenew` and the period timestamps are the stored values.
+* **Empty response (`200 OK`):**
+  ```json
+  {
+    "success": true,
+    "data": {
+      "hasActiveSubscription": false,
+      "subscription": null
+    },
+    "message": "Subscription retrieved successfully."
   }
   ```
 
@@ -2433,7 +2459,7 @@ Rate limits are enforced using Redis sliding-window algorithms:
 | **Blocks** (`POST /blocks/:userId`, `GET /blocks`, `DELETE /blocks/:userId`, implemented) | `blocks`, `matches`, `conversations`. Does not write `reports`, `notifications`, likes, messages, `usage_records`, or credits. `match:unmatch` is emitted after commit only when this request unmatches an `ACTIVE` match that has a conversation. |
 | **Report submission** (`POST /reports`, implemented) | `reports` only. One `PENDING` row. Does not write `notifications` or change `blocks`, matches, conversations, likes, messages, `usage_records`, or credits. No Socket.IO event and no Redis key. |
 | **Notifications** | `notifications` |
-| **Subscriptions & Plans** | `plans`, `features`, `plan_features`, `subscriptions`, `usage_limits` |
+| **Subscriptions & Plans** | `GET /subscriptions/plans` reads active `plans` rows only. `GET /subscriptions/me` reads the caller's qualifying `subscriptions` row and its `plans` row through `findQualifyingPremiumSubscription`. It does not read `plan_features`, `usage_limits`, payments, or credits, and it writes nothing. |
 | **Payments & Webhooks** | `payments`, `processed_webhooks`, `subscriptions` |
 | **Entitlements** (`GET /me/entitlements`, implemented) | Reads `subscriptions`, `plans`, and `user_credit_balances`. Does not read `plan_features`, `usage_limits`, or `usage_records`. Writes nothing. |
 | **Usage** (`GET /me/usage`, implemented) | Reads the caller's current UTC-day `usage_records` for `DAILY_LIKE_PASS` and `DAILY_TEXT_MESSAGES`, and reads the effective plan's `usage_limits` row for each metric through the same resolution as `consumeDailyQuota`. Writes nothing. A missing usage row is `used: 0`. A positive catalog limit or `0` is numeric. Premium `-1` returns `limit` and `remaining` as `null`. A missing or invalid catalog row is `500 INTERNAL_SERVER_ERROR`. |

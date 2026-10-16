@@ -10,3 +10,8 @@ export const listPlans = asyncHandler(async (_req, res) => {
   const plans = await subscriptionsService.listActivePlans();
   send(res, plans, 'Plans retrieved successfully.');
 });
+
+export const getCurrentSubscription = asyncHandler(async (req, res) => {
+  const state = await subscriptionsService.getCurrentSubscription(req.user!.id);
+  send(res, state, 'Subscription retrieved successfully.');
+});

@@ -1,5 +1,7 @@
+import { sequelize } from '../../config/database';
+import { InternalServerError } from '../../utils/errors';
 import * as subscriptionsDataAccess from './subscriptions.data-access';
-import type { SubscriptionPlanCatalogItem } from './subscriptions.types';
+import type { CurrentSubscriptionState, SubscriptionPlanCatalogItem } from './subscriptions.types';
 
 export async function listActivePlans(): Promise<SubscriptionPlanCatalogItem[]> {
   const rows = await subscriptionsDataAccess.findActivePlans();
@@ -11,4 +13,31 @@ export async function listActivePlans(): Promise<SubscriptionPlanCatalogItem[]> 
     currency: row.currency,
     billingInterval: row.billingInterval
   }));
+}
+
+export async function getCurrentSubscription(userId: string): Promise<CurrentSubscriptionState> {
+  return sequelize.transaction(async (transaction) => {
+    const row = await subscriptionsDataAccess.findQualifyingPremiumSubscription(userId, transaction);
+    if (!row) {
+      return { hasActiveSubscription: false, subscription: null };
+    }
+    if (!row.plan) {
+      throw new InternalServerError('Internal server error', [], 'INTERNAL_SERVER_ERROR', true);
+    }
+
+    return {
+      hasActiveSubscription: true,
+      subscription: {
+        plan: {
+          code: row.plan.code,
+          name: row.plan.name
+        },
+        status: row.status,
+        autoRenew: row.autoRenew,
+        currentPeriodStart: row.currentPeriodStart,
+        currentPeriodEnd: row.currentPeriodEnd,
+        gracePeriodEnd: row.gracePeriodEnd
+      }
+    };
+  });
 }
