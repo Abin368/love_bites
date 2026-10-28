@@ -38,13 +38,19 @@ export function sha256(value: string): string {
   return createHash('sha256').update(value, 'utf8').digest('hex');
 }
 
+const COMPLETE_HEX = /^[0-9a-fA-F]+$/;
+
 export function safeEqualHex(left: string, right: string): boolean {
-  const leftBuffer = Buffer.from(left, 'hex');
-  const rightBuffer = Buffer.from(right, 'hex');
-  if (leftBuffer.length === 0 || leftBuffer.length !== rightBuffer.length) {
+  // Buffer.from(value, 'hex') drops a trailing nibble and stops at the first invalid pair.
+  // Both strings must be complete even-length hex before that decode.
+  if (left.length === 0 || left.length % 2 !== 0 || left.length !== right.length) {
     return false;
   }
-  return timingSafeEqual(leftBuffer, rightBuffer);
+  if (!COMPLETE_HEX.test(left) || !COMPLETE_HEX.test(right)) {
+    return false;
+  }
+
+  return timingSafeEqual(Buffer.from(left, 'hex'), Buffer.from(right, 'hex'));
 }
 
 export function generateRefreshToken(): string {

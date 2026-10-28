@@ -631,7 +631,7 @@ Steps 3 through 5 are not implemented.
 2. **Client Verification Handshake (`POST /api/v1/payments/verify`) — implemented:**
    * Authenticated `USER` only. The body is exactly `razorpayPaymentId`, `razorpayOrderId`, and `razorpaySignature`.
    * The lookup is the caller's `RAZORPAY` payment whose stored `provider_order_id` equals the submitted Order id. Another user's Order and a null stored Order id are `404 RESOURCE_NOT_FOUND`.
-   * The HMAC input is the stored Order id, `|`, and the payment id. The key is `RAZORPAY_KEY_SECRET`. Comparison uses `safeEqualHex`.
+   * The HMAC input is the stored Order id, `|`, and the payment id. The key is `RAZORPAY_KEY_SECRET`. Comparison uses `safeEqualHex`. The signature must be exactly 64 hex characters. Extra characters after a valid digest fail.
    * Success is `200` with message `Payment signature verified.` and `data: null`. An invalid signature is `422 PAYMENT_SIGNATURE_INVALID`. A missing secret is `500 PAYMENT_VERIFICATION_NOT_CONFIGURED`.
    * The route writes no payment, subscription, usage, or credit row and does not grant Premium. It does not call Razorpay.
    * This step does not change the webhook contract. The subscription events in step 4 remain unimplemented. They are Razorpay Subscription events, and checkout creates an Order, so that mismatch is still unresolved.

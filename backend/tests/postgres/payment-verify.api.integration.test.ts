@@ -357,8 +357,49 @@ describe('POST /api/v1/payments/verify', () => {
           razorpaySignature: 'z'.repeat(64)
         }
       });
+      const oddLength = await postVerify({
+        token,
+        body: {
+          razorpayPaymentId: providerPaymentId,
+          razorpayOrderId: storedOrderId,
+          razorpaySignature: `${signature}a`
+        }
+      });
+      const trailingNonHex = await postVerify({
+        token,
+        body: {
+          razorpayPaymentId: providerPaymentId,
+          razorpayOrderId: storedOrderId,
+          razorpaySignature: `${signature}zz`
+        }
+      });
+      const trailingPunctuation = await postVerify({
+        token,
+        body: {
+          razorpayPaymentId: providerPaymentId,
+          razorpayOrderId: storedOrderId,
+          razorpaySignature: `${signature}!`
+        }
+      });
+      const trailingHex = await postVerify({
+        token,
+        body: {
+          razorpayPaymentId: providerPaymentId,
+          razorpayOrderId: storedOrderId,
+          razorpaySignature: `${signature}00`
+        }
+      });
 
-      for (const response of [changedPayment, changedSignature, truncated, nonHex]) {
+      for (const response of [
+        changedPayment,
+        changedSignature,
+        truncated,
+        nonHex,
+        oddLength,
+        trailingNonHex,
+        trailingPunctuation,
+        trailingHex
+      ]) {
         expect(response.status).toBe(422);
         expect(response.body.error.code).toBe('PAYMENT_SIGNATURE_INVALID');
         expect(JSON.stringify(response.body)).not.toContain(TEST_SECRET);
