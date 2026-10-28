@@ -12,6 +12,26 @@ export const checkoutSchema = z
 
 export type CheckoutBody = z.infer<typeof checkoutSchema>;
 
+function requiredText(label: string) {
+  return z
+    .string({
+      required_error: `${label} is required.`,
+      invalid_type_error: `${label} must be a string.`
+    })
+    .trim()
+    .min(1, `${label} is required.`);
+}
+
+export const verifySchema = z
+  .object({
+    razorpayPaymentId: requiredText('Razorpay payment id'),
+    razorpayOrderId: requiredText('Razorpay order id'),
+    razorpaySignature: requiredText('Razorpay signature')
+  })
+  .strict();
+
+export type VerifyBody = z.infer<typeof verifySchema>;
+
 export function validateNoQuery(req: Request, _res: Response, next: NextFunction): void {
   try {
     if (!req.query || typeof req.query !== 'object' || Array.isArray(req.query)) {

@@ -3,16 +3,23 @@ import { sequelize } from '../../config/database';
 import { Plan } from '../../database/models/plan.model';
 import { Payment } from '../../database/models/payment.model';
 import { PaymentProviderRejectedError } from '../../integrations/payment/payment.interface';
-import { razorpayOrderProvider } from '../../integrations/payment/razorpay.provider';
+import { razorpayOrderProvider, verificationNotConfigured } from '../../integrations/payment/razorpay.provider';
 import {
   findInPeriodCanceledSubscription,
   findQualifyingPremiumSubscription,
   lockNonterminalSubscription
 } from '../subscriptions/subscriptions.data-access';
-import { ConflictError, InternalServerError, NotFoundError, PaymentFailedError, ValidationError } from '../../utils/errors';
+import {
+  ConflictError,
+  InternalServerError,
+  NotFoundError,
+  PaymentFailedError,
+  UnprocessableEntityError,
+  ValidationError
+} from '../../utils/errors';
 import { logger } from '../../utils/logger';
 import * as paymentsDataAccess from './payments.data-access';
-import type { CheckoutInput, CheckoutResult } from './payments.types';
+import type { CheckoutInput, CheckoutResult, VerifyPaymentInput } from './payments.types';
 
 const PREMIUM_PLAN_CODES = new Set(['PREMIUM_MONTHLY', 'PREMIUM_YEARLY']);
 
@@ -210,5 +217,33 @@ export async function createCheckout(input: CheckoutInput): Promise<CheckoutResu
     }
     logger.error('Checkout provider outcome is unknown', { paymentId: payment.id });
     throw outcomeUnknown();
+  }
+}
+
+function orderNotFound(): NotFoundError {
+  return new NotFoundError('Resource not found', [], 'RESOURCE_NOT_FOUND');
+}
+
+function signatureInvalid(): UnprocessableEntityError {
+  return new UnprocessableEntityError('Payment signature is invalid.', [], 'PAYMENT_SIGNATURE_INVALID');
+}
+
+export async function verifyPayment(input: VerifyPaymentInput): Promise<void> {
+  if (!razorpayOrderProvider.isVerificationConfigured()) {
+    throw verificationNotConfigured();
+  }
+
+  const payment = await paymentsDataAccess.findPaymentByUserProviderOrder(input.userId, input.razorpayOrderId);
+  if (!payment?.providerOrderId) {
+    throw orderNotFound();
+  }
+
+  const valid = razorpayOrderProvider.verifyOrderSignature({
+    storedOrderId: payment.providerOrderId,
+    razorpayPaymentId: input.razorpayPaymentId,
+    razorpaySignature: input.razorpaySignature
+  });
+  if (!valid) {
+    throw signatureInvalid();
   }
 }

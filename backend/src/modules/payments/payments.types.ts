@@ -13,3 +13,10 @@ export interface CheckoutResult {
   currency: string;
   keyId: string;
 }
+
+export interface VerifyPaymentInput {
+  userId: string;
+  razorpayPaymentId: string;
+  razorpayOrderId: string;
+  razorpaySignature: string;
+}

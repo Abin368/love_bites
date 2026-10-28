@@ -3,7 +3,7 @@ import { authenticate } from '../../middleware/auth.middleware';
 import { validate } from '../../middleware/validate.middleware';
 import { requireRole } from '../../middleware/role.middleware';
 import * as paymentsController from './payments.controller';
-import { checkoutSchema, validateIdempotencyKey, validateNoQuery } from './payments.validator';
+import { checkoutSchema, validateIdempotencyKey, validateNoQuery, verifySchema } from './payments.validator';
 
 const router = Router();
 
@@ -15,6 +15,15 @@ router.post(
   validateIdempotencyKey,
   validate(checkoutSchema),
   paymentsController.createCheckout
+);
+
+router.post(
+  '/verify',
+  authenticate,
+  requireRole('USER'),
+  validateNoQuery,
+  validate(verifySchema),
+  paymentsController.verifyPayment
 );
 
 export const paymentsRoutes = router;

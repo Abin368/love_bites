@@ -9,10 +9,18 @@ export interface CreatedPaymentOrder {
   providerOrderId: string;
 }
 
+export interface VerifyOrderSignatureInput {
+  storedOrderId: string;
+  razorpayPaymentId: string;
+  razorpaySignature: string;
+}
+
 export interface PaymentOrderProvider {
   isConfigured(): boolean;
+  isVerificationConfigured(): boolean;
   publicKeyId(): string;
   createOrder(input: CreatePaymentOrderInput): Promise<CreatedPaymentOrder>;
+  verifyOrderSignature(input: VerifyOrderSignatureInput): boolean;
 }
 
 export class PaymentProviderRejectedError extends Error {

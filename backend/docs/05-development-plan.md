@@ -608,14 +608,15 @@ The numbered steps below are still the planned catalog engine. This slice does n
 ## 13. Phase 9 — Payments and Razorpay
 
 ### 13.1 Objectives
-Implement the decoupled payment gateway provider abstraction, server-side Razorpay order generation, HMAC-SHA256 signature verification, and idempotent webhook processing. Order creation is implemented. Signature verification, webhooks, activation, renewal, refunds, and reconciliation are not.
+Implement the decoupled payment gateway provider abstraction, server-side Razorpay order generation, HMAC-SHA256 signature verification, and idempotent webhook processing. Order creation and signature verification are implemented. Webhooks, activation, renewal, refunds, and reconciliation are not.
 
 ### 13.2 Payment Provider Abstraction
-Checkout initiation is implemented. The interface is limited to Order creation:
+Checkout initiation and Order signature verification are implemented. The interface does not fetch a payment or create a Razorpay Subscription:
 
-* `src/integrations/payment/payment.interface.ts` defines `PaymentOrderProvider` with `isConfigured`, `publicKeyId`, and `createOrder`.
-* `src/integrations/payment/razorpay.provider.ts` uses `razorpay@2.9.8`. `createOrder` sends the snapshotted paise amount, `INR`, a receipt equal to the payment UUID, and `notes.paymentId`.
-* Signature verification, subscription cancellation at the provider, and webhook handling are not part of this interface and are not implemented.
+* `src/integrations/payment/payment.interface.ts` defines `PaymentOrderProvider` with `isConfigured`, `isVerificationConfigured`, `publicKeyId`, `createOrder`, and `verifyOrderSignature`.
+* `src/integrations/payment/razorpay.provider.ts` uses `razorpay@2.9.8` for `orders.create`. `createOrder` sends the snapshotted paise amount, `INR`, a receipt equal to the payment UUID, and `notes.paymentId`.
+* `verifyOrderSignature` computes HMAC-SHA256 locally with `RAZORPAY_KEY_SECRET` and compares it through `safeEqualHex`. It does not call Razorpay.
+* Provider subscription cancellation and webhook handling are not part of this interface and are not implemented.
 
 ### 13.3 Implementation Steps
 1. **Checkout initiation (`POST /api/v1/payments/checkout`) — implemented:**
@@ -625,10 +626,15 @@ Checkout initiation is implemented. The interface is limited to Order creation:
    * Qualifying Premium access, including an in-period canceled subscription, is `409 ACTIVE_SUBSCRIPTION_EXISTS`.
    * The payment is inserted as `INITIATED` and committed before the Razorpay call. Success stores `provider_order_id` and leaves the status `INITIATED`. No subscription row is created.
    * The same user and key replays a stored order. An unresolved attempt does not create a second order. Migration `20261027183033-add-checkout-columns-to-payments.js`.
-Steps 2 through 5 are not implemented.
+Steps 3 through 5 are not implemented.
 
-2. **Client Verification Handshake (`POST /api/v1/payments/verify`) — not implemented:**
-   * Validates HMAC-SHA256 signature using `RAZORPAY_KEY_SECRET`.
+2. **Client Verification Handshake (`POST /api/v1/payments/verify`) — implemented:**
+   * Authenticated `USER` only. The body is exactly `razorpayPaymentId`, `razorpayOrderId`, and `razorpaySignature`.
+   * The lookup is the caller's `RAZORPAY` payment whose stored `provider_order_id` equals the submitted Order id. Another user's Order and a null stored Order id are `404 RESOURCE_NOT_FOUND`.
+   * The HMAC input is the stored Order id, `|`, and the payment id. The key is `RAZORPAY_KEY_SECRET`. Comparison uses `safeEqualHex`.
+   * Success is `200` with message `Payment signature verified.` and `data: null`. An invalid signature is `422 PAYMENT_SIGNATURE_INVALID`. A missing secret is `500 PAYMENT_VERIFICATION_NOT_CONFIGURED`.
+   * The route writes no payment, subscription, usage, or credit row and does not grant Premium. It does not call Razorpay.
+   * This step does not change the webhook contract. The subscription events in step 4 remain unimplemented. They are Razorpay Subscription events, and checkout creates an Order, so that mismatch is still unresolved.
 3. **Webhook Processing Engine (`POST /api/v1/webhooks/razorpay`) — not implemented:**
    * Validates `X-Razorpay-Signature` against raw request buffer.
    * **Atomic Deduplication:** Inserts `event.id` into `processed_webhooks`. Duplicate events return `200 OK` immediately.

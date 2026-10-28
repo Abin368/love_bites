@@ -652,7 +652,7 @@ Allow Request Execution
 ## 21. Payment Architecture
 
 ### Provider Abstraction Model
-Checkout uses a small Order provider. Signature verification, provider cancellation, and webhooks are not implemented.
+Checkout uses a small Order provider. Signature verification is a local HMAC check. Provider cancellation and webhooks are not implemented.
 
 ```
 POST /api/v1/payments/checkout
@@ -670,12 +670,28 @@ razorpay.orders.create
         |
         v
 PostgreSQL: store provider_order_id, status stays INITIATED
+
+POST /api/v1/payments/verify
+        |
+        v
+payments.service
+        |
+        +--> PostgreSQL: read caller payment by stored provider_order_id
+        |
+        v
+HMAC-SHA256 of stored order id + "|" + payment id
+        |
+        v
+safeEqualHex against the client signature
+        |
+        v
+200 confirmation. No payment or subscription write.
 ```
 
-`src/integrations/payment/payment.interface.ts` is the boundary. `src/integrations/payment/razorpay.provider.ts` is the only implementation. The service does not construct the Razorpay client. Tests replace the provider module and do not use live credentials.
+`src/integrations/payment/payment.interface.ts` is the boundary. `src/integrations/payment/razorpay.provider.ts` is the only implementation. `verifyOrderSignature` does not construct the Razorpay client and does not call the network. Checkout tests replace the provider module and do not use live credentials. Verification tests build the HMAC locally.
 
 ### Webhook Source of Truth
-Webhook processing is not implemented. Checkout does not activate a subscription. An Order id is not proof of payment. When webhooks exist, they are the source of truth for activation and renewal. The backend must not activate Premium from a frontend success callback.
+Webhook processing is not implemented. Checkout does not activate a subscription. Signature verification does not activate a subscription either. An Order id, a valid signature, or an `INITIATED` payment is not proof of capture. When webhooks exist, they are the source of truth for activation and renewal. The backend must not activate Premium from a frontend success callback. The documented webhook events are still Razorpay Subscription events. Checkout creates an Order, so that event mismatch remains unresolved.
 
 ### Subscription Lifecycle Rules
 * **Auto-Renew:** Enabled by default.

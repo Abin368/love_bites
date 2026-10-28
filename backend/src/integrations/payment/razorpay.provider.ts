@@ -1,12 +1,15 @@
+import { createHmac } from 'crypto';
 import Razorpay from 'razorpay';
 import { env } from '../../config/env';
+import { safeEqualHex } from '../../utils/crypto';
 import { InternalServerError } from '../../utils/errors';
 import {
   PaymentProviderOutcomeUnknownError,
   PaymentProviderRejectedError,
   type CreatedPaymentOrder,
   type CreatePaymentOrderInput,
-  type PaymentOrderProvider
+  type PaymentOrderProvider,
+  type VerifyOrderSignatureInput
 } from './payment.interface';
 
 const ORDER_REQUEST_TIMEOUT_MS = 15_000;
@@ -48,6 +51,31 @@ function readStatusCode(error: unknown): number | undefined {
 
 function providerNotConfigured(): InternalServerError {
   return new InternalServerError('Payment provider is not configured.', [], 'PAYMENT_NOT_CONFIGURED', true);
+}
+
+export function verificationNotConfigured(): InternalServerError {
+  return new InternalServerError(
+    'Payment verification is not configured.',
+    [],
+    'PAYMENT_VERIFICATION_NOT_CONFIGURED',
+    true
+  );
+}
+
+export function verifyOrderPaymentSignature(
+  storedOrderId: string,
+  razorpayPaymentId: string,
+  razorpaySignature: string,
+  secret: string
+): boolean {
+  if (secret.length === 0 || storedOrderId.length === 0 || razorpayPaymentId.length === 0) {
+    return false;
+  }
+
+  const digest = createHmac('sha256', secret)
+    .update(`${storedOrderId}|${razorpayPaymentId}`, 'utf8')
+    .digest('hex');
+  return safeEqualHex(digest, razorpaySignature);
 }
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
@@ -129,6 +157,10 @@ export const razorpayOrderProvider: PaymentOrderProvider = {
     return Boolean(env.RAZORPAY_KEY_ID && env.RAZORPAY_KEY_SECRET);
   },
 
+  isVerificationConfigured(): boolean {
+    return Boolean(env.RAZORPAY_KEY_SECRET);
+  },
+
   publicKeyId(): string {
     if (!env.RAZORPAY_KEY_ID) {
       throw providerNotConfigured();
@@ -138,5 +170,18 @@ export const razorpayOrderProvider: PaymentOrderProvider = {
 
   createOrder(input: CreatePaymentOrderInput): Promise<CreatedPaymentOrder> {
     return createOrderWithClient(razorpayClient(), input);
+  },
+
+  verifyOrderSignature(input: VerifyOrderSignatureInput): boolean {
+    const secret = env.RAZORPAY_KEY_SECRET;
+    if (!secret) {
+      throw verificationNotConfigured();
+    }
+    return verifyOrderPaymentSignature(
+      input.storedOrderId,
+      input.razorpayPaymentId,
+      input.razorpaySignature,
+      secret
+    );
   }
 };

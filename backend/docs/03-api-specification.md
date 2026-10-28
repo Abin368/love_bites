@@ -2172,7 +2172,7 @@ A report does not require verification, a complete profile, location, dating pre
 ## 29. Payment APIs (Razorpay Integration)
 
 ### 29.1 Create Checkout Session
-**Implemented.** Creates one Razorpay Order for an eligible Premium plan and one `INITIATED` payment. It does not create or update a subscription, verify a payment, process a webhook, or grant Premium. Section 29.2 and section 33 stay unimplemented.
+**Implemented.** Creates one Razorpay Order for an eligible Premium plan and one `INITIATED` payment. It does not create or update a subscription, process a webhook, or grant Premium. Section 29.2 checks the client signature and does not grant Premium. Section 33 stays unimplemented.
 
 * **Method & Path:** `POST /api/v1/payments/checkout`
 * **Auth:** `authenticate`, then `requireRole('USER')`. `requireVerified` is not applied. A completed profile is not required. An unverified `USER` may call this route. A missing token is `401 AUTH_REQUIRED`. An invalid token is `401 INVALID_TOKEN`. An `ADMIN` is `403 FORBIDDEN`. Suspended and banned accounts are rejected by authentication middleware.
@@ -2209,18 +2209,25 @@ A report does not require verification, a complete profile, location, dating pre
 ---
 
 ### 29.2 Verify Client Payment Handshake
+**Implemented.** Confirms the Razorpay Checkout signature for one stored Order. It reads one `payments` row and writes nothing. It does not change `status`, `provider_payment_id`, `paid_at`, `raw_payload`, `failure_reason`, or any other payment column. It does not create or update a subscription, call Razorpay, or grant Premium. Section 33 stays unimplemented. An Order id or an `INITIATED` payment is still not proof of capture.
+
 * **Method & Path:** `POST /api/v1/payments/verify`
-* **Auth:** Authenticated
-* **Purpose:** Validates cryptographic HMAC signature returned by client Razorpay SDK.
-* **Request Body:**
+* **Auth:** `authenticate`, then `requireRole('USER')`. `requireVerified` is not applied. A completed profile is not required. An unverified `USER` may call this route. A missing token is `401 AUTH_REQUIRED`. An invalid token is `401 INVALID_TOKEN`. An `ADMIN` is `403 FORBIDDEN`. Suspended and banned accounts are rejected by authentication middleware.
+* **Query:** any query parameter is `400 VALIDATION_ERROR`. Detail field is the parameter name and the message is `Unsupported query parameter.`
+* **Body:** exactly `razorpayPaymentId`, `razorpayOrderId`, and `razorpaySignature`. Each value must be a string. The stored value is trimmed, and an empty or whitespace-only string is `400 VALIDATION_ERROR` with message `Razorpay payment id is required.`, `Razorpay order id is required.`, or `Razorpay signature is required.` A non-string is `400 VALIDATION_ERROR` with message `Razorpay payment id must be a string.`, `Razorpay order id must be a string.`, or `Razorpay signature must be a string.` Unknown properties are `400 VALIDATION_ERROR` and are not ignored. There is no `Idempotency-Key`.
+* **Ownership:** the row must have `user_id` equal to the caller, `provider = 'RAZORPAY'`, and `provider_order_id` equal to the trimmed `razorpayOrderId`. A missing row, another user's Order, and a payment whose `provider_order_id` is null all return `404 RESOURCE_NOT_FOUND` with message `Resource not found.` and `details` `[]`. The response does not say which of those cases occurred. The null Order id is not written.
+* **Signature:** HMAC-SHA256, hex-encoded, of `stored provider_order_id + "|" + trimmed razorpayPaymentId`, keyed with `RAZORPAY_KEY_SECRET`. The Order id in that string is the stored column. The comparison uses `safeEqualHex`. A malformed, truncated, or non-hex signature is a failed comparison. It does not throw. The route does not log the signature or the key secret, and neither value is returned.
+* **Invalid signature (`422`):** code `PAYMENT_SIGNATURE_INVALID`, message `Payment signature is invalid.`, `details` `[]`. The payment row is unchanged, including a `FAILED` row whose stored Order id matched.
+* **Not configured:** a missing `RAZORPAY_KEY_SECRET` is `500 PAYMENT_VERIFICATION_NOT_CONFIGURED` with message `Payment verification is not configured.` This check uses the verification secret only. It does not call Razorpay. The payment row is unchanged.
+* **Success Response (`200 OK`):** Message: `Payment signature verified.` A repeated valid signature returns the same body and writes nothing. `data` is `null`.
   ```json
   {
-    "razorpayPaymentId": "pay_Hk9281a9",
-    "razorpayOrderId": "order_Hk9281jsa82",
-    "razorpaySignature": "9a8b7c6d5e4f3a2b1c..."
+    "success": true,
+    "data": null,
+    "message": "Payment signature verified."
   }
   ```
-* **Success Response (`200 OK`):** Returns verification confirmation. *(Note: Authoritative subscription activation occurs via webhook).*
+  Authoritative subscription activation remains a webhook concern. Those webhooks are not implemented. The documented subscription events in section 33 do not match this Order checkout.
 
 ---
 
@@ -2447,7 +2454,7 @@ This contract is not implemented. `POST /api/v1/subscriptions/cancel` updates lo
 1. **Implemented client mutating APIs** that accept an optional `Idempotency-Key: <UUIDv4>` header:
    * `POST /api/v1/discovery/:userId/like` — Redis key `idempotency:<callerId>:<key>`.
    * `POST /api/v1/discovery/:userId/super-like` — Redis key `idempotency:<callerId>:super-like:<key>`.
-2. **Not used:** `POST /api/v1/discovery/:userId/pass`, `POST /api/v1/discovery/undo`, `DELETE /api/v1/matches/:matchId`, `POST /api/v1/conversations/:conversationId/messages`, `PATCH /api/v1/conversations/:conversationId/read`, Socket.IO `chat:message:send`, and `POST /api/v1/subscriptions/cancel` do not read an idempotency key and do not write one. Each accepted TEXT send inserts a new message. A second unmatch is `404 MATCH_NOT_FOUND`. A repeated read-receipt call is a no-op because it updates only rows whose `read_at` is null. It does not use Redis. A repeated in-period subscription cancellation is idempotent because the stored `CANCELED` row is recognized inside the request transaction. It does not use Redis.
+2. **Not used:** `POST /api/v1/discovery/:userId/pass`, `POST /api/v1/discovery/undo`, `DELETE /api/v1/matches/:matchId`, `POST /api/v1/conversations/:conversationId/messages`, `PATCH /api/v1/conversations/:conversationId/read`, Socket.IO `chat:message:send`, `POST /api/v1/subscriptions/cancel`, and `POST /api/v1/payments/verify` do not read an idempotency key. Verify writes no column. Each accepted TEXT send inserts a new message. A second unmatch is `404 MATCH_NOT_FOUND`. A repeated read-receipt call is a no-op because it updates only rows whose `read_at` is null. It does not use Redis. A repeated in-period subscription cancellation is idempotent because the stored `CANCELED` row is recognized inside the request transaction. It does not use Redis.
 3. **Implemented, required:** `POST /api/v1/payments/checkout` stores `Idempotency-Key` on `payments.idempotency_key`. The unique index is `(user_id, idempotency_key)` where both are non-null. It is not stored in Redis. A stored order id is replayed. An in-flight or unresolved attempt returns `409 IDEMPOTENCY_CONFLICT` and does not create another Razorpay Order. A key reused for a different plan returns the same code.
 4. **Execution flow for LIKE and SUPER LIKE:**
    * A stored JSON success is returned without another write.
@@ -2512,7 +2519,7 @@ Rate limits are enforced using Redis sliding-window algorithms:
 | **Report submission** (`POST /reports`, implemented) | `reports` only. One `PENDING` row. Does not write `notifications` or change `blocks`, matches, conversations, likes, messages, `usage_records`, or credits. No Socket.IO event and no Redis key. |
 | **Notifications** | `notifications` |
 | **Subscriptions & Plans** | `GET /subscriptions/plans` reads active `plans` rows only. `GET /subscriptions/me` reads the caller's qualifying `subscriptions` row and its `plans` row through `findQualifyingPremiumSubscription`. It does not read `plan_features`, `usage_limits`, payments, or credits, and it writes nothing. `POST /subscriptions/cancel` is implemented for an authenticated `USER`. It cancels only that caller's `ACTIVE` row, sets `status = CANCELED`, `auto_renew = false`, and `canceled_at`, and leaves `ended_at` and the period timestamps unchanged. `PAST_DUE` and `GRACE_PERIOD` return `404 ACTIVE_SUBSCRIPTION_NOT_FOUND` with no write. An in-period repeat is `200` without a write while `current_period_end > now`. The route does not call a payment provider. Section 33 remains unimplemented. |
-| **Payments & Webhooks** | `POST /payments/checkout` reads and locks `plans`, reads qualifying `subscriptions`, and inserts or replays `payments`. It does not write `subscriptions`, `usage_records`, `plan_price_changes`, or `processed_webhooks`. `POST /payments/verify` and `POST /webhooks/razorpay` are not mounted. |
+| **Payments & Webhooks** | `POST /payments/checkout` reads and locks `plans`, reads qualifying `subscriptions`, and inserts or replays `payments`. It does not write `subscriptions`, `usage_records`, `plan_price_changes`, or `processed_webhooks`. `POST /payments/verify` reads one caller-owned `payments` row by `provider_order_id` and writes nothing. `POST /webhooks/razorpay` is not mounted. |
 | **Entitlements** (`GET /me/entitlements`, implemented) | Reads `subscriptions`, `plans`, and `user_credit_balances`. Does not read `plan_features`, `usage_limits`, or `usage_records`. Writes nothing. |
 | **Usage** (`GET /me/usage`, implemented) | Reads the caller's current UTC-day `usage_records` for `DAILY_LIKE_PASS` and `DAILY_TEXT_MESSAGES`, and reads the effective plan's `usage_limits` row for each metric through the same resolution as `consumeDailyQuota`. Writes nothing. A missing usage row is `used: 0`. A positive catalog limit or `0` is numeric. Premium `-1` returns `limit` and `remaining` as `null`. A missing or invalid catalog row is `500 INTERNAL_SERVER_ERROR`. |
 
