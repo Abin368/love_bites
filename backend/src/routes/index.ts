@@ -14,6 +14,7 @@ import { profilePhotoRoutes } from '../modules/profile-photos/profile-photos.rou
 import { reportsRoutes } from '../modules/reports/reports.routes';
 import { relationshipIntentionRoutes } from '../modules/relationship-intentions/relationship-intentions.routes';
 import { planPriceRoutes } from '../modules/admin/plan-prices.routes';
+import { paymentsRoutes } from '../modules/payments/payments.routes';
 import { subscriptionsRoutes } from '../modules/subscriptions/subscriptions.routes';
 
 const router = Router();
@@ -34,6 +35,7 @@ router.use('/genders', genderRoutes);
 router.use('/interests', interestRoutes);
 router.use('/relationship-intentions', relationshipIntentionRoutes);
 router.use('/subscriptions', subscriptionsRoutes);
+router.use('/payments', paymentsRoutes);
 router.use('/admin/config/plans', planPriceRoutes);
 
 export const apiRoutes = router;

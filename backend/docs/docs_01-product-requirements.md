@@ -356,7 +356,7 @@ Reports are not a Discovery exclusion. Browsing candidate cards does not consume
 ### 10.2 Payment Gateway Abstraction & Provider
 * **Primary Provider:** Razorpay.
 * **Architectural Abstraction:** The billing layer must be decoupled behind a Payment Abstraction Interface to allow secondary gateway integration in the future.
-* **Source of Truth Rule:** Provider subscription activation, renewal, and payment failure remain driven by authenticated webhook events from the payment provider, rather than frontend success callbacks. Those webhooks are not implemented. `POST /api/v1/subscriptions/cancel` is a local state change for an `ACTIVE` subscription. It does not call the payment provider.
+* **Source of Truth Rule:** Provider subscription activation, renewal, and payment failure remain driven by authenticated webhook events from the payment provider, rather than frontend success callbacks. Those webhooks are not implemented. `POST /api/v1/payments/checkout` creates a Razorpay Order and an `INITIATED` payment. It does not create a subscription or grant Premium. `POST /api/v1/subscriptions/cancel` is a local state change for an `ACTIVE` subscription. It does not call the payment provider.
 
 ### 10.3 Auto-Renewal & Cancellation Flow
 * **Auto-Renewal Default:** Enabled upon subscription purchase.

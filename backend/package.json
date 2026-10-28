@@ -50,6 +50,7 @@
     "jsonwebtoken": "^9.0.3",
     "pg": "^8.13.0",
     "pg-hstore": "^2.3.4",
+    "razorpay": "^2.9.8",
     "sequelize": "^6.37.3",
     "socket.io": "^4.8.1",
     "uuid": "^10.0.0",

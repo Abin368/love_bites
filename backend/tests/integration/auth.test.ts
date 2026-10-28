@@ -44,6 +44,11 @@ jest.mock('../../src/modules/relationship-intentions/relationship-intentions.dat
 jest.mock('../../src/modules/subscriptions/subscriptions.data-access', () => ({
   findActivePlans: async () => []
 }));
+jest.mock('../../src/modules/payments/payments.service', () => ({
+  createCheckout: async () => {
+    throw new Error('checkout is not used by authentication tests');
+  }
+}));
 jest.mock('../../src/modules/admin/plan-prices.data-access', () => ({
   lockPlanById: async () => null,
   updatePlanPrice: async () => undefined,

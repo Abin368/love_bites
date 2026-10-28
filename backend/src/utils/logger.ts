@@ -20,7 +20,13 @@ const SENSITIVE_KEYS = new Set([
   'latitude',
   'longitude',
   'location',
-  'coordinates'
+  'coordinates',
+  'keyid',
+  'key_id',
+  'keysecret',
+  'key_secret',
+  'razorpay_key_secret',
+  'razorpay_signature'
 ]);
 
 const SENSITIVE_COMPACT_KEYS = new Set([
@@ -38,7 +44,11 @@ const SENSITIVE_COMPACT_KEYS = new Set([
   'latitude',
   'longitude',
   'location',
-  'coordinates'
+  'coordinates',
+  'keyid',
+  'keysecret',
+  'razorpaykeysecret',
+  'razorpaysignature'
 ]);
 
 function isSensitiveKey(key: string): boolean {

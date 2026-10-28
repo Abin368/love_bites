@@ -321,6 +321,14 @@ Payment.belongsTo(Subscription, {
   foreignKey: 'subscriptionId',
   as: 'subscription'
 });
+Plan.hasMany(Payment, {
+  foreignKey: 'planId',
+  as: 'payments'
+});
+Payment.belongsTo(Plan, {
+  foreignKey: 'planId',
+  as: 'plan'
+});
 
 User.hasMany(UsageRecord, {
   foreignKey: 'userId',

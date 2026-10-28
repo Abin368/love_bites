@@ -8,6 +8,7 @@ export interface PaymentAttributes {
   id: string;
   userId: string | null;
   subscriptionId: string | null;
+  planId: string | null;
   provider: string;
   providerPaymentId: string | null;
   providerOrderId: string | null;
@@ -15,6 +16,7 @@ export interface PaymentAttributes {
   currency: string;
   status: PaymentStatus;
   paymentType: PaymentType;
+  idempotencyKey: string | null;
   rawPayload: Record<string, unknown> | null;
   failureReason: string | null;
   paidAt: Date | null;
@@ -27,11 +29,13 @@ export type PaymentCreationAttributes = Optional<
   | 'id'
   | 'userId'
   | 'subscriptionId'
+  | 'planId'
   | 'provider'
   | 'providerPaymentId'
   | 'providerOrderId'
   | 'currency'
   | 'status'
+  | 'idempotencyKey'
   | 'rawPayload'
   | 'failureReason'
   | 'paidAt'
@@ -43,6 +47,7 @@ export class Payment extends Model<PaymentAttributes, PaymentCreationAttributes>
   declare id: string;
   declare userId: string | null;
   declare subscriptionId: string | null;
+  declare planId: string | null;
   declare provider: string;
   declare providerPaymentId: string | null;
   declare providerOrderId: string | null;
@@ -50,6 +55,7 @@ export class Payment extends Model<PaymentAttributes, PaymentCreationAttributes>
   declare currency: string;
   declare status: PaymentStatus;
   declare paymentType: PaymentType;
+  declare idempotencyKey: string | null;
   declare rawPayload: Record<string, unknown> | null;
   declare failureReason: string | null;
   declare paidAt: Date | null;
@@ -70,6 +76,10 @@ Payment.init(
       allowNull: true
     },
     subscriptionId: {
+      type: DataTypes.UUID,
+      allowNull: true
+    },
+    planId: {
       type: DataTypes.UUID,
       allowNull: true
     },
@@ -103,6 +113,10 @@ Payment.init(
     paymentType: {
       type: DataTypes.STRING(30),
       allowNull: false
+    },
+    idempotencyKey: {
+      type: DataTypes.STRING(255),
+      allowNull: true
     },
     rawPayload: {
       type: DataTypes.JSONB,

@@ -652,27 +652,30 @@ Allow Request Execution
 ## 21. Payment Architecture
 
 ### Provider Abstraction Model
-The payment pipeline uses an abstract provider interface to remain decoupled from underlying vendors (e.g., Razorpay).
+Checkout uses a small Order provider. Signature verification, provider cancellation, and webhooks are not implemented.
 
 ```
-+-------------------------------------------------------+
-|                   Payment Service                     |
-+---------------------------+---------------------------+
-                            |
-                            v
-+-------------------------------------------------------+
-|               IPaymentProvider Interface              |
-|  - createOrder()    - verifyWebhook()  - cancelSub()  |
-+---------------------------+---------------------------+
-                            |
-                            v
-+-------------------------------------------------------+
-|               Razorpay Payment Provider               |
-+-------------------------------------------------------+
+POST /api/v1/payments/checkout
+        |
+        v
+payments.service
+        |
+        +--> PostgreSQL: lock plan, insert INITIATED payment, commit
+        |
+        v
+PaymentOrderProvider.createOrder
+        |
+        v
+razorpay.orders.create
+        |
+        v
+PostgreSQL: store provider_order_id, status stays INITIATED
 ```
+
+`src/integrations/payment/payment.interface.ts` is the boundary. `src/integrations/payment/razorpay.provider.ts` is the only implementation. The service does not construct the Razorpay client. Tests replace the provider module and do not use live credentials.
 
 ### Webhook Source of Truth
-Webhooks are the definitive source of truth for payment status and subscription activations. The backend never activates subscription entitlements based solely on frontend success callbacks.
+Webhook processing is not implemented. Checkout does not activate a subscription. An Order id is not proof of payment. When webhooks exist, they are the source of truth for activation and renewal. The backend must not activate Premium from a frontend success callback.
 
 ### Subscription Lifecycle Rules
 * **Auto-Renew:** Enabled by default.
@@ -883,7 +886,7 @@ To prevent race conditions during concurrent requests (e.g., two users liking ea
 * **Unique Constraints:** Canonical match constraints prevent duplicate records.
 
 ### Webhook Idempotency
-Webhooks process events reliably using idempotent operations backed by an `processed_webhooks` table.
+Webhook processing is not implemented. `processed_webhooks` is schema only. The intended table is:
 
 ```sql
 CREATE TABLE processed_webhooks (
@@ -910,10 +913,11 @@ JWT_ACCESS_SECRET=your_access_secret_key
 JWT_REFRESH_SECRET=your_refresh_secret_key
 AWS_REGION=us-east-1
 AWS_S3_BUCKET_NAME=lovebite-private-photos
-RAZORPAY_KEY_ID=rzp_test_xxx
-RAZORPAY_KEY_SECRET=xxx
-RAZORPAY_WEBHOOK_SECRET=xxx
+RAZORPAY_KEY_ID=rzp_test_your_key_id
+RAZORPAY_KEY_SECRET=your_razorpay_key_secret
 ```
+
+`env.ts` validates `RAZORPAY_KEY_ID` and `RAZORPAY_KEY_SECRET` as optional strings. Production boot requires both. Development and test boot without them. Checkout then returns `500 PAYMENT_NOT_CONFIGURED` and inserts no payment. `RAZORPAY_WEBHOOK_SECRET` is not loaded. Webhook verification is not implemented.
 
 ---
 

@@ -6,4 +6,5 @@ export * from './not-found.error';
 export * from './conflict.error';
 export * from './unprocessable-entity.error';
 export * from './rate-limit.error';
+export * from './payment-failed.error';
 export * from './internal.error';

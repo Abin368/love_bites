@@ -379,30 +379,33 @@ The client cannot send a storage key. The signed key is `chat-media/{conversatio
 1. **Premium checks today:** PASS, LIKE, and TEXT quota go through `consumeDailyQuota` on the caller's transaction. Qualifying Premium is a `subscriptions` row joined to `plans` (`PREMIUM_MONTHLY` or `PREMIUM_YEARLY`). Status `ACTIVE`, `PAST_DUE`, or `GRACE_PERIOD` qualifies while `current_period_end` or `grace_period_end` is still in the future. Status `CANCELED` qualifies only while `current_period_end` is still in the future. A future `grace_period_end` does not extend a canceled row. A qualifying non-canceled row is preferred. `plans.is_active` is not part of that predicate. The two daily limits are then read from `usage_limits`. A positive value is enforced. `-1` on that Premium plan skips the usage write. `-1` on Free and any missing or invalid catalog row fail closed. There is no hardcoded enforcement fallback. SUPER LIKE, UNDO, chat media upload and confirm, and both snapshots still call `hasActivePremium` directly and do not read `usage_limits`. Media download does not check Premium. Controllers do not trust a client `isPremium` flag. The catalog entitlement engine and `plan_features` remain later work. Apply the plan catalog seeder before this enforcement runs.
 2. **Entitlements snapshot:** `GET /api/v1/me/entitlements` requires a valid access token and role `USER`. It does not require email verification, phone verification, or a completed profile. A missing token is `401 AUTH_REQUIRED`. An `ADMIN` is `403 FORBIDDEN`. The handler reads the caller's subscription and stored `SUPER_LIKE` and `BOOST` balances. It does not insert or update those rows, and it ignores a client-supplied tier or balance. `advancedFilters`, `adFree`, and `priorityVisibility` are returned `false`. An in-period `CANCELED` Premium subscription is `PREMIUM`. A `CANCELED` row whose paid period has ended, and an `EXPIRED` subscription, are `FREE` even when `grace_period_end` is still in the future.
 3. **Usage snapshot:** `GET /api/v1/me/usage` uses the same token and `USER` role rules. It does not require verification or a completed profile. The user id comes from `req.user.id`. A query parameter, including a user id, is `400 VALIDATION_ERROR` with message `Unsupported query parameter.` A JSON body is `400 VALIDATION_ERROR`. The read is limited to that caller's current UTC-day `DAILY_LIKE_PASS` and `DAILY_TEXT_MESSAGES` rows. It does not insert a missing row, change `usage_count` or `updated_at`, or change subscriptions, credits, or quota enforcement. Premium `limit` and `remaining` are `null` when the qualifying plan's catalog limit is `-1`. `isUnlimited` follows that resolution. An in-period canceled Premium subscription uses the Premium catalog. An ended `CANCELED` row and an `EXPIRED` row stay on the Free catalog.
-4. **Tamper-Proof Plan Pricing:** 
-   * Clients submit only `planId` during checkout.
-   * The backend resolves `plans.price_in_cents` and `plans.currency` directly from PostgreSQL.
-   * Client-supplied prices or currency overrides are completely ignored.
-   * An administrator changes those columns only through `PATCH /api/v1/admin/config/plans/:planId`. The supported currency is `INR`. Premium plan codes must stay above zero. Checkout is not implemented in that route.
+4. **Tamper-Proof Plan Pricing:**
+   * `POST /api/v1/payments/checkout` accepts only `planId`. A client `amount`, `amountInCents`, `currency`, payment status, provider, provider order id, provider payment id, payment type, or subscription id is `400 VALIDATION_ERROR`. Those fields are rejected, not ignored.
+   * The service locks the plan row and copies `price_in_cents` and `currency` onto the payment before the provider call. A later admin price change does not rewrite that snapshot.
+   * Only an active `PREMIUM_MONTHLY` or `PREMIUM_YEARLY` plan priced in `INR` with a positive integer price can start checkout. A qualifying Premium subscription, including an in-period canceled one, is `409 ACTIVE_SUBSCRIPTION_EXISTS`.
+   * An administrator changes plan columns only through `PATCH /api/v1/admin/config/plans/:planId`. The supported currency is `INR`. Premium plan codes must stay above zero.
+5. **Checkout idempotency:** The key is a required UUID, stored lowercase, and unique per user in PostgreSQL. It is not stored in Redis. A stored order id is replayed. An in-flight row, an unresolved provider outcome, and a key reused for another plan return `409 IDEMPOTENCY_CONFLICT` and do not create another Razorpay Order. A known provider rejection is `402 PAYMENT_FAILED`. A timeout or a lost order id is `500 PAYMENT_OUTCOME_UNKNOWN` and leaves the payment `INITIATED` with a null order id. The response does not include the key secret or a raw provider payload. Creating an order does not grant Premium.
 
 ---
 
 ## 19. Payment Security (Razorpay)
 
-1. **No Raw Card Data:** Love Bite servers never touch, process, or store raw credit/debit card numbers or CVVs (PCI-DSS compliance via Razorpay checkout elements).
-2. **Server-Side Order Creation:** Orders are created server-side via official Razorpay SDKs with verified amounts before client checkout initialization.
-3. **Cryptographic Signature Verification:** Handshake verifications execute HMAC-SHA256 verification:
-   $$\text{HMAC-SHA256}(\text{order\_id} + "|" + \text{payment\_id}, \text{RAZORPAY\_KEY\_SECRET}) == \text{signature}$$
+1. **No Raw Card Data:** Love Bite servers never touch, process, or store raw credit/debit card numbers or CVVs. Checkout returns a Razorpay Order id and the public key id so the client can open Razorpay Checkout.
+2. **Server-Side Order Creation:** `razorpay@2.9.8` creates the Order after the payment row commits. The amount is the snapshotted integer paise value and the currency is `INR`. `receipt` and `notes.paymentId` are the payment UUID. No name, email, or phone is sent. `RAZORPAY_KEY_ID` and `RAZORPAY_KEY_SECRET` are optional in development and test and required in production. The secret is not returned and is not written to the checkout log. Tests mock the provider and do not call Razorpay.
+3. **Known and unknown failures:** A Razorpay 4xx other than 408 or 429 marks the payment `FAILED` with `failure_reason = PROVIDER_REJECTED` and returns `402 PAYMENT_FAILED`. A timeout, 408, 429, 5xx, missing response, or failure to store the order id returns `500 PAYMENT_OUTCOME_UNKNOWN`. That path does not mark the payment failed and does not create a second order for the same key. The operational log may include the payment id and, when the order was created but not stored, the provider order id. It does not include the key secret or the provider error description.
+4. **Signature verification:** `POST /api/v1/payments/verify` is not implemented. The planned check is HMAC-SHA256 of `order_id + "|" + payment_id` with `RAZORPAY_KEY_SECRET`. An Order id or `INITIATED` payment is not proof of payment.
 
 ---
 
 ## 20. Razorpay Webhook Security
 
-1. **Source of Truth Rule:** Subscription activations and renewals are executed **ONLY** upon receiving authenticated webhook events.
+**Not implemented.** `POST /api/v1/webhooks/razorpay` is not mounted. `RAZORPAY_WEBHOOK_SECRET` is not loaded. `processed_webhooks` remains schema only. The global JSON parser is unchanged, so a future webhook still needs a raw-body reader before signature verification.
+
+The intended rules, once that slice exists:
+
+1. **Source of Truth Rule:** Subscription activation and renewal run only after an authenticated webhook. Checkout does not activate Premium.
 2. **Signature Verification:** The raw request body is verified against `X-Razorpay-Signature` using `RAZORPAY_WEBHOOK_SECRET` before JSON parsing.
-3. **Idempotent Webhook Processing:**
-   * The server inserts `event.id` into `processed_webhooks` inside a serializable database transaction.
-   * If `event.id` already exists, the transaction aborts and returns `200 OK` immediately, preventing double crediting or duplicate subscription extensions.
+3. **Idempotent Webhook Processing:** Insert `event.id` into `processed_webhooks`. A duplicate event returns `200 OK` without a second subscription write.
 
 ---
 
@@ -439,7 +442,8 @@ The client cannot send a storage key. The signed key is `chat-media/{conversatio
 
 ### 25.1 Data Redaction Filter
 Loggers (Winston/Pino) must pass all log streams through an automated redaction filter targeting sensitive keys:
-* `password`, `password_hash`, `token`, `accessToken`, `refreshToken`, `authorization`, `otp`, `secret`, `razorpay_signature`, `keyId`, `location`.
+* `password`, `password_hash`, `token`, `accessToken`, `refreshToken`, `authorization`, `otp`, `secret`, `location`.
+* Razorpay: `keyId`, `key_id`, `keySecret`, `key_secret`, `razorpay_key_secret`, and `razorpay_signature`. The public key id is still returned to the checkout client. It is redacted if it appears in a log object. Checkout does not log the Razorpay client or the provider error description.
 
 ### 25.2 Mandatory Audit Events
 The following events must always generate structured audit logs:

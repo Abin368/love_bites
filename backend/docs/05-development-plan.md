@@ -608,36 +608,37 @@ The numbered steps below are still the planned catalog engine. This slice does n
 ## 13. Phase 9 — Payments and Razorpay
 
 ### 13.1 Objectives
-Implement the decoupled payment gateway provider abstraction, server-side Razorpay order generation, HMAC-SHA256 signature verification, and idempotent webhook processing.
+Implement the decoupled payment gateway provider abstraction, server-side Razorpay order generation, HMAC-SHA256 signature verification, and idempotent webhook processing. Order creation is implemented. Signature verification, webhooks, activation, renewal, refunds, and reconciliation are not.
 
 ### 13.2 Payment Provider Abstraction
-* `src/integrations/payment/payment.interface.ts`:
-  ```typescript
-  export interface IPaymentProvider {
-    createOrder(plan: Plan, user: User): Promise<PaymentOrderResult>;
-    verifySignature(params: VerifyPaymentParams): boolean;
-    cancelSubscription(providerSubscriptionId: string): Promise<boolean>;
-    handleWebhook(rawPayload: Buffer, signature: string): Promise<WebhookEventResult>;
-  }
-  ```
-* `src/integrations/payment/razorpay.provider.ts`: Official Razorpay implementation.
+Checkout initiation is implemented. The interface is limited to Order creation:
+
+* `src/integrations/payment/payment.interface.ts` defines `PaymentOrderProvider` with `isConfigured`, `publicKeyId`, and `createOrder`.
+* `src/integrations/payment/razorpay.provider.ts` uses `razorpay@2.9.8`. `createOrder` sends the snapshotted paise amount, `INR`, a receipt equal to the payment UUID, and `notes.paymentId`.
+* Signature verification, subscription cancellation at the provider, and webhook handling are not part of this interface and are not implemented.
 
 ### 13.3 Implementation Steps
-1. **Checkout Session Creation (`POST /api/v1/payments/checkout`):**
-   * Validates `planId`. **Authoritative price is resolved directly from PostgreSQL `plans` table** (client-supplied prices are strictly ignored).
-   * Generates Razorpay Order / Subscription entity; returns gateway credentials to client.
-2. **Client Verification Handshake (`POST /api/v1/payments/verify`):**
+1. **Checkout initiation (`POST /api/v1/payments/checkout`) — implemented:**
+   * Authenticated `USER` only. Body is exactly `planId`. `Idempotency-Key` is a required UUID.
+   * The plan row is locked. The price and currency are copied from PostgreSQL. A client amount is `400 VALIDATION_ERROR`, not ignored.
+   * Eligible plans are active `PREMIUM_MONTHLY` or `PREMIUM_YEARLY`, currency `INR`, price an integer greater than zero.
+   * Qualifying Premium access, including an in-period canceled subscription, is `409 ACTIVE_SUBSCRIPTION_EXISTS`.
+   * The payment is inserted as `INITIATED` and committed before the Razorpay call. Success stores `provider_order_id` and leaves the status `INITIATED`. No subscription row is created.
+   * The same user and key replays a stored order. An unresolved attempt does not create a second order. Migration `20261027183033-add-checkout-columns-to-payments.js`.
+Steps 2 through 5 are not implemented.
+
+2. **Client Verification Handshake (`POST /api/v1/payments/verify`) — not implemented:**
    * Validates HMAC-SHA256 signature using `RAZORPAY_KEY_SECRET`.
-3. **Webhook Processing Engine (`POST /api/v1/webhooks/razorpay`):**
+3. **Webhook Processing Engine (`POST /api/v1/webhooks/razorpay`) — not implemented:**
    * Validates `X-Razorpay-Signature` against raw request buffer.
    * **Atomic Deduplication:** Inserts `event.id` into `processed_webhooks`. Duplicate events return `200 OK` immediately.
-4. **Subscription Lifecycle Event Handlers:**
+4. **Subscription Lifecycle Event Handlers — not implemented:**
    * `subscription.activated` $\rightarrow$ Inserts/Updates `subscriptions` (`status = 'ACTIVE'`), refreshes entitlements.
    * `subscription.charged` $\rightarrow$ Inserts invoice in `payments`, updates `current_period_end`.
    * `payment.failed` $\rightarrow$ Sets `subscriptions.status = 'PAST_DUE'`, triggers **24-hour grace window** (`grace_period_end = CURRENT_TIMESTAMP + 24h`).
    * `subscription.cancelled` $\rightarrow$ Not implemented. The user route `POST /api/v1/subscriptions/cancel` already performs the local `ACTIVE` cancellation and does not call the provider. This webhook remains separate future work.
    * `subscription.completed` / Grace Expiry $\rightarrow$ Sets `status = 'EXPIRED'`, downgrades user to Free tier.
-5. **Subscription Background Reconciliation Job:**
+5. **Subscription Background Reconciliation Job — not implemented:**
    * Scheduled cron job (`src/jobs/subscription-reconciliation.job.ts`) checks for expired grace periods and transitions unrecovered accounts to `EXPIRED`.
 
 ---

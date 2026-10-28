@@ -1172,7 +1172,8 @@ Stores transactional payment records, invoices, amounts, currency, and provider 
 | :--- | :--- | :--- | :--- | :--- |
 | `id` | `UUID` | `NO` | `gen_random_uuid()` | Primary key. |
 | `user_id` | `UUID` | `YES` | `NULL` | User who made the payment (`ON DELETE SET NULL`). |
-| `subscription_id`| `UUID` | `YES` | `NULL` | Associated subscription if applicable (`ON DELETE SET NULL`). |
+| `subscription_id`| `UUID` | `YES` | `NULL` | Associated subscription if applicable (`ON DELETE SET NULL`). Checkout leaves this null. |
+| `plan_id` | `UUID` | `YES` | `NULL` | Plan snapshotted by checkout (`ON DELETE RESTRICT`). Null on existing rows and on future credit purchases. |
 | `provider` | `VARCHAR(50)` | `NO` | `'RAZORPAY'` | Gateway: `'RAZORPAY'`, `'MANUAL'`. |
 | `provider_payment_id`| `VARCHAR(255)` | `YES` | `NULL` | Gateway payment ID (e.g., `pay_xxx`). |
 | `provider_order_id`| `VARCHAR(255)` | `YES` | `NULL` | Gateway order ID (e.g., `order_xxx`). |
@@ -1180,7 +1181,8 @@ Stores transactional payment records, invoices, amounts, currency, and provider 
 | `currency` | `VARCHAR(3)` | `NO` | `'INR'` | ISO 4217 currency code. |
 | `status` | `VARCHAR(30)` | `NO` | `'INITIATED'` | Status: `'INITIATED'`, `'AUTHORIZED'`, `'CAPTURED'`, `'FAILED'`, `'REFUNDED'`. |
 | `payment_type` | `VARCHAR(30)` | `NO` | — | Type: `'SUBSCRIPTION_INITIAL'`, `'SUBSCRIPTION_RECURRING'`, `'CREDIT_PURCHASE'`. |
-| `raw_payload` | `JSONB` | `YES` | `NULL` | Raw provider payload for dispute auditing. |
+| `idempotency_key` | `VARCHAR(255)` | `YES` | `NULL` | Checkout `Idempotency-Key`, stored lowercase. Null on existing rows and on payment types that do not use a key. |
+| `raw_payload` | `JSONB` | `YES` | `NULL` | Raw provider payload for dispute auditing. Checkout does not write this column. |
 | `failure_reason` | `TEXT` | `YES` | `NULL` | Error details if transaction failed. |
 | `paid_at` | `TIMESTAMPTZ` | `YES` | `NULL` | Gateway confirmation timestamp. |
 | `created_at` | `TIMESTAMPTZ` | `NO` | `CURRENT_TIMESTAMP` | Creation timestamp. |
@@ -1192,6 +1194,7 @@ Stores transactional payment records, invoices, amounts, currency, and provider 
 #### Foreign Keys
 * `CONSTRAINT fk_payments_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL ON UPDATE CASCADE`
 * `CONSTRAINT fk_payments_subscription FOREIGN KEY (subscription_id) REFERENCES subscriptions(id) ON DELETE SET NULL ON UPDATE CASCADE`
+* `CONSTRAINT fk_payments_plan FOREIGN KEY (plan_id) REFERENCES plans(id) ON DELETE RESTRICT ON UPDATE CASCADE`
 
 #### Constraints
 * `CONSTRAINT chk_payments_status CHECK (status IN ('INITIATED', 'AUTHORIZED', 'CAPTURED', 'FAILED', 'REFUNDED'))`
@@ -1200,9 +1203,14 @@ Stores transactional payment records, invoices, amounts, currency, and provider 
 
 #### Indexes
 * `CREATE UNIQUE INDEX uq_payments_provider_payment_id ON payments (provider, provider_payment_id) WHERE provider_payment_id IS NOT NULL;`  
-  *Prevents duplicate payment records for identical gateway transaction IDs.*
+  *Prevents duplicate payment records for identical gateway payment IDs. Unchanged.*
+* `CREATE UNIQUE INDEX uq_payments_provider_order_id ON payments (provider, provider_order_id) WHERE provider_order_id IS NOT NULL;`  
+  *Replaces the non-unique `idx_payments_order_lookup`. One stored Razorpay Order id maps to one payment.*
+* `CREATE UNIQUE INDEX uq_payments_user_idempotency_key ON payments (user_id, idempotency_key) WHERE user_id IS NOT NULL AND idempotency_key IS NOT NULL;`  
+  *Scopes a checkout key to one user. Different users may reuse the same key string. `user_id` stays nullable because account deletion uses `ON DELETE SET NULL`.*
 * `CREATE INDEX idx_payments_user_history ON payments (user_id, created_at DESC);`
-* `CREATE INDEX idx_payments_order_lookup ON payments (provider_order_id);`
+
+Migration `20261027183033-add-checkout-columns-to-payments.js` adds `plan_id` and `idempotency_key`, adds `fk_payments_plan`, and replaces `idx_payments_order_lookup`. Before creating `uq_payments_provider_order_id` it selects duplicate non-null `provider_order_id` values. If any exist it throws and does not rewrite or delete ledger rows. `down` drops the two new unique indexes, restores `idx_payments_order_lookup`, and removes the foreign key and both columns.
 
 ---
 
@@ -1330,6 +1338,7 @@ Enforces webhook idempotency across asynchronous payment notifications. Duplicat
 | `subscriptions` | `plan_id` | `plans` | `id` | `RESTRICT` | `CASCADE` | Cannot delete plan if subscribed users exist. |
 | `payments` | `user_id` | `users` | `id` | `SET NULL` | `CASCADE` | Financial ledger must NEVER be deleted upon account removal. |
 | `payments` | `subscription_id`| `subscriptions`| `id` | `SET NULL` | `CASCADE` | Payment invoice preserved for tax/auditing. |
+| `payments` | `plan_id` | `plans` | `id` | `RESTRICT` | `CASCADE` | Checkout snapshot. A plan with a payment cannot be deleted. |
 | `plan_price_changes` | `admin_user_id` | `users` | `id` | `SET NULL` | `CASCADE` | Price history remains after the administrator row is hard-deleted. |
 | `plan_price_changes` | `plan_id` | `plans` | `id` | `RESTRICT` | `CASCADE` | A plan with price history cannot be deleted. |
 
@@ -1378,6 +1387,8 @@ CREATE INDEX idx_subscriptions_provider_sub_id ON subscriptions (provider, provi
 CREATE INDEX idx_usage_records_lookup ON usage_records (user_id, metric_key, period_start, period_end);
 CREATE INDEX idx_credit_transactions_audit ON credit_transactions (user_id, credit_type, created_at DESC);
 CREATE UNIQUE INDEX uq_payments_provider_payment_id ON payments (provider, provider_payment_id) WHERE provider_payment_id IS NOT NULL;
+CREATE UNIQUE INDEX uq_payments_provider_order_id ON payments (provider, provider_order_id) WHERE provider_order_id IS NOT NULL;
+CREATE UNIQUE INDEX uq_payments_user_idempotency_key ON payments (user_id, idempotency_key) WHERE user_id IS NOT NULL AND idempotency_key IS NOT NULL;
 CREATE INDEX idx_processed_webhooks_provider_type ON processed_webhooks (provider, event_type, processed_at DESC);
 ```
 

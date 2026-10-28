@@ -1,0 +1,214 @@
+import { UniqueConstraintError } from 'sequelize';
+import { sequelize } from '../../config/database';
+import { Plan } from '../../database/models/plan.model';
+import { Payment } from '../../database/models/payment.model';
+import { PaymentProviderRejectedError } from '../../integrations/payment/payment.interface';
+import { razorpayOrderProvider } from '../../integrations/payment/razorpay.provider';
+import {
+  findInPeriodCanceledSubscription,
+  findQualifyingPremiumSubscription,
+  lockNonterminalSubscription
+} from '../subscriptions/subscriptions.data-access';
+import { ConflictError, InternalServerError, NotFoundError, PaymentFailedError, ValidationError } from '../../utils/errors';
+import { logger } from '../../utils/logger';
+import * as paymentsDataAccess from './payments.data-access';
+import type { CheckoutInput, CheckoutResult } from './payments.types';
+
+const PREMIUM_PLAN_CODES = new Set(['PREMIUM_MONTHLY', 'PREMIUM_YEARLY']);
+
+type OpenCheckout =
+  | { kind: 'create'; payment: Payment; plan: Plan }
+  | { kind: 'replay'; payment: Payment; plan: Plan }
+  | { kind: 'failed' };
+
+function planNotFound(): NotFoundError {
+  return new NotFoundError('Resource not found', [], 'RESOURCE_NOT_FOUND');
+}
+
+function planUnavailable(): ValidationError {
+  return new ValidationError('Validation failed', [{ field: 'planId', message: 'Plan is not available for checkout.' }]);
+}
+
+function planCurrencyRejected(): ValidationError {
+  return new ValidationError('Validation failed', [{ field: 'planId', message: 'Plan currency must be INR.' }]);
+}
+
+function planPriceRejected(): ValidationError {
+  return new ValidationError('Validation failed', [
+    { field: 'planId', message: 'Plan price must be a positive integer number of cents.' }
+  ]);
+}
+
+function premiumAlreadyActive(): ConflictError {
+  return new ConflictError('Premium access is already active.', [], 'ACTIVE_SUBSCRIPTION_EXISTS');
+}
+
+function idempotencyInProgress(): ConflictError {
+  return new ConflictError('A request with this Idempotency-Key is already in progress.', [], 'IDEMPOTENCY_CONFLICT');
+}
+
+function idempotencyPlanConflict(): ConflictError {
+  return new ConflictError('Idempotency-Key was already used for a different plan.', [], 'IDEMPOTENCY_CONFLICT');
+}
+
+function providerNotConfigured(): InternalServerError {
+  return new InternalServerError('Payment provider is not configured.', [], 'PAYMENT_NOT_CONFIGURED', true);
+}
+
+function outcomeUnknown(): InternalServerError {
+  return new InternalServerError(
+    'The payment provider did not confirm a stored order. Retry with the same Idempotency-Key.',
+    [],
+    'PAYMENT_OUTCOME_UNKNOWN',
+    true
+  );
+}
+
+function assertEligible(plan: Plan): void {
+  if (!PREMIUM_PLAN_CODES.has(plan.code) || !plan.isActive) {
+    throw planUnavailable();
+  }
+  if (plan.currency !== 'INR') {
+    throw planCurrencyRejected();
+  }
+  if (!Number.isInteger(plan.priceInCents) || plan.priceInCents <= 0) {
+    throw planPriceRejected();
+  }
+}
+
+function resolveExisting(plan: Plan | null, payment: Payment): OpenCheckout {
+  if (!plan || payment.planId !== plan.id) {
+    throw idempotencyPlanConflict();
+  }
+  if (payment.providerOrderId) {
+    return { kind: 'replay', payment, plan };
+  }
+  if (payment.status === 'FAILED') {
+    return { kind: 'failed' };
+  }
+  throw idempotencyInProgress();
+}
+
+async function openCheckout(input: CheckoutInput): Promise<OpenCheckout> {
+  try {
+    return await sequelize.transaction(async (transaction) => {
+      const plan = await paymentsDataAccess.lockPlanById(input.planId, transaction);
+      const existing = await paymentsDataAccess.lockPaymentByUserAndKey(
+        input.userId,
+        input.idempotencyKey,
+        transaction
+      );
+      if (existing) {
+        return resolveExisting(plan, existing);
+      }
+      if (!plan) {
+        throw planNotFound();
+      }
+
+      assertEligible(plan);
+      await lockNonterminalSubscription(input.userId, transaction);
+      await findInPeriodCanceledSubscription(input.userId, new Date(), transaction);
+      const qualifying = await findQualifyingPremiumSubscription(input.userId, transaction);
+      if (qualifying) {
+        throw premiumAlreadyActive();
+      }
+
+      const payment = await paymentsDataAccess.insertInitiatedCheckout(
+        {
+          userId: input.userId,
+          planId: plan.id,
+          idempotencyKey: input.idempotencyKey,
+          amountInCents: plan.priceInCents,
+          currency: plan.currency
+        },
+        transaction
+      );
+      return { kind: 'create', payment, plan };
+    });
+  } catch (error) {
+    if (!paymentsDataAccess.isIdempotencyUniqueViolation(error) && !(error instanceof UniqueConstraintError)) {
+      throw error;
+    }
+    if (!paymentsDataAccess.isIdempotencyUniqueViolation(error)) {
+      throw new InternalServerError('Internal server error', [], 'INTERNAL_SERVER_ERROR', true);
+    }
+
+    return sequelize.transaction(async (transaction) => {
+      const plan = await paymentsDataAccess.lockPlanById(input.planId, transaction);
+      const existing = await paymentsDataAccess.lockPaymentByUserAndKey(
+        input.userId,
+        input.idempotencyKey,
+        transaction
+      );
+      if (!existing) {
+        throw new InternalServerError('Internal server error', [], 'INTERNAL_SERVER_ERROR', true);
+      }
+      return resolveExisting(plan, existing);
+    });
+  }
+}
+
+function toResult(payment: Payment, plan: Plan): CheckoutResult {
+  if (!payment.providerOrderId) {
+    throw outcomeUnknown();
+  }
+  return {
+    paymentId: payment.id,
+    planId: plan.id,
+    planCode: plan.code,
+    orderId: payment.providerOrderId,
+    amountInCents: payment.amountInCents,
+    currency: payment.currency,
+    keyId: razorpayOrderProvider.publicKeyId()
+  };
+}
+
+export async function createCheckout(input: CheckoutInput): Promise<CheckoutResult> {
+  if (!razorpayOrderProvider.isConfigured()) {
+    throw providerNotConfigured();
+  }
+
+  const opened = await openCheckout(input);
+  if (opened.kind === 'failed') {
+    throw new PaymentFailedError('Payment could not be initiated.');
+  }
+  if (opened.kind === 'replay') {
+    return toResult(opened.payment, opened.plan);
+  }
+
+  const payment = opened.payment;
+  const plan = opened.plan;
+  try {
+    const created = await razorpayOrderProvider.createOrder({
+      amountInCents: payment.amountInCents,
+      currency: 'INR',
+      receipt: payment.id,
+      paymentId: payment.id
+    });
+    try {
+      await paymentsDataAccess.assignProviderOrderId(payment.id, created.providerOrderId);
+    } catch {
+      logger.error('Checkout order id was not stored', {
+        paymentId: payment.id,
+        providerOrderId: created.providerOrderId
+      });
+      throw outcomeUnknown();
+    }
+    payment.providerOrderId = created.providerOrderId;
+    return toResult(payment, plan);
+  } catch (error) {
+    if (error instanceof PaymentFailedError || error instanceof InternalServerError) {
+      throw error;
+    }
+    if (error instanceof PaymentProviderRejectedError) {
+      const marked = await paymentsDataAccess.markCheckoutFailed(payment.id);
+      if (!marked) {
+        logger.error('Checkout rejection was not recorded', { paymentId: payment.id });
+        throw outcomeUnknown();
+      }
+      throw new PaymentFailedError('Payment could not be initiated.');
+    }
+    logger.error('Checkout provider outcome is unknown', { paymentId: payment.id });
+    throw outcomeUnknown();
+  }
+}
