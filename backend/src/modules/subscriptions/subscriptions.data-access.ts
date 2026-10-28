@@ -46,9 +46,9 @@ export async function findActivePlans(): Promise<Plan[]> {
 
 export async function findQualifyingPremiumSubscription(
   userId: string,
-  transaction: Transaction
+  transaction: Transaction,
+  now: Date = new Date()
 ): Promise<QualifyingPremiumSubscription | null> {
-  const now = new Date();
   const nonCanceled = await Subscription.findOne({
     attributes: [...QUALIFYING_ATTRIBUTES],
     where: {
@@ -99,6 +99,29 @@ export async function lockNonterminalSubscription(
     transaction,
     lock: Transaction.LOCK.UPDATE
   });
+}
+
+export async function expireElapsedNonterminalSubscription(
+  userId: string,
+  now: Date,
+  transaction: Transaction
+): Promise<number> {
+  const [count] = await Subscription.update(
+    {
+      status: 'EXPIRED',
+      endedAt: now
+    },
+    {
+      where: {
+        userId,
+        status: { [Op.in]: [...NONTERMINAL_STATUSES] },
+        currentPeriodEnd: { [Op.lte]: now },
+        [Op.or]: [{ gracePeriodEnd: { [Op.is]: null } }, { gracePeriodEnd: { [Op.lte]: now } }]
+      },
+      transaction
+    }
+  );
+  return count;
 }
 
 export async function cancelActiveSubscription(

@@ -11,6 +11,7 @@ import { User, UserRole } from '../../src/database/models/user.model';
 import { PaymentProviderOutcomeUnknownError, PaymentProviderRejectedError } from '../../src/integrations/payment/payment.interface';
 import { hasActivePremium } from '../../src/modules/likes/likes.data-access';
 import * as paymentsDataAccess from '../../src/modules/payments/payments.data-access';
+import { findQualifyingPremiumSubscription } from '../../src/modules/subscriptions/subscriptions.data-access';
 import { signAccessToken } from '../../src/utils/jwt';
 
 jest.mock('../../src/integrations/payment/razorpay.provider', () => ({
@@ -733,5 +734,292 @@ describe('POST /api/v1/payments/checkout', () => {
     expect(plan.billingInterval).toBe('YEAR');
     expect(createOrder).toHaveBeenCalledTimes(1);
     expect(await Subscription.count()).toBe(0);
+  });
+
+  async function expectNotPremium(userId: string, token: string): Promise<void> {
+    const me = await request(app).get('/api/v1/subscriptions/me').set('Authorization', `Bearer ${token}`);
+    const entitlements = await request(app).get('/api/v1/me/entitlements').set('Authorization', `Bearer ${token}`);
+    const premium = await sequelize.transaction((transaction) => hasActivePremium(userId, transaction));
+    const qualifying = await sequelize.transaction((transaction) =>
+      findQualifyingPremiumSubscription(userId, transaction)
+    );
+
+    expect(me.status).toBe(200);
+    expect(me.body.data).toEqual({ hasActiveSubscription: false, subscription: null });
+    expect(entitlements.status).toBe(200);
+    expect(entitlements.body.data.tier).toBe('FREE');
+    expect(premium).toBe(false);
+    expect(qualifying).toBeNull();
+  }
+
+  it('expires a fully elapsed active subscription with null grace and completes checkout', async () => {
+    const user = await createUser();
+    const plan = await createPlan({ code: 'PREMIUM_MONTHLY', priceInCents: 49900 });
+    const periodStart = new Date(Date.now() - 48 * HOUR_MS);
+    const periodEnd = new Date(Date.now() - 24 * HOUR_MS);
+    const subscription = await createSubscription(user.id, plan.id, 'ACTIVE', periodEnd, null);
+    await subscription.update({
+      providerSubscriptionId: 'sub_elapsed_null',
+      providerCustomerId: 'cust_elapsed_null',
+      autoRenew: true,
+      currentPeriodStart: periodStart,
+      canceledAt: null,
+      endedAt: null
+    });
+    stubOrder('order_expired_null_grace');
+    const token = tokenFor(user.id, 'USER');
+
+    const response = await postCheckout({ token, planId: plan.id, key: randomUUID() });
+    await subscription.reload();
+
+    expect(response.status).toBe(200);
+    expect(response.body.message).toBe('Checkout initiated.');
+    expect(subscription.status).toBe('EXPIRED');
+    expect(subscription.endedAt).not.toBeNull();
+    expect(subscription.currentPeriodStart.toISOString()).toBe(periodStart.toISOString());
+    expect(subscription.currentPeriodEnd.toISOString()).toBe(periodEnd.toISOString());
+    expect(subscription.gracePeriodEnd).toBeNull();
+    expect(subscription.providerSubscriptionId).toBe('sub_elapsed_null');
+    expect(subscription.providerCustomerId).toBe('cust_elapsed_null');
+    expect(subscription.autoRenew).toBe(true);
+    expect(subscription.canceledAt).toBeNull();
+    expect(createOrder).toHaveBeenCalledTimes(1);
+    expect(await Payment.count()).toBe(1);
+    expect(await Subscription.count()).toBe(1);
+    await expectNotPremium(user.id, token);
+  });
+
+  it('expires a fully elapsed active subscription with elapsed grace and completes checkout', async () => {
+    const user = await createUser();
+    const plan = await createPlan({ code: 'PREMIUM_YEARLY', priceInCents: 399900 });
+    const periodEnd = new Date(Date.now() - 48 * HOUR_MS);
+    const graceEnd = new Date(Date.now() - 24 * HOUR_MS);
+    const subscription = await createSubscription(user.id, plan.id, 'ACTIVE', periodEnd, graceEnd);
+    await subscription.update({
+      providerSubscriptionId: 'sub_elapsed_grace',
+      providerCustomerId: 'cust_elapsed_grace',
+      autoRenew: false
+    });
+    stubOrder('order_expired_elapsed_grace');
+    const token = tokenFor(user.id, 'USER');
+
+    const response = await postCheckout({ token, planId: plan.id, key: randomUUID() });
+    await subscription.reload();
+
+    expect(response.status).toBe(200);
+    expect(subscription.status).toBe('EXPIRED');
+    expect(subscription.endedAt).not.toBeNull();
+    expect(subscription.gracePeriodEnd?.toISOString()).toBe(graceEnd.toISOString());
+    expect(subscription.currentPeriodEnd.toISOString()).toBe(periodEnd.toISOString());
+    expect(subscription.providerSubscriptionId).toBe('sub_elapsed_grace');
+    expect(subscription.providerCustomerId).toBe('cust_elapsed_grace');
+    expect(subscription.autoRenew).toBe(false);
+    expect(createOrder).toHaveBeenCalledTimes(1);
+    expect(await Payment.count()).toBe(1);
+    await expectNotPremium(user.id, token);
+  });
+
+  it('keeps an active subscription with future grace and returns the existing conflict', async () => {
+    const user = await createUser();
+    const plan = await createPlan({ code: 'PREMIUM_MONTHLY', priceInCents: 49900 });
+    const periodEnd = new Date(Date.now() - 24 * HOUR_MS);
+    const graceEnd = new Date(Date.now() + 24 * HOUR_MS);
+    const subscription = await createSubscription(user.id, plan.id, 'ACTIVE', periodEnd, graceEnd);
+    const before = subscription.toJSON();
+
+    const response = await postCheckout({ token: tokenFor(user.id, 'USER'), planId: plan.id, key: randomUUID() });
+    await subscription.reload();
+
+    expect(response.status).toBe(409);
+    expect(response.body.error.code).toBe('ACTIVE_SUBSCRIPTION_EXISTS');
+    expect(response.body.error.message).toBe('Premium access is already active.');
+    expect(subscription.toJSON()).toEqual(before);
+    expect(subscription.status).toBe('ACTIVE');
+    expect(subscription.endedAt).toBeNull();
+    expect(createOrder).not.toHaveBeenCalled();
+    expect(await Payment.count()).toBe(0);
+  });
+
+  it('keeps an in-period canceled subscription and returns the existing conflict', async () => {
+    const user = await createUser();
+    const plan = await createPlan({ code: 'PREMIUM_MONTHLY', priceInCents: 49900 });
+    const periodEnd = new Date(Date.now() + 24 * HOUR_MS);
+    const subscription = await createSubscription(user.id, plan.id, 'CANCELED', periodEnd, new Date(Date.now() + 48 * HOUR_MS));
+    const before = subscription.toJSON();
+
+    const response = await postCheckout({ token: tokenFor(user.id, 'USER'), planId: plan.id, key: randomUUID() });
+    await subscription.reload();
+
+    expect(response.status).toBe(409);
+    expect(response.body.error.code).toBe('ACTIVE_SUBSCRIPTION_EXISTS');
+    expect(subscription.toJSON()).toEqual(before);
+    expect(subscription.status).toBe('CANCELED');
+    expect(subscription.endedAt).toBeNull();
+    expect(createOrder).not.toHaveBeenCalled();
+    expect(await Payment.count()).toBe(0);
+  });
+
+  it('keeps a lapsed canceled subscription and completes checkout', async () => {
+    const user = await createUser();
+    const plan = await createPlan({ code: 'PREMIUM_MONTHLY', priceInCents: 49900 });
+    const periodEnd = new Date(Date.now() - 24 * HOUR_MS);
+    const graceEnd = new Date(Date.now() + 24 * HOUR_MS);
+    const subscription = await createSubscription(user.id, plan.id, 'CANCELED', periodEnd, graceEnd);
+    await subscription.update({
+      providerSubscriptionId: 'sub_lapsed_canceled',
+      providerCustomerId: 'cust_lapsed_canceled',
+      autoRenew: false
+    });
+    const canceledAt = subscription.canceledAt;
+    stubOrder('order_after_lapsed_canceled');
+
+    const response = await postCheckout({ token: tokenFor(user.id, 'USER'), planId: plan.id, key: randomUUID() });
+    await subscription.reload();
+
+    expect(response.status).toBe(200);
+    expect(subscription.status).toBe('CANCELED');
+    expect(subscription.endedAt).toBeNull();
+    expect(subscription.currentPeriodEnd.toISOString()).toBe(periodEnd.toISOString());
+    expect(subscription.gracePeriodEnd?.toISOString()).toBe(graceEnd.toISOString());
+    expect(subscription.canceledAt?.toISOString()).toBe(canceledAt?.toISOString());
+    expect(subscription.providerSubscriptionId).toBe('sub_lapsed_canceled');
+    expect(subscription.providerCustomerId).toBe('cust_lapsed_canceled');
+    expect(subscription.autoRenew).toBe(false);
+    expect(createOrder).toHaveBeenCalledTimes(1);
+    expect(await Payment.count()).toBe(1);
+    expect(await Subscription.count()).toBe(1);
+  });
+
+  it('commits expiration before an unknown provider outcome and does not roll it back', async () => {
+    const user = await createUser();
+    const plan = await createPlan({ code: 'PREMIUM_MONTHLY', priceInCents: 49900 });
+    const subscription = await createSubscription(
+      user.id,
+      plan.id,
+      'ACTIVE',
+      new Date(Date.now() - 24 * HOUR_MS),
+      null
+    );
+    createOrder.mockImplementation(async () => {
+      const seen = await Subscription.findByPk(subscription.id);
+      expect(seen?.status).toBe('EXPIRED');
+      expect(seen?.endedAt).not.toBeNull();
+      throw new PaymentProviderOutcomeUnknownError();
+    });
+
+    const response = await postCheckout({ token: tokenFor(user.id, 'USER'), planId: plan.id, key: randomUUID() });
+    await subscription.reload();
+    const payment = await Payment.findOne({ where: { userId: user.id } });
+
+    expect(response.status).toBe(500);
+    expect(response.body.error.code).toBe('PAYMENT_OUTCOME_UNKNOWN');
+    expect(subscription.status).toBe('EXPIRED');
+    expect(subscription.endedAt).not.toBeNull();
+    expect(payment).toMatchObject({ status: 'INITIATED', providerOrderId: null });
+    expect(createOrder).toHaveBeenCalledTimes(1);
+  });
+
+  it('commits expiration before a rejected provider call and does not roll it back', async () => {
+    const user = await createUser();
+    const plan = await createPlan({ code: 'PREMIUM_MONTHLY', priceInCents: 49900 });
+    const subscription = await createSubscription(
+      user.id,
+      plan.id,
+      'GRACE_PERIOD',
+      new Date(Date.now() - 48 * HOUR_MS),
+      new Date(Date.now() - HOUR_MS)
+    );
+    createOrder.mockImplementation(async () => {
+      const seen = await Subscription.findByPk(subscription.id);
+      expect(seen?.status).toBe('EXPIRED');
+      expect(seen?.endedAt).not.toBeNull();
+      throw new PaymentProviderRejectedError();
+    });
+
+    const response = await postCheckout({ token: tokenFor(user.id, 'USER'), planId: plan.id, key: randomUUID() });
+    await subscription.reload();
+    const payment = await Payment.findOne({ where: { userId: user.id } });
+
+    expect(response.status).toBe(402);
+    expect(response.body.error.code).toBe('PAYMENT_FAILED');
+    expect(subscription.status).toBe('EXPIRED');
+    expect(subscription.endedAt).not.toBeNull();
+    expect(payment).toMatchObject({ status: 'FAILED', failureReason: 'PROVIDER_REJECTED', providerOrderId: null });
+    expect(createOrder).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not expire a subscription while replaying, rejecting, or holding an existing checkout key', async () => {
+    const plan = await createPlan({ code: 'PREMIUM_MONTHLY', priceInCents: 49900 });
+    const past = new Date(Date.now() - 24 * HOUR_MS);
+    const replayUser = await createUser();
+    const pendingUser = await createUser();
+    const failedUser = await createUser();
+    const replaySubscription = await createSubscription(replayUser.id, plan.id, 'ACTIVE', past, null);
+    const pendingSubscription = await createSubscription(pendingUser.id, plan.id, 'PAST_DUE', past, null);
+    const failedSubscription = await createSubscription(failedUser.id, plan.id, 'GRACE_PERIOD', past, past);
+    const replayKey = randomUUID();
+    const pendingKey = randomUUID();
+    const failedKey = randomUUID();
+    await Payment.create({
+      userId: replayUser.id,
+      planId: plan.id,
+      amountInCents: plan.priceInCents,
+      currency: 'INR',
+      billingInterval: 'MONTH',
+      status: 'INITIATED',
+      paymentType: 'SUBSCRIPTION_INITIAL',
+      idempotencyKey: replayKey,
+      providerOrderId: 'order_existing_replay',
+      providerPaymentId: null,
+      ...timestamps()
+    });
+    await Payment.create({
+      userId: pendingUser.id,
+      planId: plan.id,
+      amountInCents: plan.priceInCents,
+      currency: 'INR',
+      billingInterval: 'MONTH',
+      status: 'INITIATED',
+      paymentType: 'SUBSCRIPTION_INITIAL',
+      idempotencyKey: pendingKey,
+      providerOrderId: null,
+      providerPaymentId: null,
+      ...timestamps()
+    });
+    await Payment.create({
+      userId: failedUser.id,
+      planId: plan.id,
+      amountInCents: plan.priceInCents,
+      currency: 'INR',
+      billingInterval: 'MONTH',
+      status: 'FAILED',
+      failureReason: 'PROVIDER_REJECTED',
+      paymentType: 'SUBSCRIPTION_INITIAL',
+      idempotencyKey: failedKey,
+      providerOrderId: null,
+      providerPaymentId: null,
+      ...timestamps()
+    });
+
+    const replay = await postCheckout({ token: tokenFor(replayUser.id, 'USER'), planId: plan.id, key: replayKey });
+    const pending = await postCheckout({ token: tokenFor(pendingUser.id, 'USER'), planId: plan.id, key: pendingKey });
+    const failed = await postCheckout({ token: tokenFor(failedUser.id, 'USER'), planId: plan.id, key: failedKey });
+    await replaySubscription.reload();
+    await pendingSubscription.reload();
+    await failedSubscription.reload();
+
+    expect(replay.status).toBe(200);
+    expect(replay.body.data.orderId).toBe('order_existing_replay');
+    expect(pending.status).toBe(409);
+    expect(pending.body.error.code).toBe('IDEMPOTENCY_CONFLICT');
+    expect(failed.status).toBe(402);
+    expect(failed.body.error.code).toBe('PAYMENT_FAILED');
+    expect(replaySubscription.status).toBe('ACTIVE');
+    expect(pendingSubscription.status).toBe('PAST_DUE');
+    expect(failedSubscription.status).toBe('GRACE_PERIOD');
+    expect(replaySubscription.endedAt).toBeNull();
+    expect(pendingSubscription.endedAt).toBeNull();
+    expect(failedSubscription.endedAt).toBeNull();
+    expect(createOrder).not.toHaveBeenCalled();
   });
 });

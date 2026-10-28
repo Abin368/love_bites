@@ -1011,6 +1011,15 @@ Stores user subscription instances, auto-renewal settings, billing period dates,
 * `CREATE INDEX idx_subscriptions_expiration_reconcile ON subscriptions (status, current_period_end, grace_period_end);`  
   *Optimizes daily background cron jobs checking for expired subscriptions and grace period transitions.*
 
+#### Checkout expiration
+`POST /api/v1/payments/checkout` is the implemented writer for one transition into `EXPIRED`. Inside that checkout transaction, after the caller's nonterminal row is locked with `FOR UPDATE`, the update sets `status = 'EXPIRED'` and `ended_at` to one application `now` only when every condition holds:
+
+* `status` is `ACTIVE`, `PAST_DUE`, or `GRACE_PERIOD`
+* `current_period_end <= now`
+* `grace_period_end IS NULL` or `grace_period_end <= now`
+
+Those conditions are repeated in the `UPDATE` `WHERE` clause, including `user_id`. `current_period_start`, `current_period_end`, `grace_period_end`, provider identifiers, `canceled_at`, and `auto_renew` stay unchanged. Sequelize still updates `updated_at`. `CANCELED` and an existing `EXPIRED` row are not updated. A later attempt does not move `ended_at`. `EXPIRED` is outside `uq_subscriptions_single_active_per_user`, so a successfully expired row no longer occupies that index. The payment insert commits in the same transaction, before the Razorpay call. A later provider rejection or unknown outcome does not restore the previous status. An idempotent replay does not run this update. Cancellation, `GET /subscriptions/me`, and entitlement reads do not run it. No reconciliation worker is implemented. The index above is unchanged.
+
 ---
 
 ## 17. Entitlements & Usage Tracking
@@ -1275,11 +1284,11 @@ Enforces webhook idempotency across asynchronous payment notifications. Duplicat
 ```
 
 ### State Definitions:
-1. **`ACTIVE`:** Paid billing period is current. All Premium entitlements are active.
-2. **`CANCELED`:** User disabled auto-renew through `POST /api/v1/subscriptions/cancel`. That route sets `status = CANCELED`, `auto_renew = false`, and `canceled_at`. It leaves `ended_at` null. Premium entitlements **remain active** only while `current_period_end` is still in the future. A future `grace_period_end` does not extend a canceled subscription. `PAST_DUE` and `GRACE_PERIOD` are not canceled by that route.
-3. **`PAST_DUE`:** Payment provider reported an initial recurring payment failure. Retry attempts are in progress.
-4. **`GRACE_PERIOD`:** Billing cycle reached `current_period_end` after failed renewal. User receives a **24-hour grace window** with full Premium entitlements.
-5. **`EXPIRED`:** Grace period concluded without payment recovery. User is downgraded to Free plan limits. Historical subscription record remains preserved.
+1. **`ACTIVE`:** Paid billing period is current. All Premium entitlements are active while `current_period_end` or `grace_period_end` is still ahead. Checkout can expire an `ACTIVE` row when the section 16.4 period and grace conditions both hold. A future `grace_period_end` keeps it `ACTIVE`.
+2. **`CANCELED`:** User disabled auto-renew through `POST /api/v1/subscriptions/cancel`. That route sets `status = CANCELED`, `auto_renew = false`, and `canceled_at`. It leaves `ended_at` null. Premium entitlements **remain active** only while `current_period_end` is still in the future. A future `grace_period_end` does not extend a canceled subscription. `PAST_DUE` and `GRACE_PERIOD` are not canceled by that route. Checkout does not move a `CANCELED` row to `EXPIRED`, including a lapsed row whose `grace_period_end` is still in the future. An `ACTIVE` row whose period has elapsed and whose grace is still in the future is still canceled in place, and `ended_at` stays null.
+3. **`PAST_DUE`:** Payment provider reported an initial recurring payment failure. Retry attempts are in progress. Checkout can expire this status when the period and grace conditions in section 16.4 both hold. Assigning `PAST_DUE` from a webhook is not implemented.
+4. **`GRACE_PERIOD`:** Billing cycle reached `current_period_end` after failed renewal. User receives a **24-hour grace window** with full Premium entitlements while `grace_period_end` is still ahead. Checkout can expire this status when `current_period_end <= now` and `grace_period_end` is null or `grace_period_end <= now`. Assigning the grace window is not implemented.
+5. **`EXPIRED`:** The subscription no longer grants Premium. The historical row remains. Checkout sets this status from `ACTIVE`, `PAST_DUE`, or `GRACE_PERIOD` when `current_period_end <= now` and `grace_period_end` is null or `grace_period_end <= now`, and sets `ended_at` to that same application `now`. Webhook-driven grace expiry and the background reconciliation job are not implemented. The diagram's activation, renewal-failure, grace-assignment, and payment-recovery arrows are not implemented.
 
 ### Plan Switching Mechanics (Monthly $\leftrightarrow$ Yearly):
 * Plan switching is not implemented. When it is, the previous subscription record transitions to `EXPIRED` (or `CANCELED` with `ended_at = CURRENT_TIMESTAMP`), and a new subscription record is inserted immediately inside a managed transaction. That transition is separate from user cancellation. User cancellation does not set `ended_at`.

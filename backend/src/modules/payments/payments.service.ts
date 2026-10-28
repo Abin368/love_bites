@@ -5,6 +5,7 @@ import { Payment } from '../../database/models/payment.model';
 import { PaymentProviderRejectedError } from '../../integrations/payment/payment.interface';
 import { razorpayOrderProvider, verificationNotConfigured } from '../../integrations/payment/razorpay.provider';
 import {
+  expireElapsedNonterminalSubscription,
   findInPeriodCanceledSubscription,
   findQualifyingPremiumSubscription,
   lockNonterminalSubscription
@@ -131,8 +132,10 @@ async function openCheckout(input: CheckoutInput): Promise<OpenCheckout> {
 
       const billingInterval = checkoutBillingInterval(plan);
       await lockNonterminalSubscription(input.userId, transaction);
-      await findInPeriodCanceledSubscription(input.userId, new Date(), transaction);
-      const qualifying = await findQualifyingPremiumSubscription(input.userId, transaction);
+      const now = new Date();
+      await expireElapsedNonterminalSubscription(input.userId, now, transaction);
+      await findInPeriodCanceledSubscription(input.userId, now, transaction);
+      const qualifying = await findQualifyingPremiumSubscription(input.userId, transaction, now);
       if (qualifying) {
         throw premiumAlreadyActive();
       }
