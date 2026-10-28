@@ -3,6 +3,7 @@ import { sequelize } from '../../config/database';
 
 export type PaymentStatus = 'INITIATED' | 'AUTHORIZED' | 'CAPTURED' | 'FAILED' | 'REFUNDED';
 export type PaymentType = 'SUBSCRIPTION_INITIAL' | 'SUBSCRIPTION_RECURRING' | 'CREDIT_PURCHASE';
+export type PaymentBillingInterval = 'MONTH' | 'YEAR';
 
 export interface PaymentAttributes {
   id: string;
@@ -14,6 +15,7 @@ export interface PaymentAttributes {
   providerOrderId: string | null;
   amountInCents: number;
   currency: string;
+  billingInterval: PaymentBillingInterval | null;
   status: PaymentStatus;
   paymentType: PaymentType;
   idempotencyKey: string | null;
@@ -34,6 +36,7 @@ export type PaymentCreationAttributes = Optional<
   | 'providerPaymentId'
   | 'providerOrderId'
   | 'currency'
+  | 'billingInterval'
   | 'status'
   | 'idempotencyKey'
   | 'rawPayload'
@@ -53,6 +56,7 @@ export class Payment extends Model<PaymentAttributes, PaymentCreationAttributes>
   declare providerOrderId: string | null;
   declare amountInCents: number;
   declare currency: string;
+  declare billingInterval: PaymentBillingInterval | null;
   declare status: PaymentStatus;
   declare paymentType: PaymentType;
   declare idempotencyKey: string | null;
@@ -104,6 +108,10 @@ Payment.init(
       type: DataTypes.STRING(3),
       allowNull: false,
       defaultValue: 'INR'
+    },
+    billingInterval: {
+      type: DataTypes.STRING(20),
+      allowNull: true
     },
     status: {
       type: DataTypes.STRING(30),

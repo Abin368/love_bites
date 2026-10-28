@@ -21,7 +21,12 @@ import { logger } from '../../utils/logger';
 import * as paymentsDataAccess from './payments.data-access';
 import type { CheckoutInput, CheckoutResult, VerifyPaymentInput } from './payments.types';
 
-const PREMIUM_PLAN_CODES = new Set(['PREMIUM_MONTHLY', 'PREMIUM_YEARLY']);
+const PREMIUM_BILLING_INTERVAL = {
+  PREMIUM_MONTHLY: 'MONTH',
+  PREMIUM_YEARLY: 'YEAR'
+} as const;
+
+const PREMIUM_PLAN_CODES = new Set<string>(Object.keys(PREMIUM_BILLING_INTERVAL));
 
 type OpenCheckout =
   | { kind: 'create'; payment: Payment; plan: Plan }
@@ -43,6 +48,12 @@ function planCurrencyRejected(): ValidationError {
 function planPriceRejected(): ValidationError {
   return new ValidationError('Validation failed', [
     { field: 'planId', message: 'Plan price must be a positive integer number of cents.' }
+  ]);
+}
+
+function planIntervalRejected(): ValidationError {
+  return new ValidationError('Validation failed', [
+    { field: 'planId', message: 'Plan billing interval does not match the plan code.' }
   ]);
 }
 
@@ -71,7 +82,7 @@ function outcomeUnknown(): InternalServerError {
   );
 }
 
-function assertEligible(plan: Plan): void {
+function checkoutBillingInterval(plan: Plan): 'MONTH' | 'YEAR' {
   if (!PREMIUM_PLAN_CODES.has(plan.code) || !plan.isActive) {
     throw planUnavailable();
   }
@@ -81,6 +92,12 @@ function assertEligible(plan: Plan): void {
   if (!Number.isInteger(plan.priceInCents) || plan.priceInCents <= 0) {
     throw planPriceRejected();
   }
+
+  const expected = PREMIUM_BILLING_INTERVAL[plan.code as keyof typeof PREMIUM_BILLING_INTERVAL];
+  if (!expected || plan.billingInterval !== expected) {
+    throw planIntervalRejected();
+  }
+  return expected;
 }
 
 function resolveExisting(plan: Plan | null, payment: Payment): OpenCheckout {
@@ -112,7 +129,7 @@ async function openCheckout(input: CheckoutInput): Promise<OpenCheckout> {
         throw planNotFound();
       }
 
-      assertEligible(plan);
+      const billingInterval = checkoutBillingInterval(plan);
       await lockNonterminalSubscription(input.userId, transaction);
       await findInPeriodCanceledSubscription(input.userId, new Date(), transaction);
       const qualifying = await findQualifyingPremiumSubscription(input.userId, transaction);
@@ -126,7 +143,8 @@ async function openCheckout(input: CheckoutInput): Promise<OpenCheckout> {
           planId: plan.id,
           idempotencyKey: input.idempotencyKey,
           amountInCents: plan.priceInCents,
-          currency: plan.currency
+          currency: plan.currency,
+          billingInterval
         },
         transaction
       );

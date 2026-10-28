@@ -1179,6 +1179,7 @@ Stores transactional payment records, invoices, amounts, currency, and provider 
 | `provider_order_id`| `VARCHAR(255)` | `YES` | `NULL` | Gateway order ID (e.g., `order_xxx`). |
 | `amount_in_cents`| `INTEGER` | `NO` | — | Payment amount in smallest currency unit. |
 | `currency` | `VARCHAR(3)` | `NO` | `'INR'` | ISO 4217 currency code. |
+| `billing_interval` | `VARCHAR(20)` | `YES` | `NULL` | Checkout snapshot of the locked plan interval. Non-null values are `'MONTH'` and `'YEAR'`. Null on payments created before this column and on rows that do not snapshot an interval. |
 | `status` | `VARCHAR(30)` | `NO` | `'INITIATED'` | Status: `'INITIATED'`, `'AUTHORIZED'`, `'CAPTURED'`, `'FAILED'`, `'REFUNDED'`. |
 | `payment_type` | `VARCHAR(30)` | `NO` | — | Type: `'SUBSCRIPTION_INITIAL'`, `'SUBSCRIPTION_RECURRING'`, `'CREDIT_PURCHASE'`. |
 | `idempotency_key` | `VARCHAR(255)` | `YES` | `NULL` | Checkout `Idempotency-Key`, stored lowercase. Null on existing rows and on payment types that do not use a key. |
@@ -1200,6 +1201,7 @@ Stores transactional payment records, invoices, amounts, currency, and provider 
 * `CONSTRAINT chk_payments_status CHECK (status IN ('INITIATED', 'AUTHORIZED', 'CAPTURED', 'FAILED', 'REFUNDED'))`
 * `CONSTRAINT chk_payments_type CHECK (payment_type IN ('SUBSCRIPTION_INITIAL', 'SUBSCRIPTION_RECURRING', 'CREDIT_PURCHASE'))`
 * `CONSTRAINT chk_payments_amount CHECK (amount_in_cents > 0)`
+* `CONSTRAINT chk_payments_billing_interval CHECK (billing_interval IS NULL OR billing_interval IN ('MONTH', 'YEAR'))`
 
 #### Indexes
 * `CREATE UNIQUE INDEX uq_payments_provider_payment_id ON payments (provider, provider_payment_id) WHERE provider_payment_id IS NOT NULL;`  
@@ -1211,6 +1213,8 @@ Stores transactional payment records, invoices, amounts, currency, and provider 
 * `CREATE INDEX idx_payments_user_history ON payments (user_id, created_at DESC);`
 
 Migration `20261027183033-add-checkout-columns-to-payments.js` adds `plan_id` and `idempotency_key`, adds `fk_payments_plan`, and replaces `idx_payments_order_lookup`. Before creating `uq_payments_provider_order_id` it selects duplicate non-null `provider_order_id` values. If any exist it throws and does not rewrite or delete ledger rows. `down` drops the two new unique indexes, restores `idx_payments_order_lookup`, and removes the foreign key and both columns.
+
+Migration `20261028154500-add-billing-interval-to-payments.js` adds nullable `billing_interval`. `chk_payments_billing_interval` allows `NULL`, `'MONTH'`, or `'YEAR'`. Existing payment rows stay valid with `NULL`. Checkout copies `'MONTH'` from a locked `PREMIUM_MONTHLY` plan and `'YEAR'` from a locked `PREMIUM_YEARLY` plan in the same insert as the payment. A later change to `plans.billing_interval` does not rewrite that snapshot. `down` drops the check constraint and the column. `plans` has no additional constraint tying `code` to `billing_interval`. `chk_plans_interval` still allows `'NONE'`, `'MONTH'`, and `'YEAR'` for every plan code.
 
 ---
 
@@ -1304,6 +1308,7 @@ Enforces webhook idempotency across asynchronous payment notifications. Duplicat
 | `user_credit_balances`| `chk_user_credit_balances_non_negative`| CHECK | `balance >= 0` |
 | `credit_transactions`| `chk_credit_transactions_delta_nonzero`| CHECK | `delta != 0` |
 | `payments` | `chk_payments_amount` | CHECK | `amount_in_cents > 0` |
+| `payments` | `chk_payments_billing_interval` | CHECK | `billing_interval IS NULL OR billing_interval IN ('MONTH', 'YEAR')` |
 | `plan_price_changes` | `chk_plan_price_changes_prices` | CHECK | `old_price_in_cents >= 0 AND new_price_in_cents >= 0` |
 | `plan_price_changes` | `chk_plan_price_changes_new_currency` | CHECK | `new_currency = 'INR'` |
 | `plan_price_changes` | `chk_plan_price_changes_action` | CHECK | `action = 'PLAN_PRICE_CHANGED'` |

@@ -59,11 +59,13 @@ async function createPlan(input: {
   priceInCents: number;
   currency?: string;
   isActive?: boolean;
+  billingInterval?: 'NONE' | 'MONTH' | 'YEAR';
 }): Promise<Plan> {
   return Plan.create({
     code: input.code,
     name: input.code,
-    billingInterval: input.code === 'FREE' ? 'NONE' : input.code === 'PREMIUM_YEARLY' ? 'YEAR' : 'MONTH',
+    billingInterval:
+      input.billingInterval ?? (input.code === 'FREE' ? 'NONE' : input.code === 'PREMIUM_YEARLY' ? 'YEAR' : 'MONTH'),
     priceInCents: input.priceInCents,
     currency: input.currency ?? 'INR',
     isActive: input.isActive ?? true,
@@ -268,6 +270,7 @@ describe('POST /api/v1/payments/checkout', () => {
       providerPaymentId: null,
       amountInCents: 399900,
       currency: 'INR',
+      billingInterval: 'YEAR',
       status: 'INITIATED',
       paymentType: 'SUBSCRIPTION_INITIAL'
     });
@@ -615,6 +618,120 @@ describe('POST /api/v1/payments/checkout', () => {
 
     expect(legacy.planId).toBeNull();
     expect(legacy.idempotencyKey).toBeNull();
+    expect(legacy.billingInterval).toBeNull();
+    await legacy.reload();
+    expect(legacy.billingInterval).toBeNull();
     expect(secondLegacy.providerOrderId).toBeNull();
+
+    await expect(
+      Payment.create({
+        userId: user.id,
+        amountInCents: 100,
+        currency: 'INR',
+        paymentType: 'CREDIT_PURCHASE',
+        billingInterval: 'NONE' as unknown as Payment['billingInterval'],
+        ...timestamps()
+      })
+    ).rejects.toThrow(/chk_payments_billing_interval/);
+  });
+
+  it('stores MONTH for monthly Premium checkout', async () => {
+    const user = await createUser();
+    const plan = await createPlan({ code: 'PREMIUM_MONTHLY', priceInCents: 49900, billingInterval: 'MONTH' });
+    stubOrder('order_month_1');
+
+    const response = await postCheckout({ token: tokenFor(user.id, 'USER'), planId: plan.id, key: randomUUID() });
+
+    expect(response.status).toBe(200);
+    const payment = await Payment.findByPk(response.body.data.paymentId);
+    expect(payment?.billingInterval).toBe('MONTH');
+    expect(payment?.amountInCents).toBe(49900);
+    expect(payment?.currency).toBe('INR');
+  });
+
+  it('stores YEAR for yearly Premium checkout', async () => {
+    const user = await createUser();
+    const plan = await createPlan({ code: 'PREMIUM_YEARLY', priceInCents: 399900, billingInterval: 'YEAR' });
+    stubOrder('order_year_1');
+
+    const response = await postCheckout({ token: tokenFor(user.id, 'USER'), planId: plan.id, key: randomUUID() });
+
+    expect(response.status).toBe(200);
+    const payment = await Payment.findByPk(response.body.data.paymentId);
+    expect(payment?.billingInterval).toBe('YEAR');
+    expect(payment?.amountInCents).toBe(399900);
+    expect(payment?.currency).toBe('INR');
+  });
+
+  it('rejects a monthly plan whose interval is YEAR before inserting a payment', async () => {
+    const user = await createUser();
+    const plan = await createPlan({ code: 'PREMIUM_MONTHLY', priceInCents: 49900, billingInterval: 'YEAR' });
+
+    const response = await postCheckout({ token: tokenFor(user.id, 'USER'), planId: plan.id, key: randomUUID() });
+
+    expect(response.status).toBe(400);
+    expect(response.body.error.code).toBe('VALIDATION_ERROR');
+    expect(response.body.error.details).toEqual([
+      { field: 'planId', message: 'Plan billing interval does not match the plan code.' }
+    ]);
+    expect(createOrder).not.toHaveBeenCalled();
+    expect(await Payment.count()).toBe(0);
+    expect(await Subscription.count()).toBe(0);
+  });
+
+  it('rejects a yearly plan whose interval is MONTH before inserting a payment', async () => {
+    const user = await createUser();
+    const plan = await createPlan({ code: 'PREMIUM_YEARLY', priceInCents: 399900, billingInterval: 'MONTH' });
+
+    const response = await postCheckout({ token: tokenFor(user.id, 'USER'), planId: plan.id, key: randomUUID() });
+
+    expect(response.status).toBe(400);
+    expect(response.body.error.code).toBe('VALIDATION_ERROR');
+    expect(response.body.error.details).toEqual([
+      { field: 'planId', message: 'Plan billing interval does not match the plan code.' }
+    ]);
+    expect(createOrder).not.toHaveBeenCalled();
+    expect(await Payment.count()).toBe(0);
+    expect(await Subscription.count()).toBe(0);
+  });
+
+  it('rejects a Premium plan with an unsupported interval before inserting a payment', async () => {
+    const user = await createUser();
+    const token = tokenFor(user.id, 'USER');
+    const monthly = await createPlan({ code: 'PREMIUM_MONTHLY', priceInCents: 49900, billingInterval: 'NONE' });
+    const yearly = await createPlan({ code: 'PREMIUM_YEARLY', priceInCents: 399900, billingInterval: 'NONE' });
+
+    const monthlyResponse = await postCheckout({ token, planId: monthly.id, key: randomUUID() });
+    const yearlyResponse = await postCheckout({ token, planId: yearly.id, key: randomUUID() });
+
+    expect(monthlyResponse.status).toBe(400);
+    expect(monthlyResponse.body.error.details[0].message).toBe('Plan billing interval does not match the plan code.');
+    expect(yearlyResponse.status).toBe(400);
+    expect(yearlyResponse.body.error.details[0].message).toBe('Plan billing interval does not match the plan code.');
+    expect(createOrder).not.toHaveBeenCalled();
+    expect(await Payment.count()).toBe(0);
+    expect(await Subscription.count()).toBe(0);
+  });
+
+  it('keeps the payment billing interval after the plan interval changes', async () => {
+    const user = await createUser();
+    const plan = await createPlan({ code: 'PREMIUM_MONTHLY', priceInCents: 49900 });
+    const key = randomUUID();
+    stubOrder('order_interval_snapshot');
+
+    const checkout = await postCheckout({ token: tokenFor(user.id, 'USER'), planId: plan.id, key });
+    expect(checkout.status).toBe(200);
+    await plan.update({ billingInterval: 'YEAR' });
+
+    const replay = await postCheckout({ token: tokenFor(user.id, 'USER'), planId: plan.id, key });
+    const payment = await Payment.findByPk(checkout.body.data.paymentId);
+    await plan.reload();
+
+    expect(replay.status).toBe(200);
+    expect(replay.body.data).toEqual(checkout.body.data);
+    expect(payment?.billingInterval).toBe('MONTH');
+    expect(plan.billingInterval).toBe('YEAR');
+    expect(createOrder).toHaveBeenCalledTimes(1);
+    expect(await Subscription.count()).toBe(0);
   });
 });

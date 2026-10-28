@@ -608,7 +608,7 @@ The numbered steps below are still the planned catalog engine. This slice does n
 ## 13. Phase 9 — Payments and Razorpay
 
 ### 13.1 Objectives
-Implement the decoupled payment gateway provider abstraction, server-side Razorpay order generation, HMAC-SHA256 signature verification, and idempotent webhook processing. Order creation and signature verification are implemented. Webhooks, activation, renewal, refunds, and reconciliation are not.
+Implement the decoupled payment gateway provider abstraction, server-side Razorpay order generation, HMAC-SHA256 signature verification, and idempotent webhook processing. Order creation, the checkout billing-interval snapshot, and signature verification are implemented. Webhooks, activation, expiration, renewal, refunds, and reconciliation are not.
 
 ### 13.2 Payment Provider Abstraction
 Checkout initiation and Order signature verification are implemented. The interface does not fetch a payment or create a Razorpay Subscription:
@@ -621,11 +621,12 @@ Checkout initiation and Order signature verification are implemented. The interf
 ### 13.3 Implementation Steps
 1. **Checkout initiation (`POST /api/v1/payments/checkout`) — implemented:**
    * Authenticated `USER` only. Body is exactly `planId`. `Idempotency-Key` is a required UUID.
-   * The plan row is locked. The price and currency are copied from PostgreSQL. A client amount is `400 VALIDATION_ERROR`, not ignored.
-   * Eligible plans are active `PREMIUM_MONTHLY` or `PREMIUM_YEARLY`, currency `INR`, price an integer greater than zero.
+   * The plan row is locked. The price, currency, and billing interval are copied from PostgreSQL in the payment insert. A client amount is `400 VALIDATION_ERROR`, not ignored.
+   * Eligible plans are active `PREMIUM_MONTHLY` or `PREMIUM_YEARLY`, currency `INR`, price an integer greater than zero. `PREMIUM_MONTHLY` must be `MONTH` and `PREMIUM_YEARLY` must be `YEAR`. A mismatched, missing, or unsupported interval is `400 VALIDATION_ERROR` and does not insert a payment or call Razorpay.
    * Qualifying Premium access, including an in-period canceled subscription, is `409 ACTIVE_SUBSCRIPTION_EXISTS`.
-   * The payment is inserted as `INITIATED` and committed before the Razorpay call. Success stores `provider_order_id` and leaves the status `INITIATED`. No subscription row is created.
-   * The same user and key replays a stored order. An unresolved attempt does not create a second order. Migration `20261027183033-add-checkout-columns-to-payments.js`.
+   * The payment is inserted as `INITIATED` and committed before the Razorpay call. Success stores `provider_order_id` and leaves the status `INITIATED`. No subscription row is created. `billing_interval` on that row is the locked plan snapshot. A later plan-interval change does not rewrite it.
+   * The same user and key replays a stored order. An unresolved attempt does not create a second order. Migration `20261027183033-add-checkout-columns-to-payments.js` adds `plan_id` and `idempotency_key`. Migration `20261028154500-add-billing-interval-to-payments.js` adds nullable `billing_interval`.
+   * Webhook processing, subscription activation, expiration, renewal, refunds, and reconciliation are not part of this checkout slice.
 Steps 3 through 5 are not implemented.
 
 2. **Client Verification Handshake (`POST /api/v1/payments/verify`) — implemented:**

@@ -1,7 +1,7 @@
 import { Op, Transaction, UniqueConstraintError } from 'sequelize';
 import { sequelize } from '../../config/database';
 import '../../database/associations';
-import { Payment } from '../../database/models/payment.model';
+import { Payment, type PaymentBillingInterval } from '../../database/models/payment.model';
 import { Plan } from '../../database/models/plan.model';
 
 const IDEMPOTENCY_INDEX = 'uq_payments_user_idempotency_key';
@@ -65,6 +65,7 @@ export async function insertInitiatedCheckout(
     idempotencyKey: string;
     amountInCents: number;
     currency: string;
+    billingInterval: PaymentBillingInterval;
   },
   transaction: Transaction
 ): Promise<Payment> {
@@ -79,6 +80,7 @@ export async function insertInitiatedCheckout(
       providerPaymentId: null,
       amountInCents: input.amountInCents,
       currency: input.currency,
+      billingInterval: input.billingInterval,
       status: 'INITIATED',
       paymentType: 'SUBSCRIPTION_INITIAL',
       idempotencyKey: input.idempotencyKey,
