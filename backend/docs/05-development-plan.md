@@ -608,13 +608,13 @@ The numbered steps below are still the planned catalog engine. This slice does n
 ## 13. Phase 9 — Payments and Razorpay
 
 ### 13.1 Objectives
-Implement the decoupled payment gateway provider abstraction, server-side Razorpay order generation, HMAC-SHA256 signature verification, and idempotent webhook processing. Order creation, the checkout billing-interval snapshot, signature verification, checkout expiration of an elapsed nonterminal subscription, and `payment.captured` activation are implemented. Renewal, refunds, grace assignment, and reconciliation are not.
+Implement the decoupled payment gateway provider abstraction, server-side Razorpay order generation, HMAC-SHA256 signature verification, and idempotent webhook processing. Order creation, the checkout billing-interval snapshot, signature verification, checkout expiration of an elapsed nonterminal subscription, `payment.captured` activation, and internal Order-ID backfill are implemented. Renewal, refunds, grace assignment, and the subscription reconciliation worker are not.
 
 ### 13.2 Payment Provider Abstraction
-Checkout initiation and Order signature verification are implemented. The interface does not fetch a payment or create a Razorpay Subscription:
+Checkout initiation, Order signature verification, and a read-only Order receipt lookup are implemented. The interface does not fetch a payment or create a Razorpay Subscription:
 
-* `src/integrations/payment/payment.interface.ts` defines `PaymentOrderProvider` with `isConfigured`, `isVerificationConfigured`, `publicKeyId`, `createOrder`, and `verifyOrderSignature`.
-* `src/integrations/payment/razorpay.provider.ts` uses `razorpay@2.9.8` for `orders.create`. `createOrder` sends the snapshotted paise amount, `INR`, a receipt equal to the payment UUID, and `notes.paymentId`.
+* `src/integrations/payment/payment.interface.ts` defines `PaymentOrderProvider` with `isConfigured`, `isVerificationConfigured`, `publicKeyId`, `createOrder`, `listOrdersByReceipt`, and `verifyOrderSignature`.
+* `src/integrations/payment/razorpay.provider.ts` uses `razorpay@2.9.8` for `orders.create` and `orders.all`. `createOrder` sends the snapshotted paise amount, `INR`, a receipt equal to the payment UUID, and `notes.paymentId`. `listOrdersByReceipt` requests that receipt with `count` 2 and `skip` 0. A returned page that fills that count is incomplete and is not a unique match.
 * `verifyOrderSignature` computes HMAC-SHA256 locally with `RAZORPAY_KEY_SECRET` and compares it through `safeEqualHex`. It does not call Razorpay.
 * Provider subscription cancellation is not part of this interface. Webhook verification is a separate function, `verifyWebhookSignature`, and is not a Razorpay Subscription API.
 
@@ -627,8 +627,8 @@ Checkout initiation and Order signature verification are implemented. The interf
    * Qualifying Premium access, including an in-period canceled subscription, is `409 ACTIVE_SUBSCRIPTION_EXISTS`.
    * The payment is inserted as `INITIATED` and committed before the Razorpay call. The expiration update commits in that same transaction. A later provider rejection or unknown outcome does not restore the subscription. Success stores `provider_order_id` and leaves the payment status `INITIATED`. No subscription row is created. `billing_interval` on that row is the locked plan snapshot. A later plan-interval change does not rewrite it.
    * The same user and key replays a stored order. An unresolved attempt does not create a second order. Those idempotency returns happen before expiration and do not change the subscription. Migration `20261027183033-add-checkout-columns-to-payments.js` adds `plan_id` and `idempotency_key`. Migration `20261028154500-add-billing-interval-to-payments.js` adds nullable `billing_interval`.
-   * Renewal, refunds, grace assignment, and reconciliation are not part of this checkout slice. Webhook activation is step 3.
-Steps 4 and 5 are not implemented.
+   * Renewal, refunds, grace assignment, and the subscription reconciliation worker are not part of this checkout slice. Checkout does not call Order-ID backfill. Webhook activation is step 3.
+   * **Order-ID backfill — implemented as an internal function, not a route or job:** `backfillProviderOrderId` in `src/modules/payments/order-id-backfill.service.ts` may store `provider_order_id` for one eligible `INITIATED` payment. It does not change payment status, call `orders.create`, or grant Premium. A same-key checkout retry remains `409 IDEMPOTENCY_CONFLICT`. Ambiguous lookup results stay unresolved. Steps 4 and 5 are not implemented.
 
 2. **Client Verification Handshake (`POST /api/v1/payments/verify`) — implemented:**
    * Authenticated `USER` only. The body is exactly `razorpayPaymentId`, `razorpayOrderId`, and `razorpaySignature`.

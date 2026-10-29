@@ -15,11 +15,25 @@ export interface VerifyOrderSignatureInput {
   razorpaySignature: string;
 }
 
+export interface ListedProviderOrder {
+  providerOrderId: string;
+  receipt: string | null;
+  amountInCents: number | null;
+  currency: string | null;
+  notesPaymentId: string | null;
+}
+
+export type OrderReceiptLookup =
+  | { kind: 'complete'; orders: ListedProviderOrder[] }
+  | { kind: 'incomplete' }
+  | { kind: 'malformed' };
+
 export interface PaymentOrderProvider {
   isConfigured(): boolean;
   isVerificationConfigured(): boolean;
   publicKeyId(): string;
   createOrder(input: CreatePaymentOrderInput): Promise<CreatedPaymentOrder>;
+  listOrdersByReceipt(receipt: string): Promise<OrderReceiptLookup>;
   verifyOrderSignature(input: VerifyOrderSignatureInput): boolean;
 }
 

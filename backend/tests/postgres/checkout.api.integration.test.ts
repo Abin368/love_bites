@@ -442,7 +442,7 @@ describe('POST /api/v1/payments/checkout', () => {
     expect(unknown.status).toBe(500);
     expect(unknown.body.error.code).toBe('PAYMENT_OUTCOME_UNKNOWN');
     expect(unknown.body.error.message).toBe(
-      'The payment provider did not confirm a stored order. Retry with the same Idempotency-Key.'
+      'The payment provider did not confirm a stored order.'
     );
     expect(retry.status).toBe(409);
     expect(retry.body.error.code).toBe('IDEMPOTENCY_CONFLICT');

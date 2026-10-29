@@ -33,6 +33,10 @@ export async function lockPlanById(planId: string, transaction: Transaction): Pr
   });
 }
 
+export async function findPaymentById(paymentId: string): Promise<Payment | null> {
+  return Payment.findByPk(paymentId);
+}
+
 export async function findPaymentByUserProviderOrder(
   userId: string,
   providerOrderId: string

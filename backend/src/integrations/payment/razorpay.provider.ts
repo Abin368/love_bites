@@ -8,6 +8,8 @@ import {
   PaymentProviderRejectedError,
   type CreatedPaymentOrder,
   type CreatePaymentOrderInput,
+  type ListedProviderOrder,
+  type OrderReceiptLookup,
   type PaymentOrderProvider,
   type VerifyOrderSignatureInput
 } from './payment.interface';
@@ -15,6 +17,9 @@ import {
 const ORDER_REQUEST_TIMEOUT_MS = 15_000;
 const RECEIPT_MAX_LENGTH = 40;
 const NOTE_VALUE_MAX_LENGTH = 256;
+const ORDER_ID_MAX_LENGTH = 255;
+const CURRENCY_MAX_LENGTH = 3;
+export const ORDER_RECEIPT_LOOKUP_PAGE_SIZE = 2;
 
 interface RazorpayOrderClient {
   orders: {
@@ -24,6 +29,7 @@ interface RazorpayOrderClient {
       receipt: string;
       notes: Record<string, string>;
     }): Promise<{ id?: string }>;
+    all(params: { receipt: string; count: number; skip: number }): Promise<unknown>;
   };
 }
 
@@ -151,6 +157,110 @@ export async function createOrderWithClient(
   }
 }
 
+function readBoundedString(value: unknown, maxLength: number): string | null {
+  if (typeof value !== 'string' || value.length === 0 || value.length > maxLength) {
+    return null;
+  }
+  return value;
+}
+
+function readAmount(value: unknown): number | null {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0) {
+    return null;
+  }
+  return value;
+}
+
+function readNotesPaymentId(notes: unknown): string | null {
+  if (!notes || typeof notes !== 'object' || Array.isArray(notes)) {
+    return null;
+  }
+  if (!Object.prototype.hasOwnProperty.call(notes, 'paymentId')) {
+    return null;
+  }
+  return readBoundedString((notes as { paymentId?: unknown }).paymentId, NOTE_VALUE_MAX_LENGTH);
+}
+
+function readListedOrder(item: unknown): ListedProviderOrder | null {
+  if (!item || typeof item !== 'object' || Array.isArray(item)) {
+    return null;
+  }
+  const record = item as {
+    id?: unknown;
+    receipt?: unknown;
+    amount?: unknown;
+    currency?: unknown;
+    notes?: unknown;
+  };
+  const providerOrderId = readBoundedString(record.id, ORDER_ID_MAX_LENGTH);
+  if (!providerOrderId) {
+    return null;
+  }
+  return {
+    providerOrderId,
+    receipt: readBoundedString(record.receipt, RECEIPT_MAX_LENGTH),
+    amountInCents: readAmount(record.amount),
+    currency: readBoundedString(record.currency, CURRENCY_MAX_LENGTH),
+    notesPaymentId: readNotesPaymentId(record.notes)
+  };
+}
+
+export function interpretOrderReceiptPage(payload: unknown): OrderReceiptLookup {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    return { kind: 'malformed' };
+  }
+  const items = (payload as { items?: unknown }).items;
+  if (!Array.isArray(items)) {
+    return { kind: 'malformed' };
+  }
+  if (items.length >= ORDER_RECEIPT_LOOKUP_PAGE_SIZE) {
+    return { kind: 'incomplete' };
+  }
+  const count = (payload as { count?: unknown }).count;
+  if (typeof count !== 'number' || !Number.isInteger(count) || count !== items.length) {
+    return { kind: 'malformed' };
+  }
+  if (items.length === 0) {
+    return { kind: 'complete', orders: [] };
+  }
+
+  const order = readListedOrder(items[0]);
+  if (!order) {
+    return { kind: 'malformed' };
+  }
+  return { kind: 'complete', orders: [order] };
+}
+
+export async function listOrdersByReceiptWithClient(
+  client: RazorpayOrderClient,
+  receipt: string,
+  timeoutMs = ORDER_REQUEST_TIMEOUT_MS
+): Promise<OrderReceiptLookup> {
+  if (receipt.length < 1 || receipt.length > RECEIPT_MAX_LENGTH) {
+    throw new PaymentProviderRejectedError();
+  }
+
+  try {
+    const payload = await withTimeout(
+      client.orders.all({
+        receipt,
+        count: ORDER_RECEIPT_LOOKUP_PAGE_SIZE,
+        skip: 0
+      }),
+      timeoutMs
+    );
+    return interpretOrderReceiptPage(payload);
+  } catch (error) {
+    if (error instanceof PaymentProviderOutcomeUnknownError || error instanceof PaymentProviderRejectedError) {
+      throw error;
+    }
+    if (classifyRazorpayFailure(error) === 'rejected') {
+      throw new PaymentProviderRejectedError();
+    }
+    throw new PaymentProviderOutcomeUnknownError();
+  }
+}
+
 function razorpayClient(): RazorpayOrderClient {
   if (!env.RAZORPAY_KEY_ID || !env.RAZORPAY_KEY_SECRET) {
     throw providerNotConfigured();
@@ -179,6 +289,10 @@ export const razorpayOrderProvider: PaymentOrderProvider = {
 
   createOrder(input: CreatePaymentOrderInput): Promise<CreatedPaymentOrder> {
     return createOrderWithClient(razorpayClient(), input);
+  },
+
+  listOrdersByReceipt(receipt: string): Promise<OrderReceiptLookup> {
+    return listOrdersByReceiptWithClient(razorpayClient(), receipt);
   },
 
   verifyOrderSignature(input: VerifyOrderSignatureInput): boolean {

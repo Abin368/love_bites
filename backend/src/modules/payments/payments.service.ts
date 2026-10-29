@@ -76,7 +76,7 @@ function providerNotConfigured(): InternalServerError {
 
 function outcomeUnknown(): InternalServerError {
   return new InternalServerError(
-    'The payment provider did not confirm a stored order. Retry with the same Idempotency-Key.',
+    'The payment provider did not confirm a stored order.',
     [],
     'PAYMENT_OUTCOME_UNKNOWN',
     true
