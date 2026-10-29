@@ -48,6 +48,9 @@ function payment(overrides: Record<string, unknown> = {}) {
     providerOrderId: null,
     amountInCents: 49900,
     currency: 'INR',
+    userId: '6e6e0001-0000-4000-8000-0000000000bb',
+    planId: '6e6e0001-0000-4000-8000-000000000002',
+    billingInterval: 'MONTH',
     subscriptionId: null,
     providerPaymentId: null,
     paidAt: null,
@@ -110,6 +113,39 @@ describe('backfillProviderOrderId', () => {
     await expect(backfillProviderOrderId(paymentId)).resolves.toEqual({ outcome: 'ineligible' });
     expect(listOrders).not.toHaveBeenCalled();
     expect(assignOrder).not.toHaveBeenCalled();
+    expect(createOrder).not.toHaveBeenCalled();
+  });
+
+  it('does not look up a payment whose capture snapshot is incomplete', async () => {
+    const rows = [
+      payment({ userId: null }),
+      payment({ planId: null }),
+      payment({ billingInterval: null }),
+      payment({ billingInterval: 'NONE' })
+    ];
+
+    for (const row of rows) {
+      findPayment.mockResolvedValue(row);
+      await expect(backfillProviderOrderId(paymentId)).resolves.toEqual({ outcome: 'ineligible' });
+    }
+
+    expect(listOrders).not.toHaveBeenCalled();
+    expect(assignOrder).not.toHaveBeenCalled();
+    expect(createOrder).not.toHaveBeenCalled();
+  });
+
+  it('keeps a complete MONTH or YEAR snapshot eligible', async () => {
+    for (const billingInterval of ['MONTH', 'YEAR'] as const) {
+      findPayment.mockResolvedValue(payment({ billingInterval }));
+      listOrders.mockResolvedValueOnce({ kind: 'complete', orders: [matchingOrder()] });
+      await expect(backfillProviderOrderId(paymentId)).resolves.toEqual({
+        outcome: 'assigned',
+        providerOrderId: 'order_backfill_1'
+      });
+    }
+
+    expect(listOrders).toHaveBeenCalledTimes(2);
+    expect(assignOrder).toHaveBeenCalledTimes(2);
     expect(createOrder).not.toHaveBeenCalled();
   });
 
@@ -207,6 +243,16 @@ describe('backfillProviderOrderId', () => {
 
     assignOrder.mockRejectedValueOnce(new UniqueConstraintError({ message: 'duplicate order' }));
     await expect(backfillProviderOrderId(paymentId)).resolves.toEqual({ outcome: 'unchanged', reason: 'conflict' });
+    expect(createOrder).not.toHaveBeenCalled();
+  });
+
+  it('rethrows an unexpected database error instead of reporting a conflict', async () => {
+    findPayment.mockResolvedValue(payment());
+    listOrders.mockResolvedValue({ kind: 'complete', orders: [matchingOrder()] });
+    const failure = new Error('database connection failed');
+    assignOrder.mockRejectedValueOnce(failure);
+
+    await expect(backfillProviderOrderId(paymentId)).rejects.toBe(failure);
     expect(createOrder).not.toHaveBeenCalled();
   });
 });

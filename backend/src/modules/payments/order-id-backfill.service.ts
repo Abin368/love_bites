@@ -26,6 +26,14 @@ function providerNotConfigured(): InternalServerError {
   return new InternalServerError('Payment provider is not configured.', [], 'PAYMENT_NOT_CONFIGURED', true);
 }
 
+function isPresentId(value: string | null): boolean {
+  return typeof value === 'string' && value.length > 0;
+}
+
+function isCaptureBillingInterval(value: BackfillPayment['billingInterval']): value is 'MONTH' | 'YEAR' {
+  return value === 'MONTH' || value === 'YEAR';
+}
+
 function isBackfillCandidate(payment: BackfillPayment): boolean {
   return (
     payment.provider === 'RAZORPAY' &&
@@ -33,7 +41,10 @@ function isBackfillCandidate(payment: BackfillPayment): boolean {
     payment.status === 'INITIATED' &&
     Number.isInteger(payment.amountInCents) &&
     payment.amountInCents > 0 &&
-    payment.currency.length > 0
+    payment.currency.length > 0 &&
+    isPresentId(payment.userId) &&
+    isPresentId(payment.planId) &&
+    isCaptureBillingInterval(payment.billingInterval)
   );
 }
 

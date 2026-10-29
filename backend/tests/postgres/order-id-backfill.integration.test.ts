@@ -1,7 +1,12 @@
 import { createHmac, randomUUID } from 'crypto';
 import request from 'supertest';
 import { env } from '../../src/config/env';
-import { Payment, PaymentStatus, PaymentType } from '../../src/database/models/payment.model';
+import {
+  Payment,
+  PaymentBillingInterval,
+  PaymentStatus,
+  PaymentType
+} from '../../src/database/models/payment.model';
 import { Plan } from '../../src/database/models/plan.model';
 import { ProcessedWebhook } from '../../src/database/models/processed-webhook.model';
 import { Subscription } from '../../src/database/models/subscription.model';
@@ -94,12 +99,13 @@ async function createPlan(): Promise<Plan> {
 }
 
 async function createPayment(input: {
-  userId: string;
-  planId: string;
+  userId: string | null;
+  planId: string | null;
   providerOrderId?: string | null;
   status?: PaymentStatus;
   paymentType?: PaymentType;
   provider?: string;
+  billingInterval?: PaymentBillingInterval | null;
 }): Promise<Payment> {
   return Payment.create({
     userId: input.userId,
@@ -110,7 +116,7 @@ async function createPayment(input: {
     providerPaymentId: null,
     amountInCents: 49900,
     currency: 'INR',
-    billingInterval: 'MONTH',
+    billingInterval: input.billingInterval === undefined ? 'MONTH' : input.billingInterval,
     status: input.status ?? 'INITIATED',
     paymentType: input.paymentType ?? 'SUBSCRIPTION_INITIAL',
     idempotencyKey: randomUUID(),
@@ -209,6 +215,38 @@ describe('provider order id backfill', () => {
     expect(captured.get({ plain: true })).toEqual(capturedBefore);
     expect(failed.get({ plain: true })).toEqual(failedBefore);
     expect(assigned.get({ plain: true })).toEqual(assignedBefore);
+    expect(listOrders).not.toHaveBeenCalled();
+    expect(createOrder).not.toHaveBeenCalled();
+    expect(await Subscription.count()).toBe(0);
+  });
+
+  it('does not attach an order id when the capture snapshot is incomplete', async () => {
+    const user = await createUser();
+    const plan = await createPlan();
+    const missingUser = await createPayment({ userId: null, planId: plan.id });
+    const missingPlan = await createPayment({ userId: user.id, planId: null });
+    const missingInterval = await createPayment({
+      userId: user.id,
+      planId: plan.id,
+      billingInterval: null
+    });
+    const missingUserBefore = missingUser.get({ plain: true });
+    const missingPlanBefore = missingPlan.get({ plain: true });
+    const missingIntervalBefore = missingInterval.get({ plain: true });
+
+    await expect(backfillProviderOrderId(missingUser.id)).resolves.toEqual({ outcome: 'ineligible' });
+    await expect(backfillProviderOrderId(missingPlan.id)).resolves.toEqual({ outcome: 'ineligible' });
+    await expect(backfillProviderOrderId(missingInterval.id)).resolves.toEqual({ outcome: 'ineligible' });
+
+    await missingUser.reload();
+    await missingPlan.reload();
+    await missingInterval.reload();
+    expect(missingUser.get({ plain: true })).toEqual(missingUserBefore);
+    expect(missingPlan.get({ plain: true })).toEqual(missingPlanBefore);
+    expect(missingInterval.get({ plain: true })).toEqual(missingIntervalBefore);
+    expect(missingUser.providerOrderId).toBeNull();
+    expect(missingPlan.providerOrderId).toBeNull();
+    expect(missingInterval.providerOrderId).toBeNull();
     expect(listOrders).not.toHaveBeenCalled();
     expect(createOrder).not.toHaveBeenCalled();
     expect(await Subscription.count()).toBe(0);
