@@ -21,6 +21,23 @@ function invalidJson(): ValidationError {
   return new ValidationError('Invalid JSON payload structure.');
 }
 
+function invalidEventId(): ValidationError {
+  return new ValidationError('Webhook event id is invalid.');
+}
+
+const EVENT_ID_MAX_LENGTH = 255;
+
+function readWebhookEventId(value: string | undefined): string {
+  if (value === undefined) {
+    throw invalidEventId();
+  }
+  const eventId = value.trim();
+  if (eventId.length === 0 || eventId.length > EVENT_ID_MAX_LENGTH) {
+    throw invalidEventId();
+  }
+  return eventId;
+}
+
 export const receiveRazorpayWebhook = asyncHandler(async (req, res) => {
   const secret = env.RAZORPAY_WEBHOOK_SECRET;
   if (!secret) {
@@ -40,7 +57,8 @@ export const receiveRazorpayWebhook = asyncHandler(async (req, res) => {
     throw invalidJson();
   }
 
-  await processRazorpayWebhook(event);
+  const eventId = readWebhookEventId(req.get('X-Razorpay-Event-Id'));
+  await processRazorpayWebhook(event, eventId);
 
   res.status(200).json({
     success: true,

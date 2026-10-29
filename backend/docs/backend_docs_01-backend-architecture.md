@@ -652,7 +652,7 @@ Allow Request Execution
 ## 21. Payment Architecture
 
 ### Provider Abstraction Model
-Checkout uses a small Order provider. Signature verification is a local HMAC check. Provider cancellation and webhooks are not implemented.
+Checkout uses a small Order provider. Signature verification is a local HMAC check. Provider cancellation is not implemented. `POST /api/v1/webhooks/razorpay` is implemented for `payment.captured`.
 
 ```
 POST /api/v1/payments/checkout
@@ -691,10 +691,10 @@ safeEqualHex against the client signature
 `src/integrations/payment/payment.interface.ts` is the boundary. `src/integrations/payment/razorpay.provider.ts` is the only implementation. `verifyOrderSignature` does not construct the Razorpay client and does not call the network. Checkout tests replace the provider module and do not use live credentials. Verification tests build the HMAC locally.
 
 ### Webhook Source of Truth
-Webhook processing is not implemented. Checkout does not activate a subscription. Signature verification does not activate a subscription either. An Order id, a valid signature, or an `INITIATED` payment is not proof of capture. When webhooks exist, they are the source of truth for activation and renewal. The backend must not activate Premium from a frontend success callback. The documented webhook events are still Razorpay Subscription events. Checkout creates an Order, so that event mismatch remains unresolved.
+`POST /api/v1/webhooks/razorpay` activates Premium from a verified `payment.captured` event. The event id is the `X-Razorpay-Event-Id` header, not a field on the JSON body and not `payload.payment.entity.id`. Checkout does not activate a subscription. `POST /api/v1/payments/verify` does not activate a subscription either. An Order id, a valid signature, or an `INITIATED` payment is not proof of capture. The backend does not activate Premium from a frontend success callback. Checkout creates an Order, and this webhook is the activation path for that Order. Renewal, refunds, grace assignment, and reconciliation are not implemented.
 
 ### Subscription Lifecycle Rules
-* **Auto-Renew:** Enabled by default.
+* **Auto-Renew:** A subscription inserted by `payment.captured` is stored with `auto_renew = false`. Renewal is not implemented.
 * **Cancellation:** User retains Premium benefits until the end of the paid billing period.
 * **Payment Failure & Grace Period:**
   * Failing renewals enter a **24-hour grace period** during which Premium access remains active.
@@ -902,16 +902,7 @@ To prevent race conditions during concurrent requests (e.g., two users liking ea
 * **Unique Constraints:** Canonical match constraints prevent duplicate records.
 
 ### Webhook Idempotency
-Webhook processing is not implemented. `processed_webhooks` is schema only. The intended table is:
-
-```sql
-CREATE TABLE processed_webhooks (
-  event_id VARCHAR(255) PRIMARY KEY,
-  provider VARCHAR(50) NOT NULL,
-  processed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-);
-```
-Duplicate incoming webhook deliveries check this table and terminate immediately with a `200 OK` response if already logged.
+`POST /api/v1/webhooks/razorpay` stores the trimmed `X-Razorpay-Event-Id` header as `processed_webhooks.event_id` in the same transaction as the payment update and any subscription insert. A repeated header does not apply the capture again. A missing, empty, whitespace-only, or over-255-character header is rejected before any database write. The live columns are `event_id`, `provider`, `event_type`, `payload`, and `processed_at`. The stored payload is the minimized event record, not the raw provider body.
 
 ---
 
@@ -931,6 +922,7 @@ AWS_REGION=us-east-1
 AWS_S3_BUCKET_NAME=lovebite-private-photos
 RAZORPAY_KEY_ID=rzp_test_your_key_id
 RAZORPAY_KEY_SECRET=your_razorpay_key_secret
+RAZORPAY_WEBHOOK_SECRET=your_razorpay_webhook_secret
 ```
 
 `env.ts` validates `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, and `RAZORPAY_WEBHOOK_SECRET` as optional strings. Production boot requires all three. Development and test boot without them. Checkout then returns `500 PAYMENT_NOT_CONFIGURED` and inserts no payment. A missing webhook secret makes `POST /api/v1/webhooks/razorpay` return `500 WEBHOOK_NOT_CONFIGURED` and write nothing. That route verifies `payment.captured` only. Renewal, refunds, grace assignment, and reconciliation are not implemented.

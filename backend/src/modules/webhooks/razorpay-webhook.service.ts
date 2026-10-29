@@ -498,14 +498,8 @@ async function applyValidCapture(eventId: string, capture: ValidCapture): Promis
   });
 }
 
-export async function processRazorpayWebhook(body: unknown): Promise<void> {
+export async function processRazorpayWebhook(body: unknown, eventId: string): Promise<void> {
   if (!isRecord(body) || body.event !== 'payment.captured') {
-    return;
-  }
-
-  const eventId = readId(body.id);
-  if (!eventId) {
-    logger.warn('Razorpay webhook was not applied', { reason: 'EVENT_ID_INVALID' });
     return;
   }
 

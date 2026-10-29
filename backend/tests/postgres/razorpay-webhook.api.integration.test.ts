@@ -25,12 +25,19 @@ function sign(raw: string, secret = WEBHOOK_SECRET): string {
   return createHmac('sha256', secret).update(raw, 'utf8').digest('hex');
 }
 
-function postWebhook(raw: string, signature?: string | null) {
+function postWebhook(raw: string, signature?: string | null, eventId?: string | null) {
   const call = request(app).post('/api/v1/webhooks/razorpay').set('Content-Type', 'application/json');
   if (signature !== undefined && signature !== null) {
     call.set('X-Razorpay-Signature', signature);
   }
+  if (eventId !== undefined && eventId !== null) {
+    call.set('X-Razorpay-Event-Id', eventId);
+  }
   return call.send(raw);
+}
+
+function postEvent(raw: string, eventId: string) {
+  return postWebhook(raw, sign(raw), eventId);
 }
 
 async function createUser(): Promise<User> {
@@ -136,7 +143,6 @@ function captureBody(input: {
     entity.notes = input.notes;
   }
   return JSON.stringify({
-    id: input.eventId ?? 'evt_test_1',
     event: input.event ?? 'payment.captured',
     payload: input.omitEntity ? {} : { payment: { entity } }
   });
@@ -160,11 +166,11 @@ describe('POST /api/v1/webhooks/razorpay', () => {
     const plan = await createPlan();
     const payment = await createPayment({ userId: user.id, planId: plan.id, providerOrderId: 'order_irrelevant' });
     const before = payment.get({ plain: true });
-    const authorized = JSON.stringify({ id: 'evt_authorized', event: 'payment.authorized', payload: { payment: { entity: { id: 'pay_x' } } } });
-    const paid = JSON.stringify({ id: 'evt_paid', event: 'order.paid' });
+    const authorized = JSON.stringify({ event: 'payment.authorized', payload: { payment: { entity: { id: 'pay_x' } } } });
+    const paid = JSON.stringify({ event: 'order.paid' });
 
-    const upper = await postWebhook(authorized, sign(authorized).toUpperCase());
-    const lower = await postWebhook(paid, sign(paid));
+    const upper = await postWebhook(authorized, sign(authorized).toUpperCase(), 'evt_authorized');
+    const lower = await postWebhook(paid, sign(paid), 'evt_paid');
 
     expect(upper.status).toBe(200);
     expect(upper.body).toEqual({ success: true, data: null, message: 'Webhook received.' });
@@ -250,7 +256,7 @@ describe('POST /api/v1/webhooks/razorpay', () => {
       extra: { email: 'person@example.com', contact: '+919999999999', card: { last4: '4242' } }
     });
 
-    const response = await postWebhook(raw, sign(raw));
+    const response = await postEvent(raw, 'evt_activate');
 
     expect(response.status).toBe(200);
     await payment.reload();
@@ -303,7 +309,7 @@ describe('POST /api/v1/webhooks/razorpay', () => {
       amount: 399900
     });
 
-    const response = await postWebhook(raw, sign(raw));
+    const response = await postEvent(raw, 'evt_year');
 
     expect(response.status).toBe(200);
     const subscription = await Subscription.findOne({ where: { userId: user.id } });
@@ -330,7 +336,7 @@ describe('POST /api/v1/webhooks/razorpay', () => {
     const before = payment.get({ plain: true });
     const raw = captureBody({ eventId: `evt_${reason}`, orderId: 'order_bad', paymentId: 'pay_bad', ...override });
 
-    const response = await postWebhook(raw, sign(raw));
+    const response = await postEvent(raw, `evt_${reason}`);
 
     expect(response.status).toBe(200);
     await payment.reload();
@@ -379,7 +385,7 @@ describe('POST /api/v1/webhooks/razorpay', () => {
           orderId: payment.providerOrderId ?? '',
           paymentId: `pay_snapshot_${index}`
         });
-        return postWebhook(raw, sign(raw));
+        return postEvent(raw, `evt_snapshot_${index}`);
       })
     );
 
@@ -407,7 +413,7 @@ describe('POST /api/v1/webhooks/razorpay', () => {
       notes: { paymentId: randomUUID() }
     });
 
-    const response = await postWebhook(raw, sign(raw));
+    const response = await postEvent(raw, 'evt_note');
 
     expect(response.status).toBe(200);
     await payment.reload();
@@ -419,7 +425,7 @@ describe('POST /api/v1/webhooks/razorpay', () => {
   it('returns non-2xx for an unknown order and does not record the event', async () => {
     const raw = captureBody({ eventId: 'evt_unknown', orderId: 'order_missing', paymentId: 'pay_missing' });
 
-    const response = await postWebhook(raw, sign(raw));
+    const response = await postEvent(raw, 'evt_unknown');
 
     expect(response.status).toBe(500);
     expect(response.body.error.code).toBe('WEBHOOK_PROCESSING_FAILED');
@@ -435,12 +441,12 @@ describe('POST /api/v1/webhooks/razorpay', () => {
     const payment = await createPayment({ userId: user.id, planId: plan.id, providerOrderId: 'order_same' });
     const raw = captureBody({ eventId: 'evt_same', orderId: 'order_same', paymentId: 'pay_same' });
 
-    const first = await postWebhook(raw, sign(raw));
+    const first = await postEvent(raw, 'evt_same');
     const created = await Subscription.findOne({ where: { userId: user.id } });
     await payment.reload();
     const paidAt = payment.paidAt?.toISOString();
     const periodEnd = created?.currentPeriodEnd.toISOString();
-    const second = await postWebhook(raw, sign(raw));
+    const second = await postEvent(raw, 'evt_same');
 
     expect(first.status).toBe(200);
     expect(second.status).toBe(200);
@@ -458,14 +464,14 @@ describe('POST /api/v1/webhooks/razorpay', () => {
     const plan = await createPlan();
     const payment = await createPayment({ userId: user.id, planId: plan.id, providerOrderId: 'order_distinct' });
     const firstRaw = captureBody({ eventId: 'evt_distinct_1', orderId: 'order_distinct', paymentId: 'pay_distinct' });
-    await postWebhook(firstRaw, sign(firstRaw));
+    await postEvent(firstRaw, 'evt_distinct_1');
     const created = await Subscription.findOne({ where: { userId: user.id } });
     const periodEnd = created?.currentPeriodEnd.toISOString();
     await payment.reload();
     const paidAt = payment.paidAt?.toISOString();
     const secondRaw = captureBody({ eventId: 'evt_distinct_2', orderId: 'order_distinct', paymentId: 'pay_distinct' });
 
-    const response = await postWebhook(secondRaw, sign(secondRaw));
+    const response = await postEvent(secondRaw, 'evt_distinct_2');
 
     expect(response.status).toBe(200);
     await payment.reload();
@@ -506,8 +512,8 @@ describe('POST /api/v1/webhooks/razorpay', () => {
     const conflictRaw = captureBody({ eventId: 'evt_conflict_pay', orderId: 'order_other', paymentId: 'pay_held' });
     const failedRaw = captureBody({ eventId: 'evt_failed', orderId: 'order_failed', paymentId: 'pay_failed' });
 
-    const conflict = await postWebhook(conflictRaw, sign(conflictRaw));
-    const rejected = await postWebhook(failedRaw, sign(failedRaw));
+    const conflict = await postEvent(conflictRaw, 'evt_conflict_pay');
+    const rejected = await postEvent(failedRaw, 'evt_failed');
 
     expect(conflict.status).toBe(200);
     expect(rejected.status).toBe(200);
@@ -542,7 +548,7 @@ describe('POST /api/v1/webhooks/razorpay', () => {
     });
     const raw = captureBody({ eventId: 'evt_linked', orderId: 'order_linked', paymentId: 'pay_linked' });
 
-    const response = await postWebhook(raw, sign(raw));
+    const response = await postEvent(raw, 'evt_linked');
 
     expect(response.status).toBe(200);
     await payment.reload();
@@ -561,12 +567,12 @@ describe('POST /api/v1/webhooks/razorpay', () => {
     const first = await createPayment({ userId: user.id, planId: plan.id, providerOrderId: 'order_first' });
     const second = await createPayment({ userId: user.id, planId: plan.id, providerOrderId: 'order_second' });
     const firstRaw = captureBody({ eventId: 'evt_first', orderId: 'order_first', paymentId: 'pay_first' });
-    await postWebhook(firstRaw, sign(firstRaw));
+    await postEvent(firstRaw, 'evt_first');
     const subscription = await Subscription.findOne({ where: { userId: user.id } });
     const periodEnd = subscription?.currentPeriodEnd.toISOString();
     const secondRaw = captureBody({ eventId: 'evt_second', orderId: 'order_second', paymentId: 'pay_second' });
 
-    const response = await postWebhook(secondRaw, sign(secondRaw));
+    const response = await postEvent(secondRaw, 'evt_second');
 
     expect(response.status).toBe(200);
     await first.reload();
@@ -596,7 +602,7 @@ describe('POST /api/v1/webhooks/razorpay', () => {
     const payment = await createPayment({ userId: user.id, planId: plan.id, providerOrderId: 'order_elapsed' });
     const raw = captureBody({ eventId: 'evt_elapsed', orderId: 'order_elapsed', paymentId: 'pay_elapsed' });
 
-    const response = await postWebhook(raw, sign(raw));
+    const response = await postEvent(raw, 'evt_elapsed');
 
     expect(response.status).toBe(200);
     await elapsed.reload();
@@ -640,8 +646,8 @@ describe('POST /api/v1/webhooks/razorpay', () => {
 
     const graceRaw = captureBody({ eventId: 'evt_grace', orderId: 'order_grace', paymentId: 'pay_grace' });
     const canceledRaw = captureBody({ eventId: 'evt_canceled', orderId: 'order_canceled', paymentId: 'pay_canceled' });
-    const graceResponse = await postWebhook(graceRaw, sign(graceRaw));
-    const canceledResponse = await postWebhook(canceledRaw, sign(canceledRaw));
+    const graceResponse = await postEvent(graceRaw, 'evt_grace');
+    const canceledResponse = await postEvent(canceledRaw, 'evt_canceled');
 
     expect(graceResponse.status).toBe(200);
     expect(canceledResponse.status).toBe(200);
@@ -683,7 +689,7 @@ describe('POST /api/v1/webhooks/razorpay', () => {
 
     try {
       const raw = captureBody({ eventId: 'evt_rollback', orderId: 'order_rollback', paymentId: 'pay_rollback' });
-      const response = await postWebhook(raw, sign(raw));
+      const response = await postEvent(raw, 'evt_rollback');
 
       expect(response.status).toBeGreaterThanOrEqual(500);
       expect(JSON.stringify(response.body)).not.toContain('forced webhook failure');
@@ -706,7 +712,7 @@ describe('POST /api/v1/webhooks/razorpay', () => {
     await createPayment({ userId: user.id, planId: plan.id, providerOrderId: 'order_concurrent' });
     const raw = captureBody({ eventId: 'evt_concurrent', orderId: 'order_concurrent', paymentId: 'pay_concurrent' });
 
-    const [first, second] = await Promise.all([postWebhook(raw, sign(raw)), postWebhook(raw, sign(raw))]);
+    const [first, second] = await Promise.all([postEvent(raw, 'evt_concurrent'), postEvent(raw, 'evt_concurrent')]);
 
     expect([first.status, second.status].sort()).toEqual([200, 200]);
     expect(await Subscription.count({ where: { userId: user.id } })).toBe(1);
@@ -740,7 +746,7 @@ describe('POST /api/v1/webhooks/razorpay', () => {
 
     let responses: Array<{ status: number; body: { error?: { details?: unknown } } }> = [];
     try {
-      responses = await Promise.all([postWebhook(firstRaw, sign(firstRaw)), postWebhook(secondRaw, sign(secondRaw))]);
+      responses = await Promise.all([postEvent(firstRaw, 'evt_race_1'), postEvent(secondRaw, 'evt_race_2')]);
     } finally {
       Subscription.removeHook('beforeCreate', hook);
     }
@@ -766,7 +772,7 @@ describe('POST /api/v1/webhooks/razorpay', () => {
     const periodEnd = winnerSubscription?.currentPeriodEnd.toISOString();
     expect(winner.subscriptionId).toBe(winnerSubscription?.id);
 
-    const retry = await postWebhook(loserRaw, sign(loserRaw));
+    const retry = await postEvent(loserRaw, loserEventId);
 
     expect(retry.status).toBe(200);
     await loser.reload();
@@ -777,5 +783,143 @@ describe('POST /api/v1/webhooks/razorpay', () => {
     expect(await Subscription.count({ where: { userId: user.id } })).toBe(1);
     expect(winnerSubscription?.currentPeriodEnd.toISOString()).toBe(periodEnd);
     expect(await ProcessedWebhook.findByPk(loserEventId)).not.toBeNull();
+  });
+
+  it('activates Premium from a Razorpay envelope that has no top-level id', async () => {
+    const user = await createUser();
+    const plan = await createPlan('MONTH', 49900);
+    const payment = await createPayment({
+      userId: user.id,
+      planId: plan.id,
+      providerOrderId: 'order_header_activate',
+      billingInterval: 'MONTH',
+      amountInCents: 49900
+    });
+    const eventId = 'evt_header_activate';
+    const raw = JSON.stringify({
+      entity: 'event',
+      account_id: 'acc_test_header',
+      event: 'payment.captured',
+      contains: ['payment'],
+      payload: {
+        payment: {
+          entity: {
+            id: 'pay_header_activate',
+            entity: 'payment',
+            amount: 49900,
+            currency: 'INR',
+            status: 'captured',
+            order_id: 'order_header_activate',
+            email: 'person@example.com',
+            contact: '+919999999999',
+            notes: [],
+            created_at: 1567674599
+          }
+        }
+      },
+      created_at: 1567674606
+    });
+    const header = `  ${eventId}  `;
+
+    const first = await postWebhook(raw, sign(raw), header);
+
+    expect(first.status).toBe(200);
+    await payment.reload();
+    const subscription = await Subscription.findOne({ where: { userId: user.id } });
+    expect(payment.status).toBe('CAPTURED');
+    expect(payment.providerPaymentId).toBe('pay_header_activate');
+    expect(payment.subscriptionId).toBe(subscription?.id);
+    expect(subscription?.status).toBe('ACTIVE');
+    expect(subscription?.autoRenew).toBe(false);
+    expect(await premium(user.id)).toBe(true);
+    const stored = await ProcessedWebhook.findByPk(eventId);
+    expect(stored?.eventType).toBe('payment.captured');
+    expect(stored?.payload).toMatchObject({ eventId, outcome: 'activated', orderId: 'order_header_activate' });
+    expect(JSON.stringify(stored?.payload)).not.toContain('person@example.com');
+    expect(await ProcessedWebhook.findByPk('pay_header_activate')).toBeNull();
+    expect(await ProcessedWebhook.count()).toBe(1);
+    const paidAt = payment.paidAt?.toISOString();
+    const periodEnd = subscription?.currentPeriodEnd.toISOString();
+
+    const second = await postWebhook(raw, sign(raw), header);
+
+    expect(second.status).toBe(200);
+    await payment.reload();
+    await subscription?.reload();
+    expect(await Subscription.count()).toBe(1);
+    expect(await ProcessedWebhook.count()).toBe(1);
+    expect(payment.paidAt?.toISOString()).toBe(paidAt);
+    expect(subscription?.currentPeriodEnd.toISOString()).toBe(periodEnd);
+    expect(payment.subscriptionId).toBe(subscription?.id);
+  });
+
+  it('rejects a missing, empty, or whitespace-only event id before any write', async () => {
+    const user = await createUser();
+    const plan = await createPlan();
+    const payment = await createPayment({
+      userId: user.id,
+      planId: plan.id,
+      providerOrderId: 'order_bad_header'
+    });
+    const before = payment.get({ plain: true });
+    const raw = JSON.stringify({
+      id: 'evt_body_must_not_win',
+      event: 'payment.captured',
+      payload: {
+        payment: {
+          entity: {
+            id: 'pay_bad_header',
+            order_id: 'order_bad_header',
+            status: 'captured',
+            amount: 49900,
+            currency: 'INR'
+          }
+        }
+      }
+    });
+    const signature = sign(raw);
+    const responses = await Promise.all([
+      postWebhook(raw, signature),
+      postWebhook(raw, signature, ''),
+      postWebhook(raw, signature, '   '),
+      postWebhook(raw, signature, '\t')
+    ]);
+
+    for (const response of responses) {
+      expect(response.status).toBe(400);
+      expect(response.body.error.code).toBe('VALIDATION_ERROR');
+      expect(response.body.error.message).toBe('Webhook event id is invalid.');
+    }
+    await payment.reload();
+    expect(payment.get({ plain: true })).toEqual(before);
+    expect(await Subscription.count()).toBe(0);
+    expect(await ProcessedWebhook.count()).toBe(0);
+    expect(await ProcessedWebhook.findByPk('evt_body_must_not_win')).toBeNull();
+    expect(await ProcessedWebhook.findByPk('pay_bad_header')).toBeNull();
+  });
+
+  it('rejects an event id longer than 255 characters before any write', async () => {
+    const user = await createUser();
+    const plan = await createPlan();
+    const payment = await createPayment({
+      userId: user.id,
+      planId: plan.id,
+      providerOrderId: 'order_long_header'
+    });
+    const before = payment.get({ plain: true });
+    const raw = captureBody({
+      orderId: 'order_long_header',
+      paymentId: 'pay_long_header'
+    });
+
+    const response = await postWebhook(raw, sign(raw), ` ${'e'.repeat(256)} `);
+
+    expect(response.status).toBe(400);
+    expect(response.body.error.code).toBe('VALIDATION_ERROR');
+    expect(response.body.error.message).toBe('Webhook event id is invalid.');
+    await payment.reload();
+    expect(payment.get({ plain: true })).toEqual(before);
+    expect(await Subscription.count()).toBe(0);
+    expect(await ProcessedWebhook.count()).toBe(0);
   });
 });
