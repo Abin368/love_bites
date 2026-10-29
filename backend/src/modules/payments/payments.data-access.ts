@@ -123,6 +123,64 @@ export async function assignProviderOrderId(paymentId: string, providerOrderId: 
   });
 }
 
+export class PaymentCaptureConflictError extends Error {
+  constructor() {
+    super('Payment capture was not applied.');
+    this.name = 'PaymentCaptureConflictError';
+  }
+}
+
+export async function lockPaymentByProviderOrderId(
+  providerOrderId: string,
+  transaction: Transaction
+): Promise<Payment | null> {
+  return Payment.findOne({
+    where: { provider: 'RAZORPAY', providerOrderId },
+    transaction,
+    lock: Transaction.LOCK.UPDATE
+  });
+}
+
+export async function lockPaymentByProviderPaymentId(
+  providerPaymentId: string,
+  transaction: Transaction
+): Promise<Payment | null> {
+  return Payment.findOne({
+    where: { provider: 'RAZORPAY', providerPaymentId },
+    transaction,
+    lock: Transaction.LOCK.UPDATE
+  });
+}
+
+export async function capturePayment(
+  paymentId: string,
+  input: {
+    providerPaymentId: string;
+    paidAt: Date;
+    subscriptionId: string | null;
+  },
+  transaction: Transaction
+): Promise<void> {
+  const [count] = await Payment.update(
+    {
+      status: 'CAPTURED',
+      providerPaymentId: input.providerPaymentId,
+      paidAt: input.paidAt,
+      subscriptionId: input.subscriptionId
+    },
+    {
+      where: {
+        id: paymentId,
+        status: { [Op.in]: ['INITIATED', 'AUTHORIZED'] }
+      },
+      transaction
+    }
+  );
+  if (count !== 1) {
+    throw new PaymentCaptureConflictError();
+  }
+}
+
 export async function markCheckoutFailed(paymentId: string): Promise<boolean> {
   return sequelize.transaction(async (transaction) => {
     const [count] = await Payment.update(

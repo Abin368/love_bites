@@ -608,7 +608,7 @@ The numbered steps below are still the planned catalog engine. This slice does n
 ## 13. Phase 9 — Payments and Razorpay
 
 ### 13.1 Objectives
-Implement the decoupled payment gateway provider abstraction, server-side Razorpay order generation, HMAC-SHA256 signature verification, and idempotent webhook processing. Order creation, the checkout billing-interval snapshot, signature verification, and checkout expiration of an elapsed nonterminal subscription are implemented. Webhooks, activation, renewal, refunds, and reconciliation are not.
+Implement the decoupled payment gateway provider abstraction, server-side Razorpay order generation, HMAC-SHA256 signature verification, and idempotent webhook processing. Order creation, the checkout billing-interval snapshot, signature verification, checkout expiration of an elapsed nonterminal subscription, and `payment.captured` activation are implemented. Renewal, refunds, grace assignment, and reconciliation are not.
 
 ### 13.2 Payment Provider Abstraction
 Checkout initiation and Order signature verification are implemented. The interface does not fetch a payment or create a Razorpay Subscription:
@@ -616,7 +616,7 @@ Checkout initiation and Order signature verification are implemented. The interf
 * `src/integrations/payment/payment.interface.ts` defines `PaymentOrderProvider` with `isConfigured`, `isVerificationConfigured`, `publicKeyId`, `createOrder`, and `verifyOrderSignature`.
 * `src/integrations/payment/razorpay.provider.ts` uses `razorpay@2.9.8` for `orders.create`. `createOrder` sends the snapshotted paise amount, `INR`, a receipt equal to the payment UUID, and `notes.paymentId`.
 * `verifyOrderSignature` computes HMAC-SHA256 locally with `RAZORPAY_KEY_SECRET` and compares it through `safeEqualHex`. It does not call Razorpay.
-* Provider subscription cancellation and webhook handling are not part of this interface and are not implemented.
+* Provider subscription cancellation is not part of this interface. Webhook verification is a separate function, `verifyWebhookSignature`, and is not a Razorpay Subscription API.
 
 ### 13.3 Implementation Steps
 1. **Checkout initiation (`POST /api/v1/payments/checkout`) — implemented:**
@@ -627,8 +627,8 @@ Checkout initiation and Order signature verification are implemented. The interf
    * Qualifying Premium access, including an in-period canceled subscription, is `409 ACTIVE_SUBSCRIPTION_EXISTS`.
    * The payment is inserted as `INITIATED` and committed before the Razorpay call. The expiration update commits in that same transaction. A later provider rejection or unknown outcome does not restore the subscription. Success stores `provider_order_id` and leaves the payment status `INITIATED`. No subscription row is created. `billing_interval` on that row is the locked plan snapshot. A later plan-interval change does not rewrite it.
    * The same user and key replays a stored order. An unresolved attempt does not create a second order. Those idempotency returns happen before expiration and do not change the subscription. Migration `20261027183033-add-checkout-columns-to-payments.js` adds `plan_id` and `idempotency_key`. Migration `20261028154500-add-billing-interval-to-payments.js` adds nullable `billing_interval`.
-   * Webhook processing, subscription activation, renewal, refunds, and reconciliation are not part of this checkout slice. Assigning a grace period and the background reconciliation job are not implemented.
-Steps 3 through 5 are not implemented.
+   * Renewal, refunds, grace assignment, and reconciliation are not part of this checkout slice. Webhook activation is step 3.
+Steps 4 and 5 are not implemented.
 
 2. **Client Verification Handshake (`POST /api/v1/payments/verify`) — implemented:**
    * Authenticated `USER` only. The body is exactly `razorpayPaymentId`, `razorpayOrderId`, and `razorpaySignature`.
@@ -636,16 +636,16 @@ Steps 3 through 5 are not implemented.
    * The HMAC input is the stored Order id, `|`, and the payment id. The key is `RAZORPAY_KEY_SECRET`. Comparison uses `safeEqualHex`. The signature must be exactly 64 hex characters. Extra characters after a valid digest fail.
    * Success is `200` with message `Payment signature verified.` and `data: null`. An invalid signature is `422 PAYMENT_SIGNATURE_INVALID`. A missing secret is `500 PAYMENT_VERIFICATION_NOT_CONFIGURED`.
    * The route writes no payment, subscription, usage, or credit row and does not grant Premium. It does not call Razorpay.
-   * This step does not change the webhook contract. The subscription events in step 4 remain unimplemented. They are Razorpay Subscription events, and checkout creates an Order, so that mismatch is still unresolved.
-3. **Webhook Processing Engine (`POST /api/v1/webhooks/razorpay`) — not implemented:**
-   * Validates `X-Razorpay-Signature` against raw request buffer.
-   * **Atomic Deduplication:** Inserts `event.id` into `processed_webhooks`. Duplicate events return `200 OK` immediately.
-4. **Subscription Lifecycle Event Handlers — not implemented:**
-   * `subscription.activated` $\rightarrow$ Inserts/Updates `subscriptions` (`status = 'ACTIVE'`), refreshes entitlements.
-   * `subscription.charged` $\rightarrow$ Inserts invoice in `payments`, updates `current_period_end`.
-   * `payment.failed` $\rightarrow$ Sets `subscriptions.status = 'PAST_DUE'`, triggers **24-hour grace window** (`grace_period_end = CURRENT_TIMESTAMP + 24h`).
-   * `subscription.cancelled` $\rightarrow$ Not implemented. The user route `POST /api/v1/subscriptions/cancel` already performs the local `ACTIVE` cancellation and does not call the provider. This webhook remains separate future work.
-   * `subscription.completed` / Grace Expiry $\rightarrow$ Sets `status = 'EXPIRED'`, downgrades user to Free tier.
+   * This step does not grant Premium. Activation is step 3 and uses the Order `payment.captured` event, not a Razorpay Subscription event.
+3. **Webhook Processing Engine (`POST /api/v1/webhooks/razorpay`) — implemented for `payment.captured`:**
+   * No user JWT. HMAC-SHA256 of the exact raw body is compared with `safeEqualHex` and `RAZORPAY_WEBHOOK_SECRET`.
+   * Only `payment.captured` can activate. `payment.authorized` and `order.paid` return `200` without a write.
+   * One transaction locks the `RAZORPAY` payment by order id, reuses checkout's expiration and qualifying helpers, and inserts at most one `ACTIVE` subscription from the payment's `plan_id` and `billing_interval`. `auto_renew` is false. A qualifying subscription leaves the new payment captured with `subscription_id` null.
+   * The processed-event insert is in that same transaction. A duplicate event does not reapply state. An unknown Order and a single-active unique conflict roll back and return `500`. A permanent snapshot conflict returns `200` without overwriting the payment.
+   * The earlier `subscription.activated`, `subscription.charged`, `payment.failed` grace, and `subscription.completed` handlers are not this slice and are not implemented.
+4. **Subscription renewal and grace handlers — not implemented:**
+   * `subscription.charged`, `payment.failed`, automatic 24-hour grace, and `subscription.completed` are not implemented. Checkout still creates an Order, not a Razorpay Subscription.
+   * `subscription.cancelled` is not a webhook. `POST /api/v1/subscriptions/cancel` remains the local `ACTIVE` cancellation and does not call the provider.
 5. **Subscription Background Reconciliation Job — not implemented:**
    * Scheduled cron job (`src/jobs/subscription-reconciliation.job.ts`) checks for expired grace periods and transitions unrecovered accounts to `EXPIRED`.
 

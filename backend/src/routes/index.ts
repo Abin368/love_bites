@@ -16,6 +16,7 @@ import { relationshipIntentionRoutes } from '../modules/relationship-intentions/
 import { planPriceRoutes } from '../modules/admin/plan-prices.routes';
 import { paymentsRoutes } from '../modules/payments/payments.routes';
 import { subscriptionsRoutes } from '../modules/subscriptions/subscriptions.routes';
+import { razorpayWebhookRoutes } from '../modules/webhooks/razorpay-webhook.routes';
 
 const router = Router();
 
@@ -36,6 +37,7 @@ router.use('/interests', interestRoutes);
 router.use('/relationship-intentions', relationshipIntentionRoutes);
 router.use('/subscriptions', subscriptionsRoutes);
 router.use('/payments', paymentsRoutes);
+router.use('/webhooks', razorpayWebhookRoutes);
 router.use('/admin/config/plans', planPriceRoutes);
 
 export const apiRoutes = router;

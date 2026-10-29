@@ -2228,7 +2228,7 @@ A report does not require verification, a complete profile, location, dating pre
     "message": "Payment signature verified."
   }
   ```
-  Authoritative subscription activation remains a webhook concern. Those webhooks are not implemented. The documented subscription events in section 33 do not match this Order checkout.
+  Authoritative subscription activation is `POST /api/v1/webhooks/razorpay` for a verified `payment.captured` event, described in section 33. This verify route still writes nothing and does not grant Premium.
 
 ---
 
@@ -2436,17 +2436,30 @@ The listener is registered only after handshake authentication and the `user:{us
 
 ## 33. Webhooks Contract (Razorpay)
 
-This contract is not implemented. `POST /api/v1/subscriptions/cancel` updates local cancellation state and does not call Razorpay or this webhook.
+**Implemented for `payment.captured` only.** Checkout and `POST /api/v1/payments/verify` do not grant Premium. `POST /api/v1/subscriptions/cancel` updates local cancellation state and does not call Razorpay. This route does not call Razorpay. Razorpay Subscriptions, renewal, refunds, grace assignment, plan switching, `order.paid` activation, and the reconciliation worker are not implemented.
 
 * **Endpoint:** `POST /api/v1/webhooks/razorpay`
-* **Auth:** Validates `X-Razorpay-Signature` against `RAZORPAY_WEBHOOK_SECRET`.
-* **Idempotency Strategy:** Inserts `event.id` into `processed_webhooks`. Duplicate events terminate immediately with `200 OK`.
-* **Handled Event Types:**
-  * `subscription.activated` $\rightarrow$ Activates user subscription (`status = 'ACTIVE'`).
-  * `subscription.charged` $\rightarrow$ Records payment invoice in `payments`, extends `current_period_end`.
-  * `payment.failed` $\rightarrow$ Transitions subscription to `PAST_DUE`, triggers 24-hour grace window.
-  * `subscription.cancelled` $\rightarrow$ Sets `auto_renew = FALSE`.
-  * `subscription.completed` $\rightarrow$ Transitions to `EXPIRED`, downgrades user entitlements to Free.
+* **Auth:** No user JWT and no `requireRole`. The route keeps the exact raw JSON bytes, limited to 100kb, and verifies `X-Razorpay-Signature` with HMAC-SHA256 keyed by `RAZORPAY_WEBHOOK_SECRET`. Comparison uses `safeEqualHex`. The Razorpay SDK helper that compares signatures with `===` is not used. The secret is optional in development and test, required in production, and an empty value is missing.
+* **Missing secret (`500`):** code `WEBHOOK_NOT_CONFIGURED`, message `Payment webhook is not configured.` Nothing is written.
+* **Invalid signature (`400`):** a missing header, an empty signature, or any value that is not the hex HMAC of those exact bytes. Message `Webhook signature is invalid.` Nothing is written. A checkout `order_id|payment_id` MAC is not accepted.
+* **Malformed JSON (`400`):** after a valid signature, a body that does not parse. Message `Invalid JSON payload structure.` Nothing is written.
+* **Other signed events (`200`):** any `event` other than `payment.captured`, including `payment.authorized` and `order.paid`, returns message `Webhook received.` and `data: null`. No payment, subscription, or `processed_webhooks` row is written.
+* **Unknown Order (`500`):** a structurally valid capture whose `order_id` is not stored on a `provider = 'RAZORPAY'` payment. Code `WEBHOOK_PROCESSING_FAILED`. No `processed_webhooks` row is inserted, so a delivery that races `assignProviderOrderId` can be retried.
+* **Permanent conflict (`200`):** amount, currency, provider payment id, captured status, `SUBSCRIPTION_INITIAL`, `user_id`, `plan_id`, `billing_interval` of `MONTH` or `YEAR`, or a present `notes.paymentId` fails validation against the payment snapshot. A different stored provider payment id, or a status other than `INITIATED` or `AUTHORIZED`, is the same class. The payment is not overwritten. One minimized `processed_webhooks` row stores the event id, event type, order id, provider payment id, amount, currency, payment status, outcome `conflict`, and a reason code. Email, contact, card data, and `payments.raw_payload` are not stored.
+* **Activation:** one transaction locks the payment by provider and order id. For a capturable snapshot it locks the caller's nonterminal subscription, runs `expireElapsedNonterminalSubscription`, locks an in-period canceled row, and calls `findQualifyingPremiumSubscription` with one application `now`. Price, currency, plan id, and interval come from the payment row. The current plan row is not reread. When nothing qualifies, one `ACTIVE` subscription is inserted with `auto_renew = false`, null provider subscription and customer ids, null grace, `current_period_start = now`, and `current_period_end` from UTC calendar addition of the stored `MONTH` or `YEAR`. End-of-month dates clamp to the last valid UTC day, and the UTC time of day is preserved. `current_period_end` stays an exclusive boundary. The payment becomes `CAPTURED`, stores the provider payment id and `paid_at = now`, and points `subscription_id` at the new row.
+* **Qualifying subscription already exists:** the payment becomes `CAPTURED` with its provider payment id and `paid_at = now`, and `subscription_id` stays null. The existing period is not extended. No refund is issued.
+* **Payment already linked:** an existing `subscription_id` is kept. A second subscription is not created and the linked period is not changed.
+* **Duplicate delivery:** the same `event_id` does not apply the capture again. A new event id for an already `CAPTURED` payment with the same provider payment id is recorded and does not change `paid_at` or the period.
+* **Concurrency:** the payment update, optional subscription insert, and processed-event insert commit or roll back together. A unique violation of `uq_subscriptions_single_active_per_user` rolls the loser back completely and returns `500 WEBHOOK_PROCESSING_FAILED` with empty `details`. The response does not include the constraint name. The retry sees the qualifying subscription and stores that Order as captured with `subscription_id` null.
+* **Success body (`200`):**
+
+```json
+{
+  "success": true,
+  "data": null,
+  "message": "Webhook received."
+}
+```
 
 ---
 
@@ -2519,8 +2532,8 @@ Rate limits are enforced using Redis sliding-window algorithms:
 | **Blocks** (`POST /blocks/:userId`, `GET /blocks`, `DELETE /blocks/:userId`, implemented) | `blocks`, `matches`, `conversations`. Does not write `reports`, `notifications`, likes, messages, `usage_records`, or credits. `match:unmatch` is emitted after commit only when this request unmatches an `ACTIVE` match that has a conversation. |
 | **Report submission** (`POST /reports`, implemented) | `reports` only. One `PENDING` row. Does not write `notifications` or change `blocks`, matches, conversations, likes, messages, `usage_records`, or credits. No Socket.IO event and no Redis key. |
 | **Notifications** | `notifications` |
-| **Subscriptions & Plans** | `GET /subscriptions/plans` reads active `plans` rows only. `GET /subscriptions/me` reads the caller's qualifying `subscriptions` row and its `plans` row through `findQualifyingPremiumSubscription`. It does not read `plan_features`, `usage_limits`, payments, or credits, and it writes nothing, including no expiration. An `EXPIRED` row is the empty state. `POST /subscriptions/cancel` is implemented for an authenticated `USER`. It cancels only that caller's `ACTIVE` row, sets `status = CANCELED`, `auto_renew = false`, and `canceled_at`, and leaves `ended_at` and the period timestamps unchanged. It does not expire the row. An elapsed `ACTIVE` row with a future `grace_period_end` is still canceled in place. `PAST_DUE` and `GRACE_PERIOD` return `404 ACTIVE_SUBSCRIPTION_NOT_FOUND` with no write. An in-period repeat is `200` without a write while `current_period_end > now`. The route does not call a payment provider. Section 33 remains unimplemented. |
-| **Payments & Webhooks** | `POST /payments/checkout` reads and locks `plans`, locks the caller's nonterminal `subscriptions` row, may set that row to `EXPIRED` when its period and grace have elapsed, and inserts or replays `payments`. A replay, an in-progress key, and a failed key do not write `subscriptions`. It does not write `usage_records`, `plan_price_changes`, or `processed_webhooks`. `POST /payments/verify` reads one caller-owned `payments` row by `provider_order_id` and writes nothing. `POST /webhooks/razorpay` is not mounted. |
+| **Subscriptions & Plans** | `GET /subscriptions/plans` reads active `plans` rows only. `GET /subscriptions/me` reads the caller's qualifying `subscriptions` row and its `plans` row through `findQualifyingPremiumSubscription`. It does not read `plan_features`, `usage_limits`, payments, or credits, and it writes nothing, including no expiration. An `EXPIRED` row is the empty state. `POST /subscriptions/cancel` is implemented for an authenticated `USER`. It cancels only that caller's `ACTIVE` row, sets `status = CANCELED`, `auto_renew = false`, and `canceled_at`, and leaves `ended_at` and the period timestamps unchanged. It does not expire the row. An elapsed `ACTIVE` row with a future `grace_period_end` is still canceled in place. `PAST_DUE` and `GRACE_PERIOD` return `404 ACTIVE_SUBSCRIPTION_NOT_FOUND` with no write. An in-period repeat is `200` without a write while `current_period_end > now`. The route does not call a payment provider. Section 33 activates Premium only from a verified `payment.captured` webhook. |
+| **Payments & Webhooks** | `POST /payments/checkout` reads and locks `plans`, locks the caller's nonterminal `subscriptions` row, may set that row to `EXPIRED` when its period and grace have elapsed, and inserts or replays `payments`. A replay, an in-progress key, and a failed key do not write `subscriptions`. It does not write `usage_records`, `plan_price_changes`, or `processed_webhooks`. `POST /payments/verify` reads one caller-owned `payments` row by `provider_order_id` and writes nothing. `POST /webhooks/razorpay` verifies the raw body, and a valid `payment.captured` event locks that payment, may expire an elapsed nonterminal subscription, and may insert one `ACTIVE` subscription and one minimized `processed_webhooks` row in the same transaction. It does not call Razorpay. Renewal, refunds, grace assignment, and reconciliation are not part of that route. |
 | **Entitlements** (`GET /me/entitlements`, implemented) | Reads `subscriptions`, `plans`, and `user_credit_balances`. Does not read `plan_features`, `usage_limits`, or `usage_records`. Writes nothing. |
 | **Usage** (`GET /me/usage`, implemented) | Reads the caller's current UTC-day `usage_records` for `DAILY_LIKE_PASS` and `DAILY_TEXT_MESSAGES`, and reads the effective plan's `usage_limits` row for each metric through the same resolution as `consumeDailyQuota`. Writes nothing. A missing usage row is `used: 0`. A positive catalog limit or `0` is numeric. Premium `-1` returns `limit` and `remaining` as `null`. A missing or invalid catalog row is `500 INTERNAL_SERVER_ERROR`. |
 

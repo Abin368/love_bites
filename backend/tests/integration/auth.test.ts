@@ -49,6 +49,11 @@ jest.mock('../../src/modules/payments/payments.service', () => ({
     throw new Error('checkout is not used by authentication tests');
   }
 }));
+jest.mock('../../src/modules/webhooks/razorpay-webhook.service', () => ({
+  processRazorpayWebhook: async () => {
+    throw new Error('webhooks are not used by authentication tests');
+  }
+}));
 jest.mock('../../src/modules/admin/plan-prices.data-access', () => ({
   lockPlanById: async () => null,
   updatePlanPrice: async () => undefined,

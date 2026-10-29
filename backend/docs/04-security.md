@@ -400,13 +400,12 @@ The client cannot send a storage key. The signed key is `chat-media/{conversatio
 
 ## 20. Razorpay Webhook Security
 
-**Not implemented.** `POST /api/v1/webhooks/razorpay` is not mounted. `RAZORPAY_WEBHOOK_SECRET` is not loaded. `processed_webhooks` remains schema only. The global JSON parser is unchanged, so a future webhook still needs a raw-body reader before signature verification.
+**Implemented for `payment.captured`.** `POST /api/v1/webhooks/razorpay` is public. It does not use `authenticate` or `requireRole`. `RAZORPAY_WEBHOOK_SECRET` is optional in development and test, required in production, and an empty value is missing. A missing secret is `500 WEBHOOK_NOT_CONFIGURED` before any read of payment state. The route does not call Razorpay. Checkout and `POST /api/v1/payments/verify` still do not grant Premium. Renewal, refunds, grace assignment, and reconciliation are not implemented.
 
-The intended rules, once that slice exists:
-
-1. **Source of Truth Rule:** Subscription activation and renewal run only after an authenticated webhook. Checkout does not activate Premium.
-2. **Signature Verification:** The raw request body is verified against `X-Razorpay-Signature` using `RAZORPAY_WEBHOOK_SECRET` before JSON parsing.
-3. **Idempotent Webhook Processing:** Insert `event.id` into `processed_webhooks`. A duplicate event returns `200 OK` without a second subscription write.
+1. **Source of Truth Rule:** The first Premium grant for an Order is a verified `payment.captured` webhook. `payment.authorized` and `order.paid` do not activate. The purchased plan, amount, currency, and interval come from the payment snapshot.
+2. **Signature Verification:** `express.raw` keeps the exact request bytes for this path only, with a 100kb limit. Other JSON routes still use `express.json`. HMAC-SHA256 of those bytes is compared to `X-Razorpay-Signature` with `safeEqualHex` and `RAZORPAY_WEBHOOK_SECRET`. The Razorpay SDK `===` helper is not used. A missing, empty, or unequal signature is `400` and writes nothing. JSON is parsed only after the signature matches. Malformed JSON is `400` and writes nothing.
+3. **Idempotent Webhook Processing:** A `payment.captured` decision inserts `event.id` into `processed_webhooks` in the same transaction as the payment update and any subscription insert. The stored payload is a minimized object, not the raw provider body, and `payments.raw_payload` stays null. The same event id does not apply the capture again. A duplicate primary key is not returned as a constraint-detail `409`. An unknown Order and a `uq_subscriptions_single_active_per_user` conflict roll back and return `500 WEBHOOK_PROCESSING_FAILED` so Razorpay can retry. A permanent snapshot or status conflict returns `200` without overwriting the payment.
+4. **Logging:** Webhook logs may include the event id, local payment id, outcome, and reason code. They do not include the raw body, signature, webhook secret, or the provider's email, contact, or card fields. The redaction filter covers `signature`, `x-razorpay-signature`, `webhook_secret`, and `razorpay_webhook_secret`.
 
 ---
 
@@ -444,7 +443,7 @@ The intended rules, once that slice exists:
 ### 25.1 Data Redaction Filter
 Loggers (Winston/Pino) must pass all log streams through an automated redaction filter targeting sensitive keys:
 * `password`, `password_hash`, `token`, `accessToken`, `refreshToken`, `authorization`, `otp`, `secret`, `location`.
-* Razorpay: `keyId`, `key_id`, `keySecret`, `key_secret`, `razorpay_key_secret`, and `razorpay_signature`. The public key id is still returned to the checkout client. It is redacted if it appears in a log object. Checkout does not log the Razorpay client or the provider error description.
+* Razorpay: `keyId`, `key_id`, `keySecret`, `key_secret`, `razorpay_key_secret`, `razorpay_signature`, `signature`, `x-razorpay-signature`, `webhook_secret`, and `razorpay_webhook_secret`. The public key id is still returned to the checkout client. It is redacted if it appears in a log object. Checkout does not log the Razorpay client or the provider error description. The webhook handler does not log the raw body, signature, or webhook secret.
 
 ### 25.2 Mandatory Audit Events
 The following events must always generate structured audit logs:

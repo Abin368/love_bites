@@ -62,6 +62,15 @@ export function verificationNotConfigured(): InternalServerError {
   );
 }
 
+export function verifyWebhookSignature(rawBody: Buffer, signature: string, secret: string): boolean {
+  if (secret.length === 0 || signature.length === 0 || rawBody.length === 0) {
+    return false;
+  }
+
+  const digest = createHmac('sha256', secret).update(rawBody).digest('hex');
+  return safeEqualHex(digest, signature);
+}
+
 export function verifyOrderPaymentSignature(
   storedOrderId: string,
   razorpayPaymentId: string,

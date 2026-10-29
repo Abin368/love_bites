@@ -933,7 +933,7 @@ RAZORPAY_KEY_ID=rzp_test_your_key_id
 RAZORPAY_KEY_SECRET=your_razorpay_key_secret
 ```
 
-`env.ts` validates `RAZORPAY_KEY_ID` and `RAZORPAY_KEY_SECRET` as optional strings. Production boot requires both. Development and test boot without them. Checkout then returns `500 PAYMENT_NOT_CONFIGURED` and inserts no payment. `RAZORPAY_WEBHOOK_SECRET` is not loaded. Webhook verification is not implemented.
+`env.ts` validates `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, and `RAZORPAY_WEBHOOK_SECRET` as optional strings. Production boot requires all three. Development and test boot without them. Checkout then returns `500 PAYMENT_NOT_CONFIGURED` and inserts no payment. A missing webhook secret makes `POST /api/v1/webhooks/razorpay` return `500 WEBHOOK_NOT_CONFIGURED` and write nothing. That route verifies `payment.captured` only. Renewal, refunds, grace assignment, and reconciliation are not implemented.
 
 ---
 

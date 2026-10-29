@@ -26,7 +26,11 @@ const SENSITIVE_KEYS = new Set([
   'keysecret',
   'key_secret',
   'razorpay_key_secret',
-  'razorpay_signature'
+  'razorpay_signature',
+  'razorpay_webhook_secret',
+  'webhook_secret',
+  'signature',
+  'x-razorpay-signature'
 ]);
 
 const SENSITIVE_COMPACT_KEYS = new Set([
@@ -48,7 +52,11 @@ const SENSITIVE_COMPACT_KEYS = new Set([
   'keyid',
   'keysecret',
   'razorpaykeysecret',
-  'razorpaysignature'
+  'razorpaysignature',
+  'razorpaywebhooksecret',
+  'webhooksecret',
+  'signature',
+  'xrazorpaysignature'
 ]);
 
 function isSensitiveKey(key: string): boolean {

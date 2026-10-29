@@ -45,7 +45,9 @@ const envSchema = z.object({
 
   // Razorpay. Required in production. Development and test can boot without them.
   RAZORPAY_KEY_ID: optionalEnvString,
-  RAZORPAY_KEY_SECRET: optionalEnvString
+  RAZORPAY_KEY_SECRET: optionalEnvString,
+  // Webhook HMAC secret. Empty values are treated as missing. Required in production.
+  RAZORPAY_WEBHOOK_SECRET: optionalEnvString
 }).superRefine((data, ctx) => {
   if (data.NODE_ENV !== 'production') {
     return;
@@ -80,6 +82,14 @@ const envSchema = z.object({
       code: z.ZodIssueCode.custom,
       path: ['RAZORPAY_KEY_SECRET'],
       message: 'RAZORPAY_KEY_SECRET is required in production'
+    });
+  }
+
+  if (!data.RAZORPAY_WEBHOOK_SECRET) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['RAZORPAY_WEBHOOK_SECRET'],
+      message: 'RAZORPAY_WEBHOOK_SECRET is required in production'
     });
   }
 

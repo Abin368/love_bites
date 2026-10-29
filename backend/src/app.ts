@@ -1,4 +1,4 @@
-import express, { Express } from 'express';
+import express, { Express, Request } from 'express';
 import helmet from 'helmet';
 import cors from 'cors';
 import cookieParser from 'cookie-parser';
@@ -10,6 +10,14 @@ import { notFoundMiddleware } from './middleware/not-found.middleware';
 import { errorMiddleware } from './middleware/error.middleware';
 import { apiRoutes } from './routes';
 import { healthRoutes } from './routes/health.routes';
+
+declare global {
+  namespace Express {
+    interface Request {
+      rawBody?: Buffer;
+    }
+  }
+}
 
 export function createApp(): Express {
   const app = express();
@@ -38,7 +46,17 @@ export function createApp(): Express {
   // Request logging
   app.use(httpLoggerMiddleware);
 
-  // Request Parsers
+  // Request Parsers. The webhook keeps the exact bytes for HMAC. Other routes stay on JSON.
+  app.use(
+    `${env.API_PREFIX}/webhooks/razorpay`,
+    express.raw({ type: 'application/json', limit: '100kb' }),
+    (req: Request, _res, next) => {
+      if (Buffer.isBuffer(req.body)) {
+        req.rawBody = Buffer.from(req.body);
+      }
+      next();
+    }
+  );
   app.use(express.json({ limit: '100kb' }));
   app.use(express.urlencoded({ extended: true, limit: '100kb' }));
   app.use(cookieParser());

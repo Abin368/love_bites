@@ -139,6 +139,36 @@ export async function cancelActiveSubscription(
   );
 }
 
+export async function insertActivePremiumSubscription(
+  input: {
+    userId: string;
+    planId: string;
+    currentPeriodStart: Date;
+    currentPeriodEnd: Date;
+  },
+  transaction: Transaction
+): Promise<Subscription> {
+  return Subscription.create(
+    {
+      userId: input.userId,
+      planId: input.planId,
+      provider: 'RAZORPAY',
+      providerSubscriptionId: null,
+      providerCustomerId: null,
+      status: 'ACTIVE',
+      autoRenew: false,
+      currentPeriodStart: input.currentPeriodStart,
+      currentPeriodEnd: input.currentPeriodEnd,
+      gracePeriodEnd: null,
+      canceledAt: null,
+      endedAt: null,
+      createdAt: input.currentPeriodStart,
+      updatedAt: input.currentPeriodStart
+    },
+    { transaction }
+  );
+}
+
 export async function findInPeriodCanceledSubscription(
   userId: string,
   now: Date,

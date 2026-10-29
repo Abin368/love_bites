@@ -1237,8 +1237,8 @@ Enforces webhook idempotency across asynchronous payment notifications. Duplicat
 | :--- | :--- | :--- | :--- | :--- |
 | `event_id` | `VARCHAR(255)` | `NO` | — | Primary key. Unique webhook event ID from payment gateway. |
 | `provider` | `VARCHAR(50)` | `NO` | `'RAZORPAY'` | Gateway provider. |
-| `event_type` | `VARCHAR(100)` | `NO` | — | Event type (e.g., `'subscription.charged'`, `'payment.failed'`). |
-| `payload` | `JSONB` | `NO` | — | Full raw webhook request payload. |
+| `event_type` | `VARCHAR(100)` | `NO` | — | Event type. The implemented writer stores `'payment.captured'`. |
+| `payload` | `JSONB` | `NO` | — | Minimized event record for the implemented webhook: event id, event type, order id, provider payment id, amount, currency, payment status, outcome, and reason. It is not the full provider body. Email, contact, and card data are not stored. |
 | `processed_at` | `TIMESTAMPTZ` | `NO` | `CURRENT_TIMESTAMP` | Execution completion timestamp. |
 
 #### Primary Key
@@ -1255,7 +1255,7 @@ Enforces webhook idempotency across asynchronous payment notifications. Duplicat
                               ┌───────────────────────────┐
                               │    New Purchase Request   │
                               └─────────────┬─────────────┘
-                                            │ (Webhook: subscription.activated)
+                                            │ (Webhook: payment.captured)
                                             ▼
                               ┌───────────────────────────┐
                   ┌──────────►│          ACTIVE           │◄────────────────────────┐
@@ -1288,7 +1288,7 @@ Enforces webhook idempotency across asynchronous payment notifications. Duplicat
 2. **`CANCELED`:** User disabled auto-renew through `POST /api/v1/subscriptions/cancel`. That route sets `status = CANCELED`, `auto_renew = false`, and `canceled_at`. It leaves `ended_at` null. Premium entitlements **remain active** only while `current_period_end` is still in the future. A future `grace_period_end` does not extend a canceled subscription. `PAST_DUE` and `GRACE_PERIOD` are not canceled by that route. Checkout does not move a `CANCELED` row to `EXPIRED`, including a lapsed row whose `grace_period_end` is still in the future. An `ACTIVE` row whose period has elapsed and whose grace is still in the future is still canceled in place, and `ended_at` stays null.
 3. **`PAST_DUE`:** Payment provider reported an initial recurring payment failure. Retry attempts are in progress. Checkout can expire this status when the period and grace conditions in section 16.4 both hold. Assigning `PAST_DUE` from a webhook is not implemented.
 4. **`GRACE_PERIOD`:** Billing cycle reached `current_period_end` after failed renewal. User receives a **24-hour grace window** with full Premium entitlements while `grace_period_end` is still ahead. Checkout can expire this status when `current_period_end <= now` and `grace_period_end` is null or `grace_period_end <= now`. Assigning the grace window is not implemented.
-5. **`EXPIRED`:** The subscription no longer grants Premium. The historical row remains. Checkout sets this status from `ACTIVE`, `PAST_DUE`, or `GRACE_PERIOD` when `current_period_end <= now` and `grace_period_end` is null or `grace_period_end <= now`, and sets `ended_at` to that same application `now`. Webhook-driven grace expiry and the background reconciliation job are not implemented. The diagram's activation, renewal-failure, grace-assignment, and payment-recovery arrows are not implemented.
+5. **`EXPIRED`:** The subscription no longer grants Premium. The historical row remains. Checkout sets this status from `ACTIVE`, `PAST_DUE`, or `GRACE_PERIOD` when `current_period_end <= now` and `grace_period_end` is null or `grace_period_end <= now`, and sets `ended_at` to that same application `now`. A verified `payment.captured` webhook runs that same expiration inside its activation transaction before it checks eligibility. Webhook-driven grace expiry and the background reconciliation job are not implemented. The diagram's renewal-failure, grace-assignment, and payment-recovery arrows are not implemented. The implemented activation path is a Razorpay Order `payment.captured` event, not `subscription.activated`. It inserts one `ACTIVE` row with `auto_renew = false` when no qualifying subscription exists.
 
 ### Plan Switching Mechanics (Monthly $\leftrightarrow$ Yearly):
 * Plan switching is not implemented. When it is, the previous subscription record transitions to `EXPIRED` (or `CANCELED` with `ended_at = CURRENT_TIMESTAMP`), and a new subscription record is inserted immediately inside a managed transaction. That transition is separate from user cancellation. User cancellation does not set `ended_at`.
@@ -1418,7 +1418,7 @@ CREATE INDEX idx_processed_webhooks_provider_type ON processed_webhooks (provide
 | **Simultaneous Swipe & Undo** | User rapidly submits Like and Undo across parallel HTTP requests. | Both run in a database transaction. Undo locks the two users in canonical id order, re-reads the latest undoable row, and sets `is_undone = TRUE` only when it is still false. The like row is not deleted. |
 | **Simultaneous Unmatch & Message Send** | User A unmatches User B while User B's pending message is in flight. | Transaction verifies `conversations.status = 'ACTIVE'` inside transaction before inserting message. |
 | **Daily Quota Limit Bypassing** | Free user fires 10 parallel Like requests to bypass the daily 10-swipe limit. | **Atomic database increment:** `INSERT ... ON CONFLICT DO UPDATE SET usage_count = usage_count + 1 WHERE usage_count < limit RETURNING usage_count`. If 0 rows updated, request fails immediately. |
-| **Duplicate Payment Webhooks** | Razorpay delivers the same webhook event multiple times within seconds. | **Atomic Webhook Deduplication:** Insert into `processed_webhooks (event_id)` inside transaction. Duplicate insert throws primary key violation `23505` and returns `200 OK` instantly. |
+| **Duplicate Payment Webhooks** | Razorpay delivers the same webhook event multiple times within seconds. | **Atomic Webhook Deduplication:** The `payment.captured` handler inserts `processed_webhooks (event_id)` in the same transaction as the payment and optional subscription write. A repeated event id does not reapply state. A primary-key race is acknowledged without constraint details. A `uq_subscriptions_single_active_per_user` violation rolls back and returns non-2xx so the provider retries. |
 
 ### 23.2 Like $\rightarrow$ Match Concurrency-Safe Transaction Flow
 ```
@@ -1450,25 +1450,7 @@ User A Likes User B
 ## 24. Idempotency & Webhook Architecture
 
 1. **Webhook Idempotency Key:** Primary key on `processed_webhooks.event_id`.
-2. **Execution Protocol:**
-   ```typescript
-   // Conceptual Webhook Pipeline
-   await sequelize.transaction(async (t) => {
-     // 1. Attempt to register event
-     const [webhookRecord, created] = await ProcessedWebhook.findOrCreate({
-       where: { event_id: rawEvent.id },
-       defaults: { provider: 'RAZORPAY', event_type: rawEvent.event, payload: rawEvent },
-       transaction: t,
-     });
-     if (!created) {
-       // Duplicate delivery: terminate cleanly
-       return { status: 'ALREADY_PROCESSED' };
-     }
-
-     // 2. Process business state transition (e.g., extend subscription, activate grace period)
-     await SubscriptionService.handleWebhookEvent(rawEvent, t);
-   });
-   ```
+2. **Execution Protocol:** `processRazorpayWebhook` inserts `processed_webhooks` with `ProcessedWebhook.create` inside the same transaction as the payment update and any subscription insert. It does not use `findOrCreate`. A repeated `event_id` is detected inside that transaction and does not reapply payment or subscription state. A primary-key race rolls back and is acknowledged without returning constraint details. A `uq_subscriptions_single_active_per_user` violation also rolls back, and the HTTP response is non-2xx so the provider can retry. The stored `payload` is the minimized object described in section 18.2.
 
 ---
 
