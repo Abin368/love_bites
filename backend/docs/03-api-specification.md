@@ -13,9 +13,11 @@ This document defines the **RESTful API Specification** and **Socket.IO Realtime
 
 ### Implementation status
 
-Phase 2 authentication, Phase 3 onboarding, Phase 4 Discovery, and Phase 5 slices for PASS, LIKE and match creation, SUPER LIKE, UNDO, and UNMATCH are implemented. Sections **4**, **11**, **12**, **14**, **19**, **20**, **21**, and **22.2** describe that live behavior. Sections **13**, **17**, **18**, **22.1**, and **23** onward are the planned contract and are not mounted, except where a subsection says otherwise. Sections **23.1**, **23.2**, **25**, **26.1**, **28.1**, **28.2**, **28.3**, **30.1**, and **30.2** are mounted. Admin report review in section **31.2** is not. `PUT /api/v1/me/interests`, `PUT /api/v1/me/relationship-intentions`, `GET /api/v1/dating-preferences`, `PUT /api/v1/dating-preferences`, `PUT /api/v1/location`, and `PATCH /api/v1/onboarding/profile` are not implemented. `GET /api/v1/matches` is not implemented. `DELETE /api/v1/matches/:matchId` is implemented. Match and conversation rows are created by LIKE and SUPER LIKE. UNMATCH does not delete them.
+Phase 2 authentication, Phase 3 onboarding, Phase 4 Discovery, and Phase 5 slices for PASS, LIKE and match creation, SUPER LIKE, UNDO, and UNMATCH are implemented. Phase 6 chat (HTTP TEXT, free quota, history, read receipts, unread counts, inbox, conversation details, Premium media upload/confirm/download) and Socket.IO foundation plus `chat:message:send`, `chat:message:new`, `chat:message:read`, and typing events are implemented. Phase 7 block management and report submission are implemented. Phase 8 plan catalog, subscription read/cancel, entitlements/usage snapshots, and catalog-backed daily quotas are implemented. Phase 9 Razorpay Order checkout, read-only payment verification, checkout expiration of elapsed nonterminal subscriptions, and `payment.captured` webhook activation are implemented. Internal Order-ID backfill exists and is not a public route.
 
-Health checks are also live: `GET /health` and `GET /api/v1/health`.
+**Mounted live sections (see each subsection for the contract):** **4**, **11**, **12**, **14**, **19**, **20**, **21**, **22.2**, **23.1**, **23.2**, **24.1–24.7**, **25**, **26.1**, **28.1**, **28.2**, **28.3**, **29.1**, **29.2**, **30.1**, **30.2**, **31.3**, **32** (implemented events only), and **33** (`payment.captured` only). Health checks are also live: `GET /health` and `GET /api/v1/health`.
+
+**Not mounted / not implemented:** richer profile views in section **13**; `PUT /api/v1/me/interests`, `PUT /api/v1/me/relationship-intentions`, `GET /api/v1/dating-preferences`, `PUT /api/v1/dating-preferences`, `PUT /api/v1/location`, and `PATCH /api/v1/onboarding/profile`; `GET /api/v1/matches` and rematch (section **22.1**); Who Liked You; notifications; boosts; admin report review and other admin routes beyond plan price (section **31.2**); conversation rooms; Razorpay Subscriptions; renewal, refunds, grace assignment, plan switching, and the subscription reconciliation worker. Match and conversation rows are created by LIKE and SUPER LIKE. UNMATCH does not delete them. The approved 40-interest production catalog is seeded by `20261102120004-seed-interest-catalog.js`. Seed plan prices are placeholders. `plan_features` is empty; runtime Premium gates use `hasActivePremium`, not dynamic feature grants.
 
 ### Core Architectural Principles:
 * **Strict REST Semantics:** Standard HTTP verbs (`GET`, `POST`, `PATCH`, `PUT`, `DELETE`) with resource-oriented URIs.
@@ -125,7 +127,7 @@ Live routes that require `Authorization: Bearer <accessToken>`:
 
 Those profile, onboarding, photo, discovery, unmatch, message, entitlements, usage, and current-subscription routes also require role `USER`. `requireVerified` is not applied on the route. An unverified `USER` may call profile, onboarding, photo, entitlements, usage, and `GET /api/v1/subscriptions/me`. Discovery, PASS, LIKE, SUPER LIKE, UNDO, UNMATCH, the conversation inbox, conversation details, send message, media upload URL, media confirmation, media download, message history, and the conversation unread count check verification in the service and return `403 EMAIL_NOT_VERIFIED` or `403 PHONE_NOT_VERIFIED`. Entitlements, the usage snapshot, and the current-subscription read do not check verification or profile completion. Any other role, including `ADMIN`, receives `403 FORBIDDEN`. Suspended and banned accounts are rejected with `403` by the authentication middleware.
 
-There is no live admin API yet. `requireRole('ADMIN')` exists for later routes.
+The live admin route is `PATCH /api/v1/admin/config/plans/:planId` in section 31.3. It uses `authenticate` and `requireRole('ADMIN')`. `requireVerified` is not applied. Other admin routes are not mounted.
 
 ---
 
@@ -144,7 +146,7 @@ Authorization is verified across four distinct tiers:
 * Standard HTTP request headers:
   * `Content-Type: application/json` (for JSON bodies)
   * `Authorization: Bearer <token>` (for authenticated endpoints)
-  * `Idempotency-Key: <UUIDv4>` (optional on `POST /api/v1/discovery/:userId/like` and `POST /api/v1/discovery/:userId/super-like`. PASS, UNDO, and UNMATCH do not read this header. Checkout idempotency remains planned.)
+  * `Idempotency-Key: <UUIDv4>` (optional on `POST /api/v1/discovery/:userId/like` and `POST /api/v1/discovery/:userId/super-like`. Required on `POST /api/v1/payments/checkout`. PASS, UNDO, and UNMATCH do not read this header.)
   * `X-Request-ID: <UUIDv4>` (client-supplied or generated by gateway for distributed tracing)
 
 ---
@@ -239,8 +241,11 @@ All failed HTTP requests return a standardized, machine-parseable JSON error env
 | `UNDERAGE_NOT_PERMITTED`| 422 | User date of birth indicates age < 18 years. |
 | `DAILY_LIMIT_REACHED` | 429 | Free tier daily swipe or message quota exhausted. |
 | `RATE_LIMITED` | 429 | Exceeded endpoint request threshold per time window. |
-| `PAYMENT_FAILED` | 402 | Gateway payment initiation or capture failed. |
-| `IDEMPOTENCY_CONFLICT` | 409 | Concurrent request with identical Idempotency-Key in flight. |
+| `PAYMENT_FAILED` | 402 | Razorpay rejected order creation. The payment is `FAILED` and no order id is stored. Message: `Payment could not be initiated.` |
+| `PAYMENT_OUTCOME_UNKNOWN` | 500 | The provider timed out, returned a transport or 5xx result, or the order id could not be stored. The payment stays `INITIATED` with a null order id. Message: `The payment provider did not confirm a stored order.` Retrying that same `Idempotency-Key` returns `409 IDEMPOTENCY_CONFLICT` and does not recover the Order. |
+| `PAYMENT_NOT_CONFIGURED` | 500 | `RAZORPAY_KEY_ID` or `RAZORPAY_KEY_SECRET` is missing. No payment row is inserted. |
+| `ACTIVE_SUBSCRIPTION_EXISTS` | 409 | The caller already has qualifying Premium access, including an in-period canceled Premium subscription. Message: `Premium access is already active.` |
+| `IDEMPOTENCY_CONFLICT` | 409 | Concurrent request with identical Idempotency-Key in flight, or a checkout key reused for another plan or an unresolved order. |
 | `INTERNAL_SERVER_ERROR`| 500 | Unexpected server error. |
 
 ---
@@ -651,9 +656,9 @@ From login `user`, and from access-token claims:
 
 Live now: registration, email and phone verification, resend, login, refresh, logout, forgot-password, reset-password, the public catalog reads in section 11.13, the authenticated basic profile API in section 11.14, onboarding interests and relationship intentions in section 11.15, profile photos in section 14, dating preferences in section 12.5, location in section 12.6, onboarding status in section 12.1, onboarding completion in section 12.7, `GET /api/v1/discovery` in section 19, PASS, LIKE, SUPER LIKE, and UNDO in sections 20 and 21, UNMATCH in section 22.2, block management in section 25, and `POST /api/v1/reports` in section 26.1.
 
-Phase 3 onboarding is complete. Phase 4 — Discovery is complete. Phase 5 slices for PASS, LIKE and match creation, SUPER LIKE, UNDO, and UNMATCH are complete. `GET /api/v1/matches` is not implemented. Rematch is not implemented. Gender and relationship-intention seed data exist. Production interests are not seeded, because the approved interest list is not defined.
+Phase 3 onboarding is complete. Phase 4 — Discovery is complete. Phase 5 slices for PASS, LIKE and match creation, SUPER LIKE, UNDO, and UNMATCH are complete. `GET /api/v1/matches` is not implemented. Rematch is not implemented. Gender, relationship-intention, and approved interest seed data exist.
 
-Not implemented: `PUT /api/v1/me/interests`, `PUT /api/v1/me/relationship-intentions`, `GET /api/v1/dating-preferences`, `PUT /api/v1/dating-preferences`, `PUT /api/v1/location`, `PATCH /api/v1/onboarding/profile`, the richer profile views in section 13, `GET /api/v1/matches`, who-liked-me, notifications, subscriptions as a public API, payments, boosts, and admin report review. Do not call those paths. `DELETE /api/v1/matches/:matchId` is live. Chat routes are live where their subsection says implemented.
+Not implemented: `PUT /api/v1/me/interests`, `PUT /api/v1/me/relationship-intentions`, `GET /api/v1/dating-preferences`, `PUT /api/v1/dating-preferences`, `PUT /api/v1/location`, `PATCH /api/v1/onboarding/profile`, the richer profile views in section 13, `GET /api/v1/matches`, rematch, who-liked-me, notifications, boosts, and admin report review. Do not call those paths. Live and mounted: `DELETE /api/v1/matches/:matchId`; chat and media routes where their subsections say implemented; `GET /api/v1/subscriptions/plans`, `GET /api/v1/subscriptions/me`, `POST /api/v1/subscriptions/cancel`; `GET /api/v1/me/entitlements`, `GET /api/v1/me/usage`; `POST /api/v1/payments/checkout`, `POST /api/v1/payments/verify`; `POST /api/v1/webhooks/razorpay` for `payment.captured`; and `PATCH /api/v1/admin/config/plans/:planId`.
 
 Later sections remain the planned contract unless a subsection says it is implemented.
 
@@ -684,7 +689,7 @@ Only active rows are returned, ordered by `display_order` ascending. An empty ca
 
 * **Method & Path:** `GET /api/v1/interests`
 * **Auth:** Public
-* **Seed data:** none. The approved production interest list is not defined. The endpoint returns whatever active rows exist.
+* **Seed data:** The approved production catalog is 40 active interests across 8 categories, seeded by `src/database/seeders/20261102120004-seed-interest-catalog.js`. Codes and display order are: `TRAVEL` (1), `ROAD_TRIPS` (2), `ADVENTURE` (3), `HIKING` (4), `CAMPING` (5) under Travel & Adventure; `FOODIE` (6), `COOKING` (7), `COFFEE` (8), `BAKING` (9), `STREET_FOOD` (10) under Food & Drinks; `MOVIES` (11), `TV_SHOWS` (12), `MUSIC` (13), `CONCERTS` (14), `ANIME` (15) under Entertainment; `FITNESS` (16), `CRICKET` (17), `FOOTBALL` (18), `BADMINTON` (19), `YOGA` (20) under Sports & Fitness; `PHOTOGRAPHY` (21), `PAINTING` (22), `DANCING` (23), `WRITING` (24), `FASHION` (25) under Arts & Creativity; `NIGHTLIFE` (26), `PARTIES` (27), `SHOPPING` (28), `PETS` (29), `VOLUNTEERING` (30) under Lifestyle & Social; `TECHNOLOGY` (31), `READING` (32), `ENTREPRENEURSHIP` (33), `SCIENCE` (34), `LEARNING_LANGUAGES` (35) under Learning & Technology; `NATURE` (36), `MEDITATION` (37), `PERSONAL_GROWTH` (38), `BEACH_LIFE` (39), `GARDENING` (40) under Nature & Wellness. The seeder upserts by `code`, refreshes name, category, and display order, and does not overwrite `is_active` on conflict. `down` is a no-op. UUIDs are generated with `gen_random_uuid()`. Apply the seeder before expecting a non-empty catalog in an environment.
 * **Success Response (`200 OK`):** `data` items are `{ "id", "code", "name", "category" }`. `category` may be `null`. Message: `Interests retrieved successfully`. An empty table returns `data: []`.
 
 #### List active relationship intentions
@@ -1168,10 +1173,10 @@ Photo objects returned after confirm, list, and patch are `{ "id", "url", "displ
 ## 15. Interest APIs
 
 ### 15.1 List Active Interests
-* **Status:** Implemented. See section 11.13. Public, active rows only, `display_order` ascending. Empty `data: []` is success. Production interests are not seeded.
+* **Status:** Implemented. See section 11.13. Public, active rows only, `display_order` ascending. Empty `data: []` is success. The approved 40-interest catalog is seeded by `20261102120004-seed-interest-catalog.js`.
 * **Method & Path:** `GET /api/v1/interests`
 * **Auth:** Public
-* **Success Response (`200 OK`):** Message is `Interests retrieved successfully`. Item fields are `id`, `code`, `name`, and `category`. The sample below is illustrative only; those interest names are not seed data.
+* **Success Response (`200 OK`):** Message is `Interests retrieved successfully`. Item fields are `id`, `code`, `name`, and `category`. The sample below is illustrative; the approved production catalog is the 40-interest seeder documented in section 11.13.
   ```json
   {
     "success": true,
@@ -2101,7 +2106,8 @@ A report does not require verification, a complete profile, location, dating pre
 * **Query:** any query parameter is `400 VALIDATION_ERROR`. Detail field is the parameter name and the message is `Unsupported query parameter.` A user id in the query is rejected. The caller is `req.user.id`.
 * **Body:** not accepted. A JSON property is `400 VALIDATION_ERROR`.
 * **Read:** one lookup of the caller's qualifying `subscriptions` row and its required `plans` row, inside a short Sequelize transaction. The transaction does not lock rows. The route writes nothing. It does not read `plan_features`, `usage_limits`, `usage_records`, payments, or credit balances.
-* **Qualification:** the lookup is `findQualifyingPremiumSubscription` in `subscriptions.data-access.ts`. `findQualifyingPremiumPlan` and `hasActivePremium` call that same function and do not keep a second predicate. Plan code must be `PREMIUM_MONTHLY` or `PREMIUM_YEARLY`. `plans.is_active` is not part of the check. A non-canceled row qualifies when its status is `ACTIVE`, `PAST_DUE`, or `GRACE_PERIOD` and `current_period_end > now` or `grace_period_end > now`. A null `grace_period_end` does not satisfy the grace comparison. A `CANCELED` row qualifies only when `current_period_end > now`. `grace_period_end` does not qualify a canceled row. Comparisons use the application clock and are strict `>`.
+* **Qualification:** the lookup is `findQualifyingPremiumSubscription` in `subscriptions.data-access.ts`. `findQualifyingPremiumPlan` and `hasActivePremium` call that same function and do not keep a second predicate. Plan code must be `PREMIUM_MONTHLY` or `PREMIUM_YEARLY`. `plans.is_active` is not part of the check. A non-canceled row qualifies when its status is `ACTIVE`, `PAST_DUE`, or `GRACE_PERIOD` and `current_period_end > now` or `grace_period_end > now`. A null `grace_period_end` does not satisfy the grace comparison. A `CANCELED` row qualifies only when `current_period_end > now`. `grace_period_end` does not qualify a canceled row. Comparisons use the application clock and are strict `>`. An `EXPIRED` row does not qualify. This route does not write that status.
+* **Expiration:** this route does not expire a subscription. `POST /api/v1/payments/checkout` is the implemented writer that can set `EXPIRED` on an elapsed nonterminal row. A later read of that row is the empty state. An elapsed `ACTIVE`, `PAST_DUE`, or `GRACE_PERIOD` row that checkout has not expired stays in that status and is still the empty state.
 * **Selection:** a qualifying non-canceled row is returned before any canceled row. `uq_subscriptions_single_active_per_user` allows at most one row per user in `ACTIVE`, `PAST_DUE`, or `GRACE_PERIOD`. Only when no non-canceled row qualifies does the lookup consider `CANCELED` rows, ordered by `current_period_end DESC`, `updated_at DESC`, `id DESC`. An `EXPIRED` row is the empty state. An elapsed `ACTIVE`, `PAST_DUE`, or `GRACE_PERIOD` row is the empty state when neither timestamp is still in the future. A `CANCELED` row whose `current_period_end` is not after now is the empty state even when `grace_period_end` is still in the future. A `FREE` plan row does not qualify. When no row qualifies, the route does not choose a historical row.
 * **Missing plan:** the plan join is required. If a qualifying subscription row is returned without its plan association, the route fails closed with `500 INTERNAL_SERVER_ERROR`. It does not invent plan `code` or `name`.
 * **Fields:** `data` is exactly `hasActiveSubscription` and `subscription`. When a row qualifies, `hasActiveSubscription` is `true` and `subscription` is exactly `plan.code`, `plan.name`, `status`, `autoRenew`, `currentPeriodStart`, `currentPeriodEnd`, and `gracePeriodEnd`. `plan` is exactly `code` and `name`. When no row qualifies, `hasActiveSubscription` is `false` and `subscription` is `null`. Dates use the existing JSON ISO-8601 UTC serialization. `gracePeriodEnd` is JSON `null` when the column is null. Provider ids, payment fields, subscription id, `canceledAt`, `endedAt`, feature flags, usage limits, and credit balances are omitted.
@@ -2142,14 +2148,14 @@ A report does not require verification, a complete profile, location, dating pre
 ---
 
 ### 28.3 Cancel Subscription Auto-Renewal
-**Implemented.** Local cancellation for the authenticated caller. This route does not call a payment provider, write a payment, process a webhook, issue a refund, reset quotas, or change credit balances. Section 33 stays unimplemented.
+**Implemented.** Local cancellation for the authenticated caller. This route does not call a payment provider, write a payment, process a webhook, issue a refund, reset quotas, or change credit balances. Authoritative Premium activation remains section 33 (`payment.captured` only). Renewal, refunds, grace assignment, and reconciliation are still not implemented.
 
 * **Method & Path:** `POST /api/v1/subscriptions/cancel`
 * **Auth:** `Authorization: Bearer <accessToken>` and `requireRole('USER')`. `requireVerified` is not applied. A completed profile is not required. An unverified `USER` may call this route. A missing token is `401 AUTH_REQUIRED`. An invalid token is `401 INVALID_TOKEN`. An `ADMIN` is `403 FORBIDDEN`. Suspended and banned accounts are rejected by authentication middleware.
 * **Query:** any query parameter is `400 VALIDATION_ERROR`. Detail field is the parameter name and the message is `Unsupported query parameter.`
 * **Body:** not accepted. A JSON property is `400 VALIDATION_ERROR`. There is no `Idempotency-Key` and no route rate limit. The caller is `req.user.id`. A user id in the query or body is rejected.
 * **Transaction:** one Sequelize transaction. The caller's row in `ACTIVE`, `PAST_DUE`, or `GRACE_PERIOD` is locked with `FOR UPDATE`. The partial unique index allows at most one such row.
-* **`ACTIVE`:** eligible for every plan code, including a row whose `current_period_end` has already elapsed. The route sets `status = CANCELED`, `auto_renew = false`, and `canceled_at` to the application time captured for that transaction. `ended_at`, `current_period_start`, `current_period_end`, `grace_period_end`, the plan, and provider ids stay unchanged.
+* **`ACTIVE`:** eligible for every plan code, including a row whose `current_period_end` has already elapsed. The route sets `status = CANCELED`, `auto_renew = false`, and `canceled_at` to the application time captured for that transaction. `ended_at`, `current_period_start`, `current_period_end`, `grace_period_end`, the plan, and provider ids stay unchanged. This route does not call the checkout expiration transition. An `ACTIVE` row whose period has elapsed and whose `grace_period_end` is still in the future is canceled in place, and `ended_at` stays null.
 * **`PAST_DUE` and `GRACE_PERIOD`:** no write. The response is `404`. Canceled history is not consulted.
 * **Idempotent repeat:** when no nonterminal row exists, a caller-owned `CANCELED` row with `current_period_end > now` returns the same success body and writes nothing, including `canceled_at` and `updated_at`. Several such rows are ordered by `current_period_end DESC`, `updated_at DESC`, `id DESC`. Stored `auto_renew` is not required to be false and is not repaired. An elapsed `CANCELED` row is not this case, even when `grace_period_end` is still in the future. `EXPIRED` is never this case. A second request after canceling an already elapsed `ACTIVE` row is `404` when no other in-period `CANCELED` row exists.
 * **Not found (`404`):** code `ACTIVE_SUBSCRIPTION_NOT_FOUND`, message `Active subscription not found.`, `details` `[]`.
@@ -2169,48 +2175,63 @@ A report does not require verification, a complete profile, location, dating pre
 ## 29. Payment APIs (Razorpay Integration)
 
 ### 29.1 Create Checkout Session
+**Implemented.** Creates one Razorpay Order for an eligible Premium plan and one `INITIATED` payment. Before the Premium check, it can transition one elapsed nonterminal subscription to `EXPIRED`. It does not create a subscription, grant Premium, process a webhook, renew, refund, or reconcile. Section 29.2 checks the client signature and does not grant Premium. Authoritative Premium activation is section 33 (`payment.captured` only).
+
 * **Method & Path:** `POST /api/v1/payments/checkout`
-* **Auth:** Authenticated
-* **Request Body:**
-  ```json
-  {
-    "planId": "plan-premium-monthly",
-    "paymentType": "SUBSCRIPTION_INITIAL"
-  }
-  ```
-* **Success Response (`200 OK`):**
+* **Auth:** `authenticate`, then `requireRole('USER')`. `requireVerified` is not applied. A completed profile is not required. An unverified `USER` may call this route. A missing token is `401 AUTH_REQUIRED`. An invalid token is `401 INVALID_TOKEN`. An `ADMIN` is `403 FORBIDDEN`. Suspended and banned accounts are rejected by authentication middleware.
+* **Query:** any query parameter is `400 VALIDATION_ERROR`. Detail field is the parameter name and the message is `Unsupported query parameter.`
+* **Header:** `Idempotency-Key` is required. It must be a UUID. The stored value is lowercase. A missing or blank header is `400 VALIDATION_ERROR` with field `Idempotency-Key` and message `Idempotency-Key is required.` Any other value is `400 VALIDATION_ERROR` with message `Idempotency-Key must be a valid UUID.`
+* **Body:** exactly `{ "planId": "<uuid>" }`. `planId` is lowercased. Unknown properties are `400 VALIDATION_ERROR`, including `amount`, `amountInCents`, `currency`, `paymentType`, `status`, `provider`, `providerOrderId`, `providerPaymentId`, and `subscriptionId`. Those fields are rejected, not ignored.
+* **Price:** the plan row is locked with `FOR UPDATE`. `amount_in_cents`, `currency`, and `billing_interval` are copied from that row in the payment insert. The lock is released before the Razorpay call. A later admin price change or a later change to the plan interval does not rewrite the payment snapshot.
+* **Eligible plan:** `code` is `PREMIUM_MONTHLY` or `PREMIUM_YEARLY`, `is_active` is true, `currency` is `INR`, and `price_in_cents` is an integer greater than zero. `PREMIUM_MONTHLY` must have `billing_interval = MONTH`. `PREMIUM_YEARLY` must have `billing_interval = YEAR`. A missing plan is `404 RESOURCE_NOT_FOUND`. An inactive plan or any other code, including `FREE`, is `400 VALIDATION_ERROR` with message `Plan is not available for checkout.` A non-`INR` currency is `Plan currency must be INR.` A non-positive price is `Plan price must be a positive integer number of cents.` An otherwise eligible Premium plan whose interval is missing, `NONE`, or the other Premium interval is `400 VALIDATION_ERROR` with field `planId` and message `Plan billing interval does not match the plan code.` Those checks run before the payment insert and before the Razorpay call. Invalid plans do not call Razorpay and do not insert a payment. Razorpay's own minimum of 100 paise is not a local rule. A smaller positive price is sent, and a provider rejection becomes `402 PAYMENT_FAILED`.
+* **Existing Premium:** on a new checkout attempt, the caller's `ACTIVE`, `PAST_DUE`, or `GRACE_PERIOD` row is locked with `FOR UPDATE`. One application `now` is captured. `expireElapsedNonterminalSubscription` then sets `status = EXPIRED` and `ended_at = now` only when `current_period_end <= now` and `grace_period_end` is null or `grace_period_end <= now`. The update repeats the nonterminal status and both date conditions in its `WHERE` clause. `findQualifyingPremiumSubscription` then runs with that same `now`. The predicate is unchanged: nonterminal rows qualify on a strict future period or grace, and `CANCELED` qualifies only while `current_period_end > now`. A qualifying row, including an in-period `CANCELED` Premium subscription, is `409 ACTIVE_SUBSCRIPTION_EXISTS`. A future `grace_period_end` prevents expiration and keeps that conflict. A lapsed `CANCELED` row is not expired and may start checkout. A fully elapsed nonterminal row becomes `EXPIRED` in the same transaction as the new payment insert. That transaction commits before the Razorpay call, so a later provider rejection or unknown outcome leaves the row `EXPIRED`. An idempotent replay, an in-progress key, and a failed key return before this transition and do not change the subscription. This route does not change `hasActivePremium` or cancellation behavior.
+* **Payment insert:** `user_id` is the caller, `plan_id` is the locked plan, `provider` is `RAZORPAY`, `payment_type` is `SUBSCRIPTION_INITIAL`, `status` is `INITIATED`, `subscription_id` is null, and both provider ids are null. `billing_interval` is the locked plan's `MONTH` or `YEAR` value. The response does not include it. The commit happens before the provider call. A payment created before this column may keep `billing_interval` null, and replaying that row does not backfill it.
+* **Order:** Razorpay `orders.create` receives `amount` as the snapshotted integer paise value, `currency` `INR`, `receipt` set to the payment UUID (36 characters, within the 40-character receipt limit), and `notes.paymentId` set to that same id. No name, email, or phone is sent. The local request timeout is 15 seconds. A stored order leaves the payment `INITIATED`.
+* **Idempotency:** the unique partial index is `(user_id, idempotency_key)`. The same user and key with a stored `provider_order_id` returns that checkout result and does not call Razorpay. The same key with `status = FAILED` and a null order id returns `402 PAYMENT_FAILED` and does not call Razorpay. The same key with `INITIATED` and a null order id returns `409 IDEMPOTENCY_CONFLICT` with message `A request with this Idempotency-Key is already in progress.` A key reused for a different `planId` returns `409 IDEMPOTENCY_CONFLICT` with message `Idempotency-Key was already used for a different plan.` A different user may use the same key string. A different key is a new attempt. The unique-constraint race is handled in the service. The response does not include the constraint name.
+* **Known provider rejection:** a Razorpay 4xx other than 408 or 429 sets `status = FAILED` and `failure_reason = PROVIDER_REJECTED` only when the order id is still null. The response is `402 PAYMENT_FAILED`. The provider description is not returned.
+* **Unknown outcome:** a timeout, a missing response, HTTP 408, 429, or 5xx, or a failure while storing `provider_order_id`, leaves the payment `INITIATED` with a null order id. The response is `500 PAYMENT_OUTCOME_UNKNOWN` with message `The payment provider did not confirm a stored order.` The same key must not create another order. A later `POST /api/v1/payments/checkout` with that same key returns `409 IDEMPOTENCY_CONFLICT` and does not call Razorpay or the Order-ID backfill. Checkout does not invoke backfill. There is no public reconciliation route and no scheduled reconciliation job. If Razorpay created the order and the id was not stored, `backfillProviderOrderId` can store that id only, as described below. A failure to store an id that the create response already returned is still logged with the payment id and order id, without the key secret.
+* **Not configured:** missing Razorpay key id or secret is `500 PAYMENT_NOT_CONFIGURED` before a payment insert. Production boot requires both variables. Development and test can boot without them.
+* **Order-ID backfill:** `backfillProviderOrderId(paymentId)` in `src/modules/payments/order-id-backfill.service.ts` is an internal function. It is not an HTTP route, and checkout, verify, and the webhook do not call it. It reads `orders.all({ receipt, count: 2, skip: 0 })` for an `INITIATED` `RAZORPAY` `SUBSCRIPTION_INITIAL` payment whose `provider_order_id` is null, whose `user_id` and `plan_id` are present, and whose `billing_interval` is `MONTH` or `YEAR`. A missing user, a missing plan, a missing interval, or any other interval returns `ineligible` and does not call the provider. The receipt is the payment UUID. It stores an Order ID only when that first page is shorter than the requested page size, `count` equals the number of items, and the single item has receipt, `notes.paymentId`, integer amount, and currency exactly equal to the local payment. A full page, zero Orders, a field mismatch, a malformed page, a timeout, HTTP 429, or a 5xx leaves the row unchanged. Zero Orders is not a rejection and does not mark the payment `FAILED`. The write reuses `assignProviderOrderId`, which updates only an `INITIATED` row with a null Order ID. A repeated call after a stored ID does not look up again. The function does not call `orders.create`, does not change status, `paid_at`, `provider_payment_id`, `subscription_id`, `failure_reason`, or `raw_payload`, and does not grant Premium. A stored ID lets a later verified `payment.captured` webhook use the existing capture path. Ambiguous provider results stay unresolved for an operator. The installed SDK documents `receipt` as a list filter and says a receipt has to be unique; this implementation does not treat that comment as proof, and no live Razorpay call verified the filter. The function must remain unused operationally until receipt-filter exactness, pagination, and completeness semantics are verified against a non-production Razorpay account. Source inspection and mocked tests do not establish those live provider semantics.
+* **Success Response (`200 OK`):** Message: `Checkout initiated.` A replay uses the same body and message. There is no replay flag and no `subscriptionId`.
   ```json
   {
     "success": true,
     "data": {
+      "paymentId": "6e6e0001-0000-4000-8000-0000000000aa",
+      "planId": "6e6e0001-0000-4000-8000-000000000002",
+      "planCode": "PREMIUM_MONTHLY",
       "orderId": "order_Hk9281jsa82",
-      "subscriptionId": "sub_Nx82910sa8",
-      "keyId": "rzp_test_xxxxxx",
-      "amount": 49900,
+      "amountInCents": 49900,
       "currency": "INR",
-      "customer": {
-        "name": "Alex Morgan",
-        "email": "alex.morgan@example.com"
-      }
-    }
+      "keyId": "rzp_test_public"
+    },
+    "message": "Checkout initiated."
   }
   ```
+  `data` is exactly those seven fields. `amountInCents` and `currency` are the payment snapshot. `keyId` is the public Razorpay key id. The key secret is not returned.
 
 ---
 
 ### 29.2 Verify Client Payment Handshake
+**Implemented.** Confirms the Razorpay Checkout signature for one stored Order. It reads one `payments` row and writes nothing. It does not change `status`, `provider_payment_id`, `paid_at`, `raw_payload`, `failure_reason`, or any other payment column. It does not create or update a subscription, call Razorpay, or grant Premium. Authoritative Premium activation is section 33 (`payment.captured` only). An Order id or an `INITIATED` payment is still not proof of capture.
+
 * **Method & Path:** `POST /api/v1/payments/verify`
-* **Auth:** Authenticated
-* **Purpose:** Validates cryptographic HMAC signature returned by client Razorpay SDK.
-* **Request Body:**
+* **Auth:** `authenticate`, then `requireRole('USER')`. `requireVerified` is not applied. A completed profile is not required. An unverified `USER` may call this route. A missing token is `401 AUTH_REQUIRED`. An invalid token is `401 INVALID_TOKEN`. An `ADMIN` is `403 FORBIDDEN`. Suspended and banned accounts are rejected by authentication middleware.
+* **Query:** any query parameter is `400 VALIDATION_ERROR`. Detail field is the parameter name and the message is `Unsupported query parameter.`
+* **Body:** exactly `razorpayPaymentId`, `razorpayOrderId`, and `razorpaySignature`. Each value must be a string. The stored value is trimmed, and an empty or whitespace-only string is `400 VALIDATION_ERROR` with message `Razorpay payment id is required.`, `Razorpay order id is required.`, or `Razorpay signature is required.` A non-string is `400 VALIDATION_ERROR` with message `Razorpay payment id must be a string.`, `Razorpay order id must be a string.`, or `Razorpay signature must be a string.` Unknown properties are `400 VALIDATION_ERROR` and are not ignored. There is no `Idempotency-Key`.
+* **Ownership:** the row must have `user_id` equal to the caller, `provider = 'RAZORPAY'`, and `provider_order_id` equal to the trimmed `razorpayOrderId`. A missing row, another user's Order, and a payment whose `provider_order_id` is null all return `404 RESOURCE_NOT_FOUND` with message `Resource not found.` and `details` `[]`. The response does not say which of those cases occurred. The null Order id is not written.
+* **Signature:** HMAC-SHA256, hex-encoded, of `stored provider_order_id + "|" + trimmed razorpayPaymentId`, keyed with `RAZORPAY_KEY_SECRET`. The Order id in that string is the stored column. The client signature must be exactly 64 hexadecimal characters, uppercase or lowercase. `safeEqualHex` accepts it only when the whole string is hexadecimal and its decoded length equals the digest. A truncated signature, an odd-length signature, a non-hex character, and a valid digest followed by extra characters are failed comparisons. They do not throw. The route does not log the signature or the key secret, and neither value is returned.
+* **Invalid signature (`422`):** code `PAYMENT_SIGNATURE_INVALID`, message `Payment signature is invalid.`, `details` `[]`. The payment row is unchanged, including a `FAILED` row whose stored Order id matched.
+* **Not configured:** a missing `RAZORPAY_KEY_SECRET` is `500 PAYMENT_VERIFICATION_NOT_CONFIGURED` with message `Payment verification is not configured.` This check uses the verification secret only. It does not call Razorpay. The payment row is unchanged.
+* **Success Response (`200 OK`):** Message: `Payment signature verified.` A repeated valid signature returns the same body and writes nothing. `data` is `null`.
   ```json
   {
-    "razorpayPaymentId": "pay_Hk9281a9",
-    "razorpayOrderId": "order_Hk9281jsa82",
-    "razorpaySignature": "9a8b7c6d5e4f3a2b1c..."
+    "success": true,
+    "data": null,
+    "message": "Payment signature verified."
   }
   ```
-* **Success Response (`200 OK`):** Returns verification confirmation. *(Note: Authoritative subscription activation occurs via webhook).*
+  Authoritative subscription activation is `POST /api/v1/webhooks/razorpay` for a verified `payment.captured` event, described in section 33. This verify route still writes nothing and does not grant Premium.
 
 ---
 
@@ -2311,10 +2332,44 @@ Sections **30.1** and **30.2** are mounted and remain read-only. LIKE, PASS, and
   * Body: `{ "status": "RESOLVED", "adminNotes": "User banned for harassment", "actionTaken": "BAN_USER" }`
 
 ### 31.3 Dynamic Configuration Management
+Genders, interests, relationship intentions, and plan limit editing are not mounted.
+
 * **Manage Genders:** `GET`, `POST`, `PATCH /api/v1/admin/config/genders`
 * **Manage Interests:** `GET`, `POST`, `PATCH /api/v1/admin/config/interests`
 * **Manage Relationship Intentions:** `GET`, `POST`, `PATCH /api/v1/admin/config/relationship-intentions`
-* **Manage Plans & Limits:** `GET`, `PATCH /api/v1/admin/config/plans/:planId`
+
+#### Update plan price
+**Implemented.** Changes `price_in_cents` and `currency` on one `plans` row and appends `plan_price_changes` in the same transaction. It does not change `name`, `code`, `billing_interval`, `is_active`, `display_order`, features, or usage limits. It does not write `subscriptions` or `payments`, and it does not create a Razorpay Order or activate Premium.
+
+* **Method & Path:** `PATCH /api/v1/admin/config/plans/:planId`
+* **Auth:** `authenticate`, then `requireRole('ADMIN')`. A missing or non-Bearer header is `401 AUTH_REQUIRED`. An invalid token is `401 INVALID_TOKEN`. A `USER` is `403 FORBIDDEN`. Suspended and banned accounts are rejected by authentication middleware. `requireVerified` is not applied.
+* **Path:** `planId` must be a UUID. Otherwise `400 VALIDATION_ERROR` with field `planId` and message `Plan id must be a valid UUID.` An unknown plan is `404 RESOURCE_NOT_FOUND`, message `Resource not found`.
+* **Query:** any query parameter is `400 VALIDATION_ERROR`.
+* **Body:** `priceInCents` and `currency` are optional, and at least one is required. `reason` is required. Unknown properties are rejected. `reason` is trimmed, and a blank reason is `400 VALIDATION_ERROR`.
+  * `priceInCents` is an integer from `0` through `2147483647`. Fractions, strings, and null are rejected.
+  * `currency` must be the exact string `INR`. Other values are rejected and are not converted.
+  * The service validates the price and currency that would be stored. A price-only update of a non-`INR` row is rejected and does not rewrite that currency. Sending `currency: "INR"` may correct a non-`INR` row when the resulting price is valid.
+  * `PREMIUM_MONTHLY` and `PREMIUM_YEARLY` must remain greater than `0`. `FREE` and any other plan code may be `0`.
+* **Inactive plans:** an inactive plan may be edited. `is_active` stays as stored, so the public catalog still omits it.
+* **No-op:** when the resulting price and currency already match the locked row, the response is `200`, no audit row is inserted, and `updated_at` is not changed. Message: `Plan price is unchanged.`
+* **Write:** the plan row is locked with `FOR UPDATE`. A real change updates only `price_in_cents` and `currency`, then inserts one `plan_price_changes` row with the administrator, the plan, the old and new price, the old and new currency, action `PLAN_PRICE_CHANGED`, the trimmed reason, and `created_at`. If the audit insert fails, the price update rolls back.
+* **Catalog effect:** the next `GET /api/v1/subscriptions/plans` returns the stored price for an active plan. Seeded amounts are not an approved price list. Product prices remain TBD until an administrator sets them.
+* **Success Response (`200 OK`):** Message: `Plan price updated.`
+  ```json
+  {
+    "success": true,
+    "data": {
+      "id": "6e6e0001-0000-4000-8000-000000000002",
+      "code": "PREMIUM_MONTHLY",
+      "priceInCents": 59900,
+      "currency": "INR",
+      "isActive": true,
+      "updatedAt": "2026-10-16T12:00:00.000Z"
+    },
+    "message": "Plan price updated."
+  }
+  ```
+  `data` is exactly those six fields. The no-op response uses the same shape and the unchanged message.
 
 ### 31.4 System KPI Dashboard
 * **Get System Statistics:** `GET /api/v1/admin/dashboard/stats`
@@ -2332,7 +2387,7 @@ Sections **30.1** and **30.2** are mounted and remain read-only. LIKE, PASS, and
 * **Socket identity:** Successful handshakes store the live `AuthenticatedUser` on `socket.data.user`. `chat:message:send` uses `socket.data.user.id` as the sender. Unverified or incomplete profiles may connect. The send path reloads the user before it calls the chat service.
 * **User room:** On connect the server joins exactly `user:{userId}` from `socket.data.user.id`. The client cannot choose the room. Conversation rooms are not joined, and there is no conversation-room join event.
 * **Redis:** Socket.IO requires Redis for the adapter. Production fails startup if Redis or the adapter cannot initialize. Development can keep serving HTTP without Socket.IO when Redis is unavailable. Redis is not a message store, a quota store, or a chat idempotency store.
-* **Not in this slice:** No client `chat:message:read` command, no conversation-room join, no media Socket.IO upload or delivery, no offline replay, and no notification emissions. Block emits `match:unmatch` as section 25.1 describes. Chat handlers in this section do not emit it. Chat media upload URL issuance is the HTTP route in section 24.5. It does not emit a socket event. Confirmation and media-message persistence are not implemented. Read receipts are the HTTP route in section 24.3. That route emits the server event below. It does not add a client listener. Typing indicators are section 32.4.
+* **Not in this slice:** No client `chat:message:read` command, no conversation-room join, no media Socket.IO upload path, no offline replay, and no notification emissions. Block emits `match:unmatch` as section 25.1 describes. Chat handlers in this section do not emit it. Chat media upload URL issuance is the HTTP route in section 24.5 and does not emit a socket event. Media confirmation and persistence are the HTTP route in section 24.6; a new confirm emits `chat:message:new` to the recipient user room. Media download is section 24.7. Read receipts are the HTTP route in section 24.3. That route emits the server event below. It does not add a client listener. Typing indicators are section 32.4.
 
 ### 32.1 Server $\rightarrow$ Client Events
 | Event Name | Room / Target | Payload Structure | Trigger Condition | Status |
@@ -2384,17 +2439,30 @@ The listener is registered only after handshake authentication and the `user:{us
 
 ## 33. Webhooks Contract (Razorpay)
 
-This contract is not implemented. `POST /api/v1/subscriptions/cancel` updates local cancellation state and does not call Razorpay or this webhook.
+**Implemented for `payment.captured` only.** Checkout and `POST /api/v1/payments/verify` do not grant Premium. `POST /api/v1/subscriptions/cancel` updates local cancellation state and does not call Razorpay. This route does not call Razorpay. Order-ID backfill is a separate internal read and does not run on this route. Razorpay Subscriptions, renewal, refunds, grace assignment, plan switching, `order.paid` activation, and the reconciliation worker are not implemented.
 
 * **Endpoint:** `POST /api/v1/webhooks/razorpay`
-* **Auth:** Validates `X-Razorpay-Signature` against `RAZORPAY_WEBHOOK_SECRET`.
-* **Idempotency Strategy:** Inserts `event.id` into `processed_webhooks`. Duplicate events terminate immediately with `200 OK`.
-* **Handled Event Types:**
-  * `subscription.activated` $\rightarrow$ Activates user subscription (`status = 'ACTIVE'`).
-  * `subscription.charged` $\rightarrow$ Records payment invoice in `payments`, extends `current_period_end`.
-  * `payment.failed` $\rightarrow$ Transitions subscription to `PAST_DUE`, triggers 24-hour grace window.
-  * `subscription.cancelled` $\rightarrow$ Sets `auto_renew = FALSE`.
-  * `subscription.completed` $\rightarrow$ Transitions to `EXPIRED`, downgrades user entitlements to Free.
+* **Auth:** No user JWT and no `requireRole`. The route keeps the exact raw JSON bytes, limited to 100kb, and verifies `X-Razorpay-Signature` with HMAC-SHA256 keyed by `RAZORPAY_WEBHOOK_SECRET`. Comparison uses `safeEqualHex`. The Razorpay SDK helper that compares signatures with `===` is not used. The secret is optional in development and test, required in production, and an empty value is missing.
+* **Missing secret (`500`):** code `WEBHOOK_NOT_CONFIGURED`, message `Payment webhook is not configured.` Nothing is written.
+* **Invalid signature (`400`):** a missing header, an empty signature, or any value that is not the hex HMAC of those exact bytes. Message `Webhook signature is invalid.` Nothing is written. A checkout `order_id|payment_id` MAC is not accepted.
+* **Malformed JSON (`400`):** after a valid signature, a body that does not parse. Message `Invalid JSON payload structure.` Nothing is written.
+* **Other signed events (`200`):** any `event` other than `payment.captured`, including `payment.authorized` and `order.paid`, returns message `Webhook received.` and `data: null`. No payment, subscription, or `processed_webhooks` row is written.
+* **Unknown Order (`500`):** a structurally valid capture whose `order_id` is not stored on a `provider = 'RAZORPAY'` payment. Code `WEBHOOK_PROCESSING_FAILED`. No `processed_webhooks` row is inserted, so a delivery that races `assignProviderOrderId` can be retried.
+* **Permanent conflict (`200`):** amount, currency, provider payment id, captured status, `SUBSCRIPTION_INITIAL`, `user_id`, `plan_id`, `billing_interval` of `MONTH` or `YEAR`, or a present `notes.paymentId` fails validation against the payment snapshot. A different stored provider payment id, or a status other than `INITIATED` or `AUTHORIZED`, is the same class. The payment is not overwritten. One minimized `processed_webhooks` row stores the event id, event type, order id, provider payment id, amount, currency, payment status, outcome `conflict`, and a reason code. Email, contact, card data, and `payments.raw_payload` are not stored.
+* **Activation:** one transaction locks the payment by provider and order id. For a capturable snapshot it locks the caller's nonterminal subscription, runs `expireElapsedNonterminalSubscription`, locks an in-period canceled row, and calls `findQualifyingPremiumSubscription` with one application `now`. Price, currency, plan id, and interval come from the payment row. The current plan row is not reread. When nothing qualifies, one `ACTIVE` subscription is inserted with `auto_renew = false`, null provider subscription and customer ids, null grace, `current_period_start = now`, and `current_period_end` from UTC calendar addition of the stored `MONTH` or `YEAR`. End-of-month dates clamp to the last valid UTC day, and the UTC time of day is preserved. `current_period_end` stays an exclusive boundary. The payment becomes `CAPTURED`, stores the provider payment id and `paid_at = now`, and points `subscription_id` at the new row.
+* **Qualifying subscription already exists:** the payment becomes `CAPTURED` with its provider payment id and `paid_at = now`, and `subscription_id` stays null. The existing period is not extended. No refund is issued.
+* **Payment already linked:** an existing `subscription_id` is kept. A second subscription is not created and the linked period is not changed.
+* **Duplicate delivery:** the same `event_id` does not apply the capture again. A new event id for an already `CAPTURED` payment with the same provider payment id is recorded and does not change `paid_at` or the period.
+* **Concurrency:** the payment update, optional subscription insert, and processed-event insert commit or roll back together. A unique violation of `uq_subscriptions_single_active_per_user` rolls the loser back completely and returns `500 WEBHOOK_PROCESSING_FAILED` with empty `details`. The response does not include the constraint name. The retry sees the qualifying subscription and stores that Order as captured with `subscription_id` null.
+* **Success body (`200`):**
+
+```json
+{
+  "success": true,
+  "data": null,
+  "message": "Webhook received."
+}
+```
 
 ---
 
@@ -2403,8 +2471,8 @@ This contract is not implemented. `POST /api/v1/subscriptions/cancel` updates lo
 1. **Implemented client mutating APIs** that accept an optional `Idempotency-Key: <UUIDv4>` header:
    * `POST /api/v1/discovery/:userId/like` — Redis key `idempotency:<callerId>:<key>`.
    * `POST /api/v1/discovery/:userId/super-like` — Redis key `idempotency:<callerId>:super-like:<key>`.
-2. **Not used:** `POST /api/v1/discovery/:userId/pass`, `POST /api/v1/discovery/undo`, `DELETE /api/v1/matches/:matchId`, `POST /api/v1/conversations/:conversationId/messages`, `PATCH /api/v1/conversations/:conversationId/read`, Socket.IO `chat:message:send`, and `POST /api/v1/subscriptions/cancel` do not read an idempotency key and do not write one. Each accepted TEXT send inserts a new message. A second unmatch is `404 MATCH_NOT_FOUND`. A repeated read-receipt call is a no-op because it updates only rows whose `read_at` is null. It does not use Redis. A repeated in-period subscription cancellation is idempotent because the stored `CANCELED` row is recognized inside the request transaction. It does not use Redis.
-3. **Planned:** `POST /api/v1/payments/checkout`.
+2. **Not used:** `POST /api/v1/discovery/:userId/pass`, `POST /api/v1/discovery/undo`, `DELETE /api/v1/matches/:matchId`, `POST /api/v1/conversations/:conversationId/messages`, `PATCH /api/v1/conversations/:conversationId/read`, Socket.IO `chat:message:send`, `POST /api/v1/subscriptions/cancel`, and `POST /api/v1/payments/verify` do not read an idempotency key. Verify writes no column. Each accepted TEXT send inserts a new message. A second unmatch is `404 MATCH_NOT_FOUND`. A repeated read-receipt call is a no-op because it updates only rows whose `read_at` is null. It does not use Redis. A repeated in-period subscription cancellation is idempotent because the stored `CANCELED` row is recognized inside the request transaction. It does not use Redis.
+3. **Implemented, required:** `POST /api/v1/payments/checkout` stores `Idempotency-Key` on `payments.idempotency_key`. The unique index is `(user_id, idempotency_key)` where both are non-null. It is not stored in Redis. A stored order id is replayed. An in-flight or unresolved attempt returns `409 IDEMPOTENCY_CONFLICT` and does not create another Razorpay Order. That `409` does not call `backfillProviderOrderId`. A key reused for a different plan returns the same code.
 4. **Execution flow for LIKE and SUPER LIKE:**
    * A stored JSON success is returned without another write.
    * A key whose value is still the in-progress marker returns `409 IDEMPOTENCY_CONFLICT`.
@@ -2467,8 +2535,8 @@ Rate limits are enforced using Redis sliding-window algorithms:
 | **Blocks** (`POST /blocks/:userId`, `GET /blocks`, `DELETE /blocks/:userId`, implemented) | `blocks`, `matches`, `conversations`. Does not write `reports`, `notifications`, likes, messages, `usage_records`, or credits. `match:unmatch` is emitted after commit only when this request unmatches an `ACTIVE` match that has a conversation. |
 | **Report submission** (`POST /reports`, implemented) | `reports` only. One `PENDING` row. Does not write `notifications` or change `blocks`, matches, conversations, likes, messages, `usage_records`, or credits. No Socket.IO event and no Redis key. |
 | **Notifications** | `notifications` |
-| **Subscriptions & Plans** | `GET /subscriptions/plans` reads active `plans` rows only. `GET /subscriptions/me` reads the caller's qualifying `subscriptions` row and its `plans` row through `findQualifyingPremiumSubscription`. It does not read `plan_features`, `usage_limits`, payments, or credits, and it writes nothing. `POST /subscriptions/cancel` is implemented for an authenticated `USER`. It cancels only that caller's `ACTIVE` row, sets `status = CANCELED`, `auto_renew = false`, and `canceled_at`, and leaves `ended_at` and the period timestamps unchanged. `PAST_DUE` and `GRACE_PERIOD` return `404 ACTIVE_SUBSCRIPTION_NOT_FOUND` with no write. An in-period repeat is `200` without a write while `current_period_end > now`. The route does not call a payment provider. Section 33 remains unimplemented. |
-| **Payments & Webhooks** | `payments`, `processed_webhooks`, `subscriptions` |
+| **Subscriptions & Plans** | `GET /subscriptions/plans` reads active `plans` rows only. `GET /subscriptions/me` reads the caller's qualifying `subscriptions` row and its `plans` row through `findQualifyingPremiumSubscription`. It does not read `plan_features`, `usage_limits`, payments, or credits, and it writes nothing, including no expiration. An `EXPIRED` row is the empty state. `POST /subscriptions/cancel` is implemented for an authenticated `USER`. It cancels only that caller's `ACTIVE` row, sets `status = CANCELED`, `auto_renew = false`, and `canceled_at`, and leaves `ended_at` and the period timestamps unchanged. It does not expire the row. An elapsed `ACTIVE` row with a future `grace_period_end` is still canceled in place. `PAST_DUE` and `GRACE_PERIOD` return `404 ACTIVE_SUBSCRIPTION_NOT_FOUND` with no write. An in-period repeat is `200` without a write while `current_period_end > now`. The route does not call a payment provider. Section 33 activates Premium only from a verified `payment.captured` webhook. |
+| **Payments & Webhooks** | `POST /payments/checkout` reads and locks `plans`, locks the caller's nonterminal `subscriptions` row, may set that row to `EXPIRED` when its period and grace have elapsed, and inserts or replays `payments`. A replay, an in-progress key, and a failed key do not write `subscriptions`. It does not write `usage_records`, `plan_price_changes`, or `processed_webhooks`, and it does not call Order-ID backfill. `POST /payments/verify` reads one caller-owned `payments` row by `provider_order_id` and writes nothing. `backfillProviderOrderId` is not an HTTP route. It may read Razorpay Orders by receipt and conditionally set `provider_order_id` on one `INITIATED` payment that has a user, a plan, and billing interval `MONTH` or `YEAR`. It does not change payment status or write `subscriptions`. `POST /webhooks/razorpay` verifies the raw body, and a valid `payment.captured` event locks that payment, may expire an elapsed nonterminal subscription, and may insert one `ACTIVE` subscription and one minimized `processed_webhooks` row in the same transaction. It does not call Razorpay. Renewal, refunds, grace assignment, and the reconciliation worker are not part of that route. |
 | **Entitlements** (`GET /me/entitlements`, implemented) | Reads `subscriptions`, `plans`, and `user_credit_balances`. Does not read `plan_features`, `usage_limits`, or `usage_records`. Writes nothing. |
 | **Usage** (`GET /me/usage`, implemented) | Reads the caller's current UTC-day `usage_records` for `DAILY_LIKE_PASS` and `DAILY_TEXT_MESSAGES`, and reads the effective plan's `usage_limits` row for each metric through the same resolution as `consumeDailyQuota`. Writes nothing. A missing usage row is `used: 0`. A positive catalog limit or `0` is numeric. Premium `-1` returns `limit` and `remaining` as `null`. A missing or invalid catalog row is `500 INTERNAL_SERVER_ERROR`. |
 

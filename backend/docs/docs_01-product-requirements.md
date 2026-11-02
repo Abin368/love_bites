@@ -178,7 +178,15 @@ To ensure high-quality discovery, users must complete a mandatory, sequential on
 To maintain flexibility without code changes, the following entities are administrator-managed:
 
 * **Gender Options:** Dynamic entity. Initial seed defaults include `Man`, `Woman`, `Non-binary`, `Prefer not to say`. Administrators can add, edit, or deactivate options.
-* **Interests:** Dynamic entity. Deactivated interests remain attached to existing user profiles for display purposes, but cannot be selected by new or editing users.
+* **Interests:** Dynamic entity. Deactivated interests remain attached to existing user profiles for display purposes, but cannot be selected by new or editing users. The approved initial catalog is 40 active interests across 8 categories:
+  * **Travel & Adventure:** Travel, Road Trips, Adventure, Hiking, Camping
+  * **Food & Drinks:** Foodie, Cooking, Coffee, Baking, Street Food
+  * **Entertainment:** Movies, TV Shows, Music, Concerts, Anime
+  * **Sports & Fitness:** Fitness, Cricket, Football, Badminton, Yoga
+  * **Arts & Creativity:** Photography, Painting, Dancing, Writing, Fashion
+  * **Lifestyle & Social:** Nightlife, Parties, Shopping, Pets, Volunteering
+  * **Learning & Technology:** Technology, Reading, Entrepreneurship, Science, Learning Languages
+  * **Nature & Wellness:** Nature, Meditation, Personal Growth, Beach Life, Gardening
 * **Relationship Intentions:** Dynamic entity. Initial seed defaults include `Long-term relationship`, `Something casual`, `Friendship`, `Not sure yet`. Users can select multiple options.
 
 ### 5.3 Profile Photo Rules
@@ -356,7 +364,7 @@ Reports are not a Discovery exclusion. Browsing candidate cards does not consume
 ### 10.2 Payment Gateway Abstraction & Provider
 * **Primary Provider:** Razorpay.
 * **Architectural Abstraction:** The billing layer must be decoupled behind a Payment Abstraction Interface to allow secondary gateway integration in the future.
-* **Source of Truth Rule:** Provider subscription activation, renewal, and payment failure remain driven by authenticated webhook events from the payment provider, rather than frontend success callbacks. Those webhooks are not implemented. `POST /api/v1/subscriptions/cancel` is a local state change for an `ACTIVE` subscription. It does not call the payment provider.
+* **Source of Truth Rule:** Provider subscription activation, renewal, and payment failure remain driven by authenticated webhook events from the payment provider, rather than frontend success callbacks. Those webhooks are not implemented. `POST /api/v1/payments/checkout` creates a Razorpay Order and an `INITIATED` payment. It does not create a subscription or grant Premium. `POST /api/v1/subscriptions/cancel` is a local state change for an `ACTIVE` subscription. It does not call the payment provider.
 
 ### 10.3 Auto-Renewal & Cancellation Flow
 * **Auto-Renewal Default:** Enabled upon subscription purchase.

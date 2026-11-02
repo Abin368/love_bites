@@ -46,9 +46,9 @@ export async function findActivePlans(): Promise<Plan[]> {
 
 export async function findQualifyingPremiumSubscription(
   userId: string,
-  transaction: Transaction
+  transaction: Transaction,
+  now: Date = new Date()
 ): Promise<QualifyingPremiumSubscription | null> {
-  const now = new Date();
   const nonCanceled = await Subscription.findOne({
     attributes: [...QUALIFYING_ATTRIBUTES],
     where: {
@@ -101,6 +101,29 @@ export async function lockNonterminalSubscription(
   });
 }
 
+export async function expireElapsedNonterminalSubscription(
+  userId: string,
+  now: Date,
+  transaction: Transaction
+): Promise<number> {
+  const [count] = await Subscription.update(
+    {
+      status: 'EXPIRED',
+      endedAt: now
+    },
+    {
+      where: {
+        userId,
+        status: { [Op.in]: [...NONTERMINAL_STATUSES] },
+        currentPeriodEnd: { [Op.lte]: now },
+        [Op.or]: [{ gracePeriodEnd: { [Op.is]: null } }, { gracePeriodEnd: { [Op.lte]: now } }]
+      },
+      transaction
+    }
+  );
+  return count;
+}
+
 export async function cancelActiveSubscription(
   subscription: Subscription,
   canceledAt: Date,
@@ -111,6 +134,36 @@ export async function cancelActiveSubscription(
       status: 'CANCELED',
       autoRenew: false,
       canceledAt
+    },
+    { transaction }
+  );
+}
+
+export async function insertActivePremiumSubscription(
+  input: {
+    userId: string;
+    planId: string;
+    currentPeriodStart: Date;
+    currentPeriodEnd: Date;
+  },
+  transaction: Transaction
+): Promise<Subscription> {
+  return Subscription.create(
+    {
+      userId: input.userId,
+      planId: input.planId,
+      provider: 'RAZORPAY',
+      providerSubscriptionId: null,
+      providerCustomerId: null,
+      status: 'ACTIVE',
+      autoRenew: false,
+      currentPeriodStart: input.currentPeriodStart,
+      currentPeriodEnd: input.currentPeriodEnd,
+      gracePeriodEnd: null,
+      canceledAt: null,
+      endedAt: null,
+      createdAt: input.currentPeriodStart,
+      updatedAt: input.currentPeriodStart
     },
     { transaction }
   );

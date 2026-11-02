@@ -879,6 +879,45 @@ Defines billing tiers (`FREE`, `PREMIUM_MONTHLY`, `PREMIUM_YEARLY`) and base con
 * `CONSTRAINT chk_plans_interval CHECK (billing_interval IN ('NONE', 'MONTH', 'YEAR'))`
 * `CONSTRAINT chk_plans_price CHECK (price_in_cents >= 0)`
 
+`price_in_cents` and `currency` are the live catalog price. There is no separate approved-price column. `PATCH /api/v1/admin/config/plans/:planId` is the writer. `PREMIUM_MONTHLY` and `PREMIUM_YEARLY` must stay above `0`. `FREE` may be `0`. Stored currency for a committed admin update is `INR`. `updated_at` is not an audit trail. Seeded prices are placeholders. Product prices remain TBD.
+
+### 16.1a `plan_price_changes`
+
+#### Purpose
+Append-only history of administrator plan-price changes. One row is inserted in the same transaction as the `plans` price update. An unchanged price does not insert a row.
+
+#### Columns
+| Column | Type | Nullable | Default | Description |
+| :--- | :--- | :--- | :--- | :--- |
+| `id` | `UUID` | `NO` | `gen_random_uuid()` | Primary key. |
+| `admin_user_id` | `UUID` | `YES` | `NULL` | Administrator who made the change. Null after that user row is hard-deleted. |
+| `plan_id` | `UUID` | `NO` | — | Plan whose price changed. |
+| `old_price_in_cents` | `INTEGER` | `NO` | — | Price before the change. |
+| `new_price_in_cents` | `INTEGER` | `NO` | — | Price after the change. |
+| `old_currency` | `VARCHAR(3)` | `NO` | — | Currency before the change. May be a legacy non-`INR` value. |
+| `new_currency` | `VARCHAR(3)` | `NO` | — | Currency after the change. Committed updates store `INR`. |
+| `action` | `VARCHAR(50)` | `NO` | — | `PLAN_PRICE_CHANGED`. |
+| `reason` | `TEXT` | `NO` | — | Trimmed administrator reason. |
+| `created_at` | `TIMESTAMPTZ` | `NO` | `CURRENT_TIMESTAMP` | Time the change committed. |
+
+#### Primary Key
+* `PRIMARY KEY (id)`
+
+#### Foreign Keys
+* `CONSTRAINT fk_plan_price_changes_admin FOREIGN KEY (admin_user_id) REFERENCES users(id) ON DELETE SET NULL ON UPDATE CASCADE`
+* `CONSTRAINT fk_plan_price_changes_plan FOREIGN KEY (plan_id) REFERENCES plans(id) ON DELETE RESTRICT ON UPDATE CASCADE`
+
+#### Constraints
+* `CONSTRAINT chk_plan_price_changes_prices CHECK (old_price_in_cents >= 0 AND new_price_in_cents >= 0)`
+* `CONSTRAINT chk_plan_price_changes_new_currency CHECK (new_currency = 'INR')`
+* `CONSTRAINT chk_plan_price_changes_action CHECK (action = 'PLAN_PRICE_CHANGED')`
+* `CONSTRAINT chk_plan_price_changes_reason CHECK (char_length(btrim(reason)) > 0)`
+
+#### Indexes
+* `CREATE INDEX idx_plan_price_changes_plan_created ON plan_price_changes (plan_id, created_at DESC);`
+
+A hard delete of the administrator nulls `admin_user_id` and keeps the row. A soft delete does not fire that foreign key. Deleting a plan that has a price-change row is rejected. There is no `updated_at` column because the row is not edited.
+
 ---
 
 ### 16.2 `features`
@@ -971,6 +1010,15 @@ Stores user subscription instances, auto-renewal settings, billing period dates,
   *Accelerates webhook subscription resolution.*
 * `CREATE INDEX idx_subscriptions_expiration_reconcile ON subscriptions (status, current_period_end, grace_period_end);`  
   *Optimizes daily background cron jobs checking for expired subscriptions and grace period transitions.*
+
+#### Checkout expiration
+`POST /api/v1/payments/checkout` is the implemented writer for one transition into `EXPIRED`. Inside that checkout transaction, after the caller's nonterminal row is locked with `FOR UPDATE`, the update sets `status = 'EXPIRED'` and `ended_at` to one application `now` only when every condition holds:
+
+* `status` is `ACTIVE`, `PAST_DUE`, or `GRACE_PERIOD`
+* `current_period_end <= now`
+* `grace_period_end IS NULL` or `grace_period_end <= now`
+
+Those conditions are repeated in the `UPDATE` `WHERE` clause, including `user_id`. `current_period_start`, `current_period_end`, `grace_period_end`, provider identifiers, `canceled_at`, and `auto_renew` stay unchanged. Sequelize still updates `updated_at`. `CANCELED` and an existing `EXPIRED` row are not updated. A later attempt does not move `ended_at`. `EXPIRED` is outside `uq_subscriptions_single_active_per_user`, so a successfully expired row no longer occupies that index. The payment insert commits in the same transaction, before the Razorpay call. A later provider rejection or unknown outcome does not restore the previous status. An idempotent replay does not run this update. Cancellation, `GET /subscriptions/me`, and entitlement reads do not run it. No reconciliation worker is implemented. The index above is unchanged.
 
 ---
 
@@ -1133,15 +1181,18 @@ Stores transactional payment records, invoices, amounts, currency, and provider 
 | :--- | :--- | :--- | :--- | :--- |
 | `id` | `UUID` | `NO` | `gen_random_uuid()` | Primary key. |
 | `user_id` | `UUID` | `YES` | `NULL` | User who made the payment (`ON DELETE SET NULL`). |
-| `subscription_id`| `UUID` | `YES` | `NULL` | Associated subscription if applicable (`ON DELETE SET NULL`). |
+| `subscription_id`| `UUID` | `YES` | `NULL` | Associated subscription if applicable (`ON DELETE SET NULL`). Checkout leaves this null. |
+| `plan_id` | `UUID` | `YES` | `NULL` | Plan snapshotted by checkout (`ON DELETE RESTRICT`). Null on existing rows and on future credit purchases. |
 | `provider` | `VARCHAR(50)` | `NO` | `'RAZORPAY'` | Gateway: `'RAZORPAY'`, `'MANUAL'`. |
 | `provider_payment_id`| `VARCHAR(255)` | `YES` | `NULL` | Gateway payment ID (e.g., `pay_xxx`). |
 | `provider_order_id`| `VARCHAR(255)` | `YES` | `NULL` | Gateway order ID (e.g., `order_xxx`). |
 | `amount_in_cents`| `INTEGER` | `NO` | — | Payment amount in smallest currency unit. |
 | `currency` | `VARCHAR(3)` | `NO` | `'INR'` | ISO 4217 currency code. |
+| `billing_interval` | `VARCHAR(20)` | `YES` | `NULL` | Checkout snapshot of the locked plan interval. Non-null values are `'MONTH'` and `'YEAR'`. Null on payments created before this column and on rows that do not snapshot an interval. |
 | `status` | `VARCHAR(30)` | `NO` | `'INITIATED'` | Status: `'INITIATED'`, `'AUTHORIZED'`, `'CAPTURED'`, `'FAILED'`, `'REFUNDED'`. |
 | `payment_type` | `VARCHAR(30)` | `NO` | — | Type: `'SUBSCRIPTION_INITIAL'`, `'SUBSCRIPTION_RECURRING'`, `'CREDIT_PURCHASE'`. |
-| `raw_payload` | `JSONB` | `YES` | `NULL` | Raw provider payload for dispute auditing. |
+| `idempotency_key` | `VARCHAR(255)` | `YES` | `NULL` | Checkout `Idempotency-Key`, stored lowercase. Null on existing rows and on payment types that do not use a key. |
+| `raw_payload` | `JSONB` | `YES` | `NULL` | Raw provider payload for dispute auditing. Checkout does not write this column. |
 | `failure_reason` | `TEXT` | `YES` | `NULL` | Error details if transaction failed. |
 | `paid_at` | `TIMESTAMPTZ` | `YES` | `NULL` | Gateway confirmation timestamp. |
 | `created_at` | `TIMESTAMPTZ` | `NO` | `CURRENT_TIMESTAMP` | Creation timestamp. |
@@ -1153,17 +1204,26 @@ Stores transactional payment records, invoices, amounts, currency, and provider 
 #### Foreign Keys
 * `CONSTRAINT fk_payments_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL ON UPDATE CASCADE`
 * `CONSTRAINT fk_payments_subscription FOREIGN KEY (subscription_id) REFERENCES subscriptions(id) ON DELETE SET NULL ON UPDATE CASCADE`
+* `CONSTRAINT fk_payments_plan FOREIGN KEY (plan_id) REFERENCES plans(id) ON DELETE RESTRICT ON UPDATE CASCADE`
 
 #### Constraints
 * `CONSTRAINT chk_payments_status CHECK (status IN ('INITIATED', 'AUTHORIZED', 'CAPTURED', 'FAILED', 'REFUNDED'))`
 * `CONSTRAINT chk_payments_type CHECK (payment_type IN ('SUBSCRIPTION_INITIAL', 'SUBSCRIPTION_RECURRING', 'CREDIT_PURCHASE'))`
 * `CONSTRAINT chk_payments_amount CHECK (amount_in_cents > 0)`
+* `CONSTRAINT chk_payments_billing_interval CHECK (billing_interval IS NULL OR billing_interval IN ('MONTH', 'YEAR'))`
 
 #### Indexes
 * `CREATE UNIQUE INDEX uq_payments_provider_payment_id ON payments (provider, provider_payment_id) WHERE provider_payment_id IS NOT NULL;`  
-  *Prevents duplicate payment records for identical gateway transaction IDs.*
+  *Prevents duplicate payment records for identical gateway payment IDs. Unchanged.*
+* `CREATE UNIQUE INDEX uq_payments_provider_order_id ON payments (provider, provider_order_id) WHERE provider_order_id IS NOT NULL;`  
+  *Replaces the non-unique `idx_payments_order_lookup`. One stored Razorpay Order id maps to one payment.*
+* `CREATE UNIQUE INDEX uq_payments_user_idempotency_key ON payments (user_id, idempotency_key) WHERE user_id IS NOT NULL AND idempotency_key IS NOT NULL;`  
+  *Scopes a checkout key to one user. Different users may reuse the same key string. `user_id` stays nullable because account deletion uses `ON DELETE SET NULL`.*
 * `CREATE INDEX idx_payments_user_history ON payments (user_id, created_at DESC);`
-* `CREATE INDEX idx_payments_order_lookup ON payments (provider_order_id);`
+
+Migration `20261027183033-add-checkout-columns-to-payments.js` adds `plan_id` and `idempotency_key`, adds `fk_payments_plan`, and replaces `idx_payments_order_lookup`. Before creating `uq_payments_provider_order_id` it selects duplicate non-null `provider_order_id` values. If any exist it throws and does not rewrite or delete ledger rows. `down` drops the two new unique indexes, restores `idx_payments_order_lookup`, and removes the foreign key and both columns.
+
+Migration `20261028154500-add-billing-interval-to-payments.js` adds nullable `billing_interval`. `chk_payments_billing_interval` allows `NULL`, `'MONTH'`, or `'YEAR'`. Existing payment rows stay valid with `NULL`. Checkout copies `'MONTH'` from a locked `PREMIUM_MONTHLY` plan and `'YEAR'` from a locked `PREMIUM_YEARLY` plan in the same insert as the payment. A later change to `plans.billing_interval` does not rewrite that snapshot. `down` drops the check constraint and the column. `plans` has no additional constraint tying `code` to `billing_interval`. `chk_plans_interval` still allows `'NONE'`, `'MONTH'`, and `'YEAR'` for every plan code.
 
 ---
 
@@ -1177,8 +1237,8 @@ Enforces webhook idempotency across asynchronous payment notifications. Duplicat
 | :--- | :--- | :--- | :--- | :--- |
 | `event_id` | `VARCHAR(255)` | `NO` | — | Primary key. Unique webhook event ID from payment gateway. |
 | `provider` | `VARCHAR(50)` | `NO` | `'RAZORPAY'` | Gateway provider. |
-| `event_type` | `VARCHAR(100)` | `NO` | — | Event type (e.g., `'subscription.charged'`, `'payment.failed'`). |
-| `payload` | `JSONB` | `NO` | — | Full raw webhook request payload. |
+| `event_type` | `VARCHAR(100)` | `NO` | — | Event type. The implemented writer stores `'payment.captured'`. |
+| `payload` | `JSONB` | `NO` | — | Minimized event record for the implemented webhook: event id, event type, order id, provider payment id, amount, currency, payment status, outcome, and reason. It is not the full provider body. Email, contact, and card data are not stored. |
 | `processed_at` | `TIMESTAMPTZ` | `NO` | `CURRENT_TIMESTAMP` | Execution completion timestamp. |
 
 #### Primary Key
@@ -1195,7 +1255,7 @@ Enforces webhook idempotency across asynchronous payment notifications. Duplicat
                               ┌───────────────────────────┐
                               │    New Purchase Request   │
                               └─────────────┬─────────────┘
-                                            │ (Webhook: subscription.activated)
+                                            │ (Webhook: payment.captured)
                                             ▼
                               ┌───────────────────────────┐
                   ┌──────────►│          ACTIVE           │◄────────────────────────┐
@@ -1224,11 +1284,11 @@ Enforces webhook idempotency across asynchronous payment notifications. Duplicat
 ```
 
 ### State Definitions:
-1. **`ACTIVE`:** Paid billing period is current. All Premium entitlements are active.
-2. **`CANCELED`:** User disabled auto-renew through `POST /api/v1/subscriptions/cancel`. That route sets `status = CANCELED`, `auto_renew = false`, and `canceled_at`. It leaves `ended_at` null. Premium entitlements **remain active** only while `current_period_end` is still in the future. A future `grace_period_end` does not extend a canceled subscription. `PAST_DUE` and `GRACE_PERIOD` are not canceled by that route.
-3. **`PAST_DUE`:** Payment provider reported an initial recurring payment failure. Retry attempts are in progress.
-4. **`GRACE_PERIOD`:** Billing cycle reached `current_period_end` after failed renewal. User receives a **24-hour grace window** with full Premium entitlements.
-5. **`EXPIRED`:** Grace period concluded without payment recovery. User is downgraded to Free plan limits. Historical subscription record remains preserved.
+1. **`ACTIVE`:** Paid billing period is current. All Premium entitlements are active while `current_period_end` or `grace_period_end` is still ahead. Checkout can expire an `ACTIVE` row when the section 16.4 period and grace conditions both hold. A future `grace_period_end` keeps it `ACTIVE`.
+2. **`CANCELED`:** User disabled auto-renew through `POST /api/v1/subscriptions/cancel`. That route sets `status = CANCELED`, `auto_renew = false`, and `canceled_at`. It leaves `ended_at` null. Premium entitlements **remain active** only while `current_period_end` is still in the future. A future `grace_period_end` does not extend a canceled subscription. `PAST_DUE` and `GRACE_PERIOD` are not canceled by that route. Checkout does not move a `CANCELED` row to `EXPIRED`, including a lapsed row whose `grace_period_end` is still in the future. An `ACTIVE` row whose period has elapsed and whose grace is still in the future is still canceled in place, and `ended_at` stays null.
+3. **`PAST_DUE`:** Payment provider reported an initial recurring payment failure. Retry attempts are in progress. Checkout can expire this status when the period and grace conditions in section 16.4 both hold. Assigning `PAST_DUE` from a webhook is not implemented.
+4. **`GRACE_PERIOD`:** Billing cycle reached `current_period_end` after failed renewal. User receives a **24-hour grace window** with full Premium entitlements while `grace_period_end` is still ahead. Checkout can expire this status when `current_period_end <= now` and `grace_period_end` is null or `grace_period_end <= now`. Assigning the grace window is not implemented.
+5. **`EXPIRED`:** The subscription no longer grants Premium. The historical row remains. Checkout sets this status from `ACTIVE`, `PAST_DUE`, or `GRACE_PERIOD` when `current_period_end <= now` and `grace_period_end` is null or `grace_period_end <= now`, and sets `ended_at` to that same application `now`. A verified `payment.captured` webhook runs that same expiration inside its activation transaction before it checks eligibility. Webhook-driven grace expiry and the background reconciliation job are not implemented. The diagram's renewal-failure, grace-assignment, and payment-recovery arrows are not implemented. The implemented activation path is a Razorpay Order `payment.captured` event, not `subscription.activated`. It inserts one `ACTIVE` row with `auto_renew = false` when no qualifying subscription exists.
 
 ### Plan Switching Mechanics (Monthly $\leftrightarrow$ Yearly):
 * Plan switching is not implemented. When it is, the previous subscription record transitions to `EXPIRED` (or `CANCELED` with `ended_at = CURRENT_TIMESTAMP`), and a new subscription record is inserted immediately inside a managed transaction. That transition is separate from user cancellation. User cancellation does not set `ended_at`.
@@ -1257,6 +1317,11 @@ Enforces webhook idempotency across asynchronous payment notifications. Duplicat
 | `user_credit_balances`| `chk_user_credit_balances_non_negative`| CHECK | `balance >= 0` |
 | `credit_transactions`| `chk_credit_transactions_delta_nonzero`| CHECK | `delta != 0` |
 | `payments` | `chk_payments_amount` | CHECK | `amount_in_cents > 0` |
+| `payments` | `chk_payments_billing_interval` | CHECK | `billing_interval IS NULL OR billing_interval IN ('MONTH', 'YEAR')` |
+| `plan_price_changes` | `chk_plan_price_changes_prices` | CHECK | `old_price_in_cents >= 0 AND new_price_in_cents >= 0` |
+| `plan_price_changes` | `chk_plan_price_changes_new_currency` | CHECK | `new_currency = 'INR'` |
+| `plan_price_changes` | `chk_plan_price_changes_action` | CHECK | `action = 'PLAN_PRICE_CHANGED'` |
+| `plan_price_changes` | `chk_plan_price_changes_reason` | CHECK | `char_length(btrim(reason)) > 0` |
 
 ---
 
@@ -1287,6 +1352,9 @@ Enforces webhook idempotency across asynchronous payment notifications. Duplicat
 | `subscriptions` | `plan_id` | `plans` | `id` | `RESTRICT` | `CASCADE` | Cannot delete plan if subscribed users exist. |
 | `payments` | `user_id` | `users` | `id` | `SET NULL` | `CASCADE` | Financial ledger must NEVER be deleted upon account removal. |
 | `payments` | `subscription_id`| `subscriptions`| `id` | `SET NULL` | `CASCADE` | Payment invoice preserved for tax/auditing. |
+| `payments` | `plan_id` | `plans` | `id` | `RESTRICT` | `CASCADE` | Checkout snapshot. A plan with a payment cannot be deleted. |
+| `plan_price_changes` | `admin_user_id` | `users` | `id` | `SET NULL` | `CASCADE` | Price history remains after the administrator row is hard-deleted. |
+| `plan_price_changes` | `plan_id` | `plans` | `id` | `RESTRICT` | `CASCADE` | A plan with price history cannot be deleted. |
 
 ---
 
@@ -1333,6 +1401,8 @@ CREATE INDEX idx_subscriptions_provider_sub_id ON subscriptions (provider, provi
 CREATE INDEX idx_usage_records_lookup ON usage_records (user_id, metric_key, period_start, period_end);
 CREATE INDEX idx_credit_transactions_audit ON credit_transactions (user_id, credit_type, created_at DESC);
 CREATE UNIQUE INDEX uq_payments_provider_payment_id ON payments (provider, provider_payment_id) WHERE provider_payment_id IS NOT NULL;
+CREATE UNIQUE INDEX uq_payments_provider_order_id ON payments (provider, provider_order_id) WHERE provider_order_id IS NOT NULL;
+CREATE UNIQUE INDEX uq_payments_user_idempotency_key ON payments (user_id, idempotency_key) WHERE user_id IS NOT NULL AND idempotency_key IS NOT NULL;
 CREATE INDEX idx_processed_webhooks_provider_type ON processed_webhooks (provider, event_type, processed_at DESC);
 ```
 
@@ -1348,7 +1418,7 @@ CREATE INDEX idx_processed_webhooks_provider_type ON processed_webhooks (provide
 | **Simultaneous Swipe & Undo** | User rapidly submits Like and Undo across parallel HTTP requests. | Both run in a database transaction. Undo locks the two users in canonical id order, re-reads the latest undoable row, and sets `is_undone = TRUE` only when it is still false. The like row is not deleted. |
 | **Simultaneous Unmatch & Message Send** | User A unmatches User B while User B's pending message is in flight. | Transaction verifies `conversations.status = 'ACTIVE'` inside transaction before inserting message. |
 | **Daily Quota Limit Bypassing** | Free user fires 10 parallel Like requests to bypass the daily 10-swipe limit. | **Atomic database increment:** `INSERT ... ON CONFLICT DO UPDATE SET usage_count = usage_count + 1 WHERE usage_count < limit RETURNING usage_count`. If 0 rows updated, request fails immediately. |
-| **Duplicate Payment Webhooks** | Razorpay delivers the same webhook event multiple times within seconds. | **Atomic Webhook Deduplication:** Insert into `processed_webhooks (event_id)` inside transaction. Duplicate insert throws primary key violation `23505` and returns `200 OK` instantly. |
+| **Duplicate Payment Webhooks** | Razorpay delivers the same webhook event multiple times within seconds. | **Atomic Webhook Deduplication:** The `payment.captured` handler inserts `processed_webhooks (event_id)` in the same transaction as the payment and optional subscription write. A repeated event id does not reapply state. A primary-key race is acknowledged without constraint details. A `uq_subscriptions_single_active_per_user` violation rolls back and returns non-2xx so the provider retries. |
 
 ### 23.2 Like $\rightarrow$ Match Concurrency-Safe Transaction Flow
 ```
@@ -1380,25 +1450,7 @@ User A Likes User B
 ## 24. Idempotency & Webhook Architecture
 
 1. **Webhook Idempotency Key:** Primary key on `processed_webhooks.event_id`.
-2. **Execution Protocol:**
-   ```typescript
-   // Conceptual Webhook Pipeline
-   await sequelize.transaction(async (t) => {
-     // 1. Attempt to register event
-     const [webhookRecord, created] = await ProcessedWebhook.findOrCreate({
-       where: { event_id: rawEvent.id },
-       defaults: { provider: 'RAZORPAY', event_type: rawEvent.event, payload: rawEvent },
-       transaction: t,
-     });
-     if (!created) {
-       // Duplicate delivery: terminate cleanly
-       return { status: 'ALREADY_PROCESSED' };
-     }
-
-     // 2. Process business state transition (e.g., extend subscription, activate grace period)
-     await SubscriptionService.handleWebhookEvent(rawEvent, t);
-   });
-   ```
+2. **Execution Protocol:** `processRazorpayWebhook` inserts `processed_webhooks` with `ProcessedWebhook.create` inside the same transaction as the payment update and any subscription insert. It does not use `findOrCreate`. A repeated `event_id` is detected inside that transaction and does not reapply payment or subscription state. A primary-key race rolls back and is acknowledged without returning constraint details. A `uq_subscriptions_single_active_per_user` violation also rolls back, and the HTTP response is non-2xx so the provider can retry. The stored `payload` is the minimized object described in section 18.2.
 
 ---
 
@@ -1491,6 +1543,8 @@ User A Likes User B
 ]
 ```
 
+These amounts are seed placeholders. Product prices remain TBD. `20261015120003-seed-plan-catalog.js` inserts them on first load. On `code` conflict it still updates `name`, `billing_interval`, `is_active`, `display_order`, and `updated_at`. It does not update `price_in_cents` or `currency`, so an administrator price survives a later seed run. The conflict update still sets `is_active` from the seed value, which is `TRUE`.
+
 ### 28.4 Features Seed (`features`)
 ```json
 [
@@ -1560,6 +1614,7 @@ User A Likes User B
 | 28 | `payments` | Payments | Gateway payment invoices, statuses, amounts, and metadata. | Unique provider payment ID index, `SET NULL` on user deletion. |
 | 29 | `processed_webhooks` | Payments | Webhook idempotency ledger preventing duplicate event executions. | Primary key on provider `event_id`. |
 | 30 | `usage_records` | Usage Tracking | Aggregated usage consumption tracking across daily/monthly windows. | Unique window index `(user_id, metric_key, period_start)`. |
+| 31 | `plan_price_changes` | Monetization | Append-only administrator plan price and currency history. | `SET NULL` on admin hard delete, `RESTRICT` on plan delete, new currency `INR`. |
 
 ---
 

@@ -115,8 +115,6 @@ function planInsertSql() {
     SET
       name = EXCLUDED.name,
       billing_interval = EXCLUDED.billing_interval,
-      price_in_cents = EXCLUDED.price_in_cents,
-      currency = EXCLUDED.currency,
       is_active = EXCLUDED.is_active,
       display_order = EXCLUDED.display_order,
       updated_at = CURRENT_TIMESTAMP

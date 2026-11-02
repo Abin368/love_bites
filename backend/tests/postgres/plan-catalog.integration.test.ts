@@ -205,7 +205,7 @@ async function limitRows() {
 }
 
 describe('plan catalog seeder', () => {
-  it('starts from an empty catalog and seeds plans, features, and daily limits idempotently', async () => {
+  it('seeds the catalog idempotently and keeps an edited price and currency on rerun', async () => {
     expect(await Plan.count()).toBe(0);
     expect(await Feature.count()).toBe(0);
     expect(await UsageLimit.count()).toBe(0);
@@ -216,7 +216,10 @@ describe('plan catalog seeder', () => {
     const firstFeatures = await featureRows();
     const firstLimits = await limitRows();
 
-    await Plan.update({ name: 'Changed', priceInCents: 1, isActive: false }, { where: { code: 'FREE' } });
+    await Plan.update(
+      { name: 'Changed', priceInCents: 1, currency: 'USD', isActive: false },
+      { where: { code: 'FREE' } }
+    );
     await Feature.update(
       { name: 'Changed', description: 'Changed', isActive: false },
       { where: { code: 'UNDO_ACTION' } }
@@ -232,7 +235,9 @@ describe('plan catalog seeder', () => {
     expect(plans.map((plan) => plan.id)).toEqual(firstPlans.map((plan) => plan.id));
     expect(features.map((feature) => feature.id)).toEqual(firstFeatures.map((feature) => feature.id));
     expect(limits.map((limit) => limit.id)).toEqual(firstLimits.map((limit) => limit.id));
-    expect(plans.map((plan) => planFields(plan))).toEqual(PLAN_SEED);
+    expect(plans.map((plan) => planFields(plan))).toEqual(
+      PLAN_SEED.map((plan) => (plan.code === 'FREE' ? { ...plan, priceInCents: 1, currency: 'USD' } : plan))
+    );
     expect(features.map((feature) => featureFields(feature))).toEqual(
       [...FEATURE_SEED].sort((left, right) => left.code.localeCompare(right.code))
     );

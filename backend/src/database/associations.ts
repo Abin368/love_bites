@@ -28,6 +28,7 @@ import { UsageRecord } from './models/usage-record.model';
 import { UserCreditBalance } from './models/user-credit-balance.model';
 import { CreditTransaction } from './models/credit-transaction.model';
 import { BoostSession } from './models/boost-session.model';
+import { PlanPriceChange } from './models/plan-price-change.model';
 
 User.hasOne(Profile, {
   foreignKey: 'userId',
@@ -320,6 +321,14 @@ Payment.belongsTo(Subscription, {
   foreignKey: 'subscriptionId',
   as: 'subscription'
 });
+Plan.hasMany(Payment, {
+  foreignKey: 'planId',
+  as: 'payments'
+});
+Payment.belongsTo(Plan, {
+  foreignKey: 'planId',
+  as: 'plan'
+});
 
 User.hasMany(UsageRecord, {
   foreignKey: 'userId',
@@ -357,6 +366,23 @@ BoostSession.belongsTo(User, {
   as: 'user'
 });
 
+User.hasMany(PlanPriceChange, {
+  foreignKey: 'adminUserId',
+  as: 'planPriceChanges'
+});
+PlanPriceChange.belongsTo(User, {
+  foreignKey: 'adminUserId',
+  as: 'adminUser'
+});
+Plan.hasMany(PlanPriceChange, {
+  foreignKey: 'planId',
+  as: 'planPriceChanges'
+});
+PlanPriceChange.belongsTo(Plan, {
+  foreignKey: 'planId',
+  as: 'plan'
+});
+
 export {
   User,
   Profile,
@@ -387,5 +413,6 @@ export {
   UsageRecord,
   UserCreditBalance,
   CreditTransaction,
-  BoostSession
+  BoostSession,
+  PlanPriceChange
 };

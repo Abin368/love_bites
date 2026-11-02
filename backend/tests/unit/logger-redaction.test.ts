@@ -14,6 +14,13 @@ describe('logger redaction', () => {
       otp: '123456',
       token: 'reset',
       nested: { accessToken: 'inner' },
+      keyId: 'rzp_test_public',
+      key_secret: 'super-secret',
+      razorpay_signature: 'signature-value',
+      razorpay_webhook_secret: 'webhook-secret',
+      webhook_secret: 'another-secret',
+      signature: 'raw-signature',
+      'X-Razorpay-Signature': 'header-signature',
       status: 'ACTIVE'
     });
 
@@ -28,6 +35,13 @@ describe('logger redaction', () => {
     expect(redacted.otp).toBe('[REDACTED]');
     expect(redacted.token).toBe('[REDACTED]');
     expect(redacted.nested.accessToken).toBe('[REDACTED]');
+    expect(redacted.keyId).toBe('[REDACTED]');
+    expect(redacted.key_secret).toBe('[REDACTED]');
+    expect(redacted.razorpay_signature).toBe('[REDACTED]');
+    expect(redacted.razorpay_webhook_secret).toBe('[REDACTED]');
+    expect(redacted.webhook_secret).toBe('[REDACTED]');
+    expect(redacted.signature).toBe('[REDACTED]');
+    expect(redacted['X-Razorpay-Signature']).toBe('[REDACTED]');
     expect(redacted.status).toBe('ACTIVE');
   });
 });

@@ -694,7 +694,7 @@ If the retried request fails again, stop. Do not refresh a second time for that 
 | POST | `/api/v1/auth/forgot-password` | Implemented |
 | POST | `/api/v1/auth/reset-password` | Implemented |
 | GET | `/api/v1/genders` | Implemented. Public. No bearer token. |
-| GET | `/api/v1/interests` | Implemented. Public. May return an empty array. |
+| GET | `/api/v1/interests` | Implemented. Public. Returns active interests from the approved catalog after the seeder is applied. An empty array is still valid if no active rows exist. |
 | GET | `/api/v1/relationship-intentions` | Implemented. Public. No bearer token. |
 | GET | `/api/v1/profile` | Implemented. Bearer token. Role `USER`. |
 | POST | `/api/v1/profile` | Implemented. Bearer token. Role `USER`. Creates the caller's basic profile. |
@@ -714,7 +714,7 @@ If the retried request fails again, stop. Do not refresh a second time for that 
 
 Paths are prefixed by `API_PREFIX`, which defaults to `/api/v1`.
 
-The three catalog reads share one limit of 100 requests per 60 seconds per IP. A catalog response is `{ "success": true, "data": [], "message": "..." }`. Gender and intention items are `{ "id", "code", "name" }`. Interest items also include `category`, which may be `null`. Only active rows are returned, ordered by `display_order`. Do not expect a production interest list. Gender and relationship-intention seed values are the approved codes in `backend/docs/03-api-specification.md` section 11.13.
+The three catalog reads share one limit of 100 requests per 60 seconds per IP. A catalog response is `{ "success": true, "data": [], "message": "..." }`. Gender and intention items are `{ "id", "code", "name" }`. Interest items also include `category`, which may be `null`. Only active rows are returned, ordered by `display_order`. After the interest catalog seeder is applied, `GET /api/v1/interests` returns the approved 40 interests across 8 categories. Gender, relationship-intention, and interest seed values are documented in `backend/docs/03-api-specification.md` section 11.13.
 
 The basic profile routes are not part of that public limit. Send `Authorization: Bearer <accessToken>`. The signed-in user must have role `USER`. There is no `/api/v1/profile/:userId` route.
 

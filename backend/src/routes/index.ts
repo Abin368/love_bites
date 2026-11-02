@@ -13,7 +13,10 @@ import { profileRoutes } from '../modules/profiles/profiles.routes';
 import { profilePhotoRoutes } from '../modules/profile-photos/profile-photos.routes';
 import { reportsRoutes } from '../modules/reports/reports.routes';
 import { relationshipIntentionRoutes } from '../modules/relationship-intentions/relationship-intentions.routes';
+import { planPriceRoutes } from '../modules/admin/plan-prices.routes';
+import { paymentsRoutes } from '../modules/payments/payments.routes';
 import { subscriptionsRoutes } from '../modules/subscriptions/subscriptions.routes';
+import { razorpayWebhookRoutes } from '../modules/webhooks/razorpay-webhook.routes';
 
 const router = Router();
 
@@ -33,5 +36,8 @@ router.use('/genders', genderRoutes);
 router.use('/interests', interestRoutes);
 router.use('/relationship-intentions', relationshipIntentionRoutes);
 router.use('/subscriptions', subscriptionsRoutes);
+router.use('/payments', paymentsRoutes);
+router.use('/webhooks', razorpayWebhookRoutes);
+router.use('/admin/config/plans', planPriceRoutes);
 
 export const apiRoutes = router;

@@ -269,7 +269,7 @@ modules/likes/
 ```
 *Note: Optional files (e.g., `*.constants.ts`) should only be created when explicitly needed.*
 
-Implemented modules today are `auth`, `users`, `profiles`, `profile-photos`, `genders`, `interests`, `relationship-intentions`, `onboarding`, `discovery`, `likes`, `chat`, and `entitlements`. Discovery routes mount the like, pass, super-like, and undo handlers. There is no `passes` table and no separate `likes.routes.ts`. Chat mounts `GET /conversations`, `GET /conversations/:conversationId`, `POST /conversations/:conversationId/messages`, `POST /conversations/:conversationId/media-upload-url`, `POST /conversations/:conversationId/media-confirm`, `GET /conversations/:conversationId/messages/:messageId/media-download-url`, `GET /conversations/:conversationId/messages`, `GET /conversations/:conversationId/unread-count`, and `PATCH /conversations/:conversationId/read`. `entitlements` mounts only `GET /me/entitlements`. Block management and report submission are mounted. Notifications, subscriptions, payments, the match list, and admin modules are not implemented as HTTP modules. Their tables exist from Phase 1.
+Implemented modules today are `auth`, `users`, `profiles`, `profile-photos`, `genders`, `interests`, `relationship-intentions`, `onboarding`, `discovery`, `likes`, `chat`, `entitlements`, `subscriptions`, and `admin`. Discovery routes mount the like, pass, super-like, and undo handlers. There is no `passes` table and no separate `likes.routes.ts`. Chat mounts `GET /conversations`, `GET /conversations/:conversationId`, `POST /conversations/:conversationId/messages`, `POST /conversations/:conversationId/media-upload-url`, `POST /conversations/:conversationId/media-confirm`, `GET /conversations/:conversationId/messages/:messageId/media-download-url`, `GET /conversations/:conversationId/messages`, `GET /conversations/:conversationId/unread-count`, and `PATCH /conversations/:conversationId/read`. `entitlements` mounts `GET /me/entitlements` and `GET /me/usage`. `subscriptions` mounts `GET /subscriptions/plans`, `GET /subscriptions/me`, and `POST /subscriptions/cancel`. `admin` mounts `PATCH /admin/config/plans/:planId` only. Block management and report submission are mounted. Notifications, payments, the match list, and the rest of the admin surface are not implemented as HTTP modules. Their tables exist from Phase 1, plus `plan_price_changes` from `20261016180032`.
 
 ---
 
@@ -652,30 +652,60 @@ Allow Request Execution
 ## 21. Payment Architecture
 
 ### Provider Abstraction Model
-The payment pipeline uses an abstract provider interface to remain decoupled from underlying vendors (e.g., Razorpay).
+Checkout uses a small Order provider. Signature verification is a local HMAC check. Provider cancellation is not implemented. `POST /api/v1/webhooks/razorpay` is implemented for `payment.captured`.
 
 ```
-+-------------------------------------------------------+
-|                   Payment Service                     |
-+---------------------------+---------------------------+
-                            |
-                            v
-+-------------------------------------------------------+
-|               IPaymentProvider Interface              |
-|  - createOrder()    - verifyWebhook()  - cancelSub()  |
-+---------------------------+---------------------------+
-                            |
-                            v
-+-------------------------------------------------------+
-|               Razorpay Payment Provider               |
-+-------------------------------------------------------+
+POST /api/v1/payments/checkout
+        |
+        v
+payments.service
+        |
+        +--> PostgreSQL: lock plan, insert INITIATED payment, commit
+        |
+        v
+PaymentOrderProvider.createOrder
+        |
+        v
+razorpay.orders.create
+        |
+        v
+PostgreSQL: store provider_order_id, status stays INITIATED
+
+backfillProviderOrderId(paymentId)   // internal; not called by checkout
+        |
+        v
+orders.all({ receipt: payment UUID, count: 2, skip: 0 })
+        |
+        v
+PostgreSQL: assignProviderOrderId only when the row has a user,
+a plan, and billing interval MONTH or YEAR, and one short page
+matches receipt, notes.paymentId, amount, and currency.
+Status stays INITIATED. No subscription write.
+
+POST /api/v1/payments/verify
+        |
+        v
+payments.service
+        |
+        +--> PostgreSQL: read caller payment by stored provider_order_id
+        |
+        v
+HMAC-SHA256 of stored order id + "|" + payment id
+        |
+        v
+safeEqualHex against the client signature
+        |
+        v
+200 confirmation. No payment or subscription write.
 ```
+
+`src/integrations/payment/payment.interface.ts` is the boundary. `src/integrations/payment/razorpay.provider.ts` is the only implementation. `verifyOrderSignature` does not construct the Razorpay client and does not call the network. Checkout tests replace the provider module and do not use live credentials. Verification tests build the HMAC locally.
 
 ### Webhook Source of Truth
-Webhooks are the definitive source of truth for payment status and subscription activations. The backend never activates subscription entitlements based solely on frontend success callbacks.
+`POST /api/v1/webhooks/razorpay` activates Premium from a verified `payment.captured` event. The event id is the `X-Razorpay-Event-Id` header, not a field on the JSON body and not `payload.payment.entity.id`. Checkout does not activate a subscription. `POST /api/v1/payments/verify` does not activate a subscription either. `backfillProviderOrderId` reads Orders and may store a missing `provider_order_id` only when the payment has a user, a plan, and billing interval `MONTH` or `YEAR`; that read does not activate a subscription. It must remain unused operationally until receipt-filter exactness, pagination, and completeness are verified on a non-production Razorpay account. Source inspection and mocked tests do not establish those live provider semantics. An Order id, a valid signature, an `INITIATED` payment, or a provider Order listing is not proof of capture. The backend does not activate Premium from a frontend success callback. Checkout creates an Order, and this webhook is the activation path for that Order. The webhook still correlates by the stored Order ID. `notes.paymentId` is checked against that payment and is not a lookup key. Renewal, refunds, grace assignment, and the subscription reconciliation worker are not implemented.
 
 ### Subscription Lifecycle Rules
-* **Auto-Renew:** Enabled by default.
+* **Auto-Renew:** A subscription inserted by `payment.captured` is stored with `auto_renew = false`. Renewal is not implemented.
 * **Cancellation:** User retains Premium benefits until the end of the paid billing period.
 * **Payment Failure & Grace Period:**
   * Failing renewals enter a **24-hour grace period** during which Premium access remains active.
@@ -883,16 +913,7 @@ To prevent race conditions during concurrent requests (e.g., two users liking ea
 * **Unique Constraints:** Canonical match constraints prevent duplicate records.
 
 ### Webhook Idempotency
-Webhooks process events reliably using idempotent operations backed by an `processed_webhooks` table.
-
-```sql
-CREATE TABLE processed_webhooks (
-  event_id VARCHAR(255) PRIMARY KEY,
-  provider VARCHAR(50) NOT NULL,
-  processed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-);
-```
-Duplicate incoming webhook deliveries check this table and terminate immediately with a `200 OK` response if already logged.
+`POST /api/v1/webhooks/razorpay` stores the trimmed `X-Razorpay-Event-Id` header as `processed_webhooks.event_id` in the same transaction as the payment update and any subscription insert. A repeated header does not apply the capture again. A missing, empty, whitespace-only, or over-255-character header is rejected before any database write. The live columns are `event_id`, `provider`, `event_type`, `payload`, and `processed_at`. The stored payload is the minimized event record, not the raw provider body.
 
 ---
 
@@ -910,10 +931,12 @@ JWT_ACCESS_SECRET=your_access_secret_key
 JWT_REFRESH_SECRET=your_refresh_secret_key
 AWS_REGION=us-east-1
 AWS_S3_BUCKET_NAME=lovebite-private-photos
-RAZORPAY_KEY_ID=rzp_test_xxx
-RAZORPAY_KEY_SECRET=xxx
-RAZORPAY_WEBHOOK_SECRET=xxx
+RAZORPAY_KEY_ID=rzp_test_your_key_id
+RAZORPAY_KEY_SECRET=your_razorpay_key_secret
+RAZORPAY_WEBHOOK_SECRET=your_razorpay_webhook_secret
 ```
+
+`env.ts` validates `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, and `RAZORPAY_WEBHOOK_SECRET` as optional strings. Production boot requires all three. Development and test boot without them. Checkout then returns `500 PAYMENT_NOT_CONFIGURED` and inserts no payment. A missing webhook secret makes `POST /api/v1/webhooks/razorpay` return `500 WEBHOOK_NOT_CONFIGURED` and write nothing. That route verifies `payment.captured` only. Renewal, refunds, grace assignment, and reconciliation are not implemented.
 
 ---
 
