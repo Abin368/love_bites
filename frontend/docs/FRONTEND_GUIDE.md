@@ -34,27 +34,35 @@ Phase 3 onboarding is implemented. Section 26 is the flow. Section 23 lists the 
 
 Phase 4 Discovery is implemented. Section 27 is `GET /api/v1/discovery`.
 
-### Not implemented yet
+### Mounted on the backend, outside this guide’s wiring scope
 
-Do not call these. Tables may exist in PostgreSQL, but there are no mounted routes or frontend APIs for them:
+These routes exist on the backend. This guide does not walk through frontend integration for them. Follow `backend/docs/03-api-specification.md` and `backend/docs/CHAT_HANDOFF.md` when wiring them:
+
+- Discovery actions: `POST /api/v1/discovery/:userId/like`, `POST /api/v1/discovery/:userId/pass`, `POST /api/v1/discovery/:userId/super-like`, and `POST /api/v1/discovery/undo`
+- Unmatch: `DELETE /api/v1/matches/:matchId` (there is no `GET /api/v1/matches` list route)
+- Blocks: `POST /api/v1/blocks/:userId`, `GET /api/v1/blocks`, and `DELETE /api/v1/blocks/:userId`
+- Reports: `POST /api/v1/reports` (admin report review is not mounted)
+- Entitlements and usage: `GET /api/v1/me/entitlements` and `GET /api/v1/me/usage`
+- Subscriptions: `GET /api/v1/subscriptions/plans`, `GET /api/v1/subscriptions/me`, and `POST /api/v1/subscriptions/cancel`
+- Payments: `POST /api/v1/payments/checkout` and `POST /api/v1/payments/verify` (Premium activation is the Razorpay `payment.captured` webhook, not the client verify callback)
+- Admin plan price: `PATCH /api/v1/admin/config/plans/:planId` (authenticated `ADMIN` only)
+
+Super Like credit spend and stored `SUPER_LIKE` / `BOOST` balance reads are live. Monthly credit grants, credit purchase, and boost start/purchase APIs are not. Discovery ranking can honor existing `boost_sessions` rows, but there is no boost activation API.
+
+### Not mounted / not implemented
+
+Do not call these. Tables may exist in PostgreSQL, but these paths are not mounted:
 
 - `PATCH /api/v1/onboarding/profile` (use `GET`, `POST`, and `PATCH /api/v1/profile`)
 - `PUT /api/v1/location` (use `PUT /api/v1/onboarding/location`)
 - `PUT /api/v1/me/interests` and `PUT /api/v1/me/relationship-intentions`
 - `GET /api/v1/dating-preferences` and `PUT /api/v1/dating-preferences`
 - `GET /api/v1/profiles/me` and `GET /api/v1/profiles/:userId`
-- Likes
-- Matches
-- Blocks
-- Reports
+- `GET /api/v1/matches` and rematch
+- Who Liked You APIs
 - Notification APIs
-- Subscriptions
-- Payments
-- Usage limits
-- Credits
-- Boosts
-
-Planning documents describe those as future work. They are not live.
+- Boost purchase / start APIs
+- Admin report review and the rest of the admin surface beyond plan price
 
 ---
 
@@ -551,7 +559,7 @@ Do not add other account states.
 
 The user model allows `USER` and `ADMIN` only. There is no `PHYSICIAN` role.
 
-Register always creates `USER`. No admin UI or role-based screens are implemented. Do not build role-gated product UI from this guide. A later `requireRole('ADMIN')` helper exists on the server and is not mounted on a public admin API.
+Register always creates `USER`. No admin UI or role-based screens are implemented in this guide. Do not build role-gated product UI from this guide. The backend mounts one admin route today: `PATCH /api/v1/admin/config/plans/:planId`, protected by `authenticate` and `requireRole('ADMIN')`. The rest of the admin surface is not mounted.
 
 ---
 
@@ -586,7 +594,7 @@ Auth codes that the server actually returns:
 | 403 | `ACCOUNT_BANNED` | Login, refresh, or a later authenticated call. |
 | 403 | `EMAIL_NOT_VERIFIED` | Not returned by the Phase 2 auth routes. Reserved for a later verified-only route. |
 | 403 | `PHONE_NOT_VERIFIED` | Same. Phone-only account that is still unverified. |
-| 403 | `FORBIDDEN` | Role helper only. No live admin route uses it yet. |
+| 403 | `FORBIDDEN` | Role helper. Live on admin plan-price when a non-admin calls `PATCH /api/v1/admin/config/plans/:planId`, and on user-only routes when an admin calls them. |
 | 404 | `USER_NOT_FOUND` | Resend when the account does not exist. |
 | 409 | `DUPLICATE_IDENTIFIER` | Register. There is no separate email-exists or phone-exists code. |
 | 422 | `UNDERAGE_NOT_PERMITTED` | Register, and only when age is the sole validation failure. |
@@ -827,7 +835,7 @@ Call these in this order. Each save stands on its own. Do not call `POST /api/v1
 
 ## 27. Discovery
 
-`GET /api/v1/discovery` returns the next candidate card. Send `Authorization: Bearer <accessToken>`. The signed-in user must have role `USER`. There is no query string and no body. There is no pagination. Calling it again can return the same person until that person is no longer eligible. Do not call like, pass, super-like, or undo. Those routes are not mounted.
+`GET /api/v1/discovery` returns the next candidate card. Send `Authorization: Bearer <accessToken>`. The signed-in user must have role `USER`. There is no query string and no body. There is no pagination. Calling it again can return the same person until that person is no longer eligible. Like, pass, super-like, and undo are mounted on the backend (`POST /api/v1/discovery/:userId/like`, `…/pass`, `…/super-like`, and `POST /api/v1/discovery/undo`). They are outside this guide’s current frontend wiring scope; use the API specification when integrating them.
 
 Verification is required. The route does not attach a separate verification middleware. An unverified email account is `403 EMAIL_NOT_VERIFIED`. An unverified phone account is `403 PHONE_NOT_VERIFIED`. A missing token is `401 AUTH_REQUIRED`. A bad token is `401 INVALID_TOKEN`. An admin is `403 FORBIDDEN`. Suspended and banned accounts use `403 ACCOUNT_SUSPENDED` and `403 ACCOUNT_BANNED`.
 

@@ -111,7 +111,7 @@ Entitlement & Usage (Entitlements)
 
 ### 5.2 Password Reset & Session Invalidation
 1. **Reset Tokens:** Cryptographically random 32-byte hex strings (`crypto.randomBytes(32).toString('hex')`), hashed using SHA-256 before storage in Redis (TTL: 15 minutes).
-2. **Session Eviction:** A successful password reset revokes every active row in `auth_refresh_tokens` for that user and deletes the Redis reset key. There is no Redis session store to purge. Socket.IO is not implemented, so reset does not disconnect a socket.
+2. **Session Eviction:** A successful password reset revokes every active row in `auth_refresh_tokens` for that user and deletes the Redis reset key. There is no Redis session store to purge. Socket.IO is implemented, but password reset does not disconnect existing sockets.
 
 ---
 

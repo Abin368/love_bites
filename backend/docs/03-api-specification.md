@@ -124,10 +124,16 @@ Live routes that require `Authorization: Bearer <accessToken>`:
 * `GET /api/v1/me/entitlements`.
 * `GET /api/v1/me/usage`.
 * `GET /api/v1/subscriptions/me`.
+* `POST /api/v1/subscriptions/cancel`.
+* `POST /api/v1/payments/checkout` (also requires `Idempotency-Key`).
+* `POST /api/v1/payments/verify`.
+* `POST /api/v1/blocks/:userId`, `GET /api/v1/blocks`, and `DELETE /api/v1/blocks/:userId`.
+* `POST /api/v1/reports`.
+* `PATCH /api/v1/conversations/:conversationId/read`.
 
-Those profile, onboarding, photo, discovery, unmatch, message, entitlements, usage, and current-subscription routes also require role `USER`. `requireVerified` is not applied on the route. An unverified `USER` may call profile, onboarding, photo, entitlements, usage, and `GET /api/v1/subscriptions/me`. Discovery, PASS, LIKE, SUPER LIKE, UNDO, UNMATCH, the conversation inbox, conversation details, send message, media upload URL, media confirmation, media download, message history, and the conversation unread count check verification in the service and return `403 EMAIL_NOT_VERIFIED` or `403 PHONE_NOT_VERIFIED`. Entitlements, the usage snapshot, and the current-subscription read do not check verification or profile completion. Any other role, including `ADMIN`, receives `403 FORBIDDEN`. Suspended and banned accounts are rejected with `403` by the authentication middleware.
+Those profile, onboarding, photo, discovery, unmatch, chat, block, report, entitlements, usage, subscription, and payment routes also require role `USER`. `requireVerified` is not applied on the route. An unverified `USER` may call profile, onboarding, photo, entitlements, usage, subscription read/cancel, payments, blocks, and reports. Discovery, PASS, LIKE, SUPER LIKE, UNDO, UNMATCH, the conversation inbox, conversation details, send message, media upload URL, media confirmation, media download, message history, unread count, and read receipts check verification in the service and return `403 EMAIL_NOT_VERIFIED` or `403 PHONE_NOT_VERIFIED`. Entitlements, the usage snapshot, subscription read/cancel, payments, blocks, and reports do not check verification or profile completion. Any other role, including `ADMIN`, receives `403 FORBIDDEN` on these `USER` routes. Suspended and banned accounts are rejected with `403` by the authentication middleware.
 
-The live admin route is `PATCH /api/v1/admin/config/plans/:planId` in section 31.3. It uses `authenticate` and `requireRole('ADMIN')`. `requireVerified` is not applied. Other admin routes are not mounted.
+The live admin route is `PATCH /api/v1/admin/config/plans/:planId` in section 31.3. It uses `authenticate` and `requireRole('ADMIN')`. `requireVerified` is not applied. Other admin routes are not mounted. `POST /api/v1/webhooks/razorpay` is public (no user JWT) and is documented in section 33.
 
 ---
 
@@ -1176,13 +1182,13 @@ Photo objects returned after confirm, list, and patch are `{ "id", "url", "displ
 * **Status:** Implemented. See section 11.13. Public, active rows only, `display_order` ascending. Empty `data: []` is success. The approved 40-interest catalog is seeded by `20261102120004-seed-interest-catalog.js`.
 * **Method & Path:** `GET /api/v1/interests`
 * **Auth:** Public
-* **Success Response (`200 OK`):** Message is `Interests retrieved successfully`. Item fields are `id`, `code`, `name`, and `category`. The sample below is illustrative; the approved production catalog is the 40-interest seeder documented in section 11.13.
+* **Success Response (`200 OK`):** Message is `Interests retrieved successfully`. Item fields are `id`, `code`, `name`, and `category`. The sample below uses approved catalog names from section 11.13; ids remain illustrative.
   ```json
   {
     "success": true,
     "data": [
-      { "id": "int-uuid-1", "code": "HIKING", "name": "Hiking & Outdoors", "category": "Sports" },
-      { "id": "int-uuid-2", "code": "COFFEE", "name": "Coffee & Cafes", "category": "Food & Drink" }
+      { "id": "int-uuid-1", "code": "HIKING", "name": "Hiking", "category": "Travel & Adventure" },
+      { "id": "int-uuid-2", "code": "COFFEE", "name": "Coffee", "category": "Food & Drinks" }
     ]
   }
   ```
@@ -2001,7 +2007,10 @@ A report does not require verification, a complete profile, location, dating pre
 
 ## 27. Notification & "Who Liked You" APIs
 
+**Not implemented / not mounted.** The contracts below are planned product shapes only. There is no notifications HTTP module and no Who Liked You route. `GET /api/v1/me/entitlements` may return `seeWhoLikedYou: true` for Premium callers; that flag does not unlock an admirers feed API.
+
 ### 27.1 List Notifications
+* **Status:** Not implemented. Not mounted.
 * **Method & Path:** `GET /api/v1/notifications`
 * **Auth:** Authenticated
 * **Query Params:** `limit` (default 20), `cursor`
@@ -2010,6 +2019,7 @@ A report does not require verification, a complete profile, location, dating pre
 ---
 
 ### 27.2 "Who Liked You" (Admirers Feed)
+* **Status:** Not implemented. Not mounted.
 * **Method & Path:** `GET /api/v1/likes/who-liked-me`
 * **Auth:** Authenticated
 * **Security & Monetization Mandate:**

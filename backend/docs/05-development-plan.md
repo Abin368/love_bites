@@ -417,7 +417,7 @@ Deliver one mutually eligible candidate card with PostGIS `ST_DWithin`, strict e
 
 ## 9. Phase 5 — Likes, Passes and Matches
 
-**Partly complete (2026-10-07).** Slice 1 PASS, Slice 2 LIKE and match creation, Slice 3 SUPER LIKE, Slice 4 UNDO, and Slice 5 UNMATCH are implemented. `GET /api/v1/matches`, rematch, notifications, and Socket.IO are not implemented. The live contract is sections 20, 21, and 22.2 of `03-api-specification.md`.
+**Partly complete (2026-10-07; Socket.IO status updated 2026-11-02).** Slice 1 PASS, Slice 2 LIKE and match creation, Slice 3 SUPER LIKE, Slice 4 UNDO, and Slice 5 UNMATCH are implemented. `GET /api/v1/matches`, rematch, and notifications are not implemented. Socket.IO is implemented in Phase 6; do not treat it as missing here. The live contract is sections 20, 21, and 22.2 of `03-api-specification.md`.
 
 ### 9.1 Objectives
 Implement swipe action mechanics (`LIKE`, `PASS`, `SUPER_LIKE`), daily action quota tracking for Free users, race-condition-free mutual matching, Premium Undo, and clean Unmatching/Re-matching lifecycles.
@@ -824,7 +824,7 @@ To maintain strict adherence to dependency constraints, development should follo
 27. Payment Abstraction Layer & Razorpay Provider Integration — Order provider done (create, verify signature, list by receipt)
 28. Razorpay Checkout & Client Handshake Verification — checkout and read-only verify done
 29. Razorpay Webhook Processing Engine (HMAC Verification, Idempotency Ledger) — `payment.captured` activation done; other subscription lifecycle events are not
-30. Subscription Lifecycle State Machine (Auto-Renewal, 24-Hour Grace Period, Downgrade) — not implemented; checkout sets `auto_renew = false` on activation
+30. Subscription Lifecycle State Machine (Auto-Renewal, 24-Hour Grace Period, Downgrade) — not implemented; `payment.captured` activation sets `auto_renew = false` (checkout does not insert a subscription)
 31. Admin Management APIs (User Directory, Moderation Queue, Config, Dashboard KPI) — plan price update done; remainder not
 32. Security Hardening & Penetration Testing (Rate Limits, Helmet, CORS, IDOR)
 33. Comprehensive Automated Test Suite Execution (Unit, Integration, E2E)

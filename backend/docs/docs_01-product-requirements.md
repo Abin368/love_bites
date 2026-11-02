@@ -47,7 +47,6 @@
 * Automated / Human Photo Moderation pipeline
 * "Recently Active" indicator
 * Online / Offline presence status
-* Chat Read Receipts
 * In-app Profile Sharing
 * Granular / Tiered Admin Roles (e.g., Moderator vs. Super Admin)
 
@@ -248,7 +247,7 @@ Reports are not a Discovery exclusion. Browsing candidate cards does not consume
 * **Mutual Matching:** Triggered when the new action is `LIKE` or `SUPER_LIKE` and the other user already has an active `LIKE` or `SUPER_LIKE`. A reciprocal `PASS` does not match.
   * The system inserts a `matches` row with `status = 'ACTIVE'` and canonical user order.
   * The system inserts one `conversations` row with `status = 'ACTIVE'`.
-  * TEXT send is implemented (`POST /api/v1/conversations/:conversationId/messages`). Message history is implemented (`GET /api/v1/conversations/:conversationId/messages`). Read receipts are implemented (`PATCH /api/v1/conversations/:conversationId/read`). The per-conversation unread count is implemented (`GET /api/v1/conversations/:conversationId/unread-count`). The inbox list is implemented (`GET /api/v1/conversations`). Conversation details are implemented (`GET /api/v1/conversations/:conversationId`). The free daily TEXT quota is implemented. Media and match notifications are not implemented.
+  * TEXT send is implemented (`POST /api/v1/conversations/:conversationId/messages`). Message history is implemented (`GET /api/v1/conversations/:conversationId/messages`). Read receipts are implemented (`PATCH /api/v1/conversations/:conversationId/read` and the Socket.IO `chat:message:read` event). The per-conversation unread count is implemented (`GET /api/v1/conversations/:conversationId/unread-count`). The inbox list is implemented (`GET /api/v1/conversations`). Conversation details are implemented (`GET /api/v1/conversations/:conversationId`). The free daily TEXT quota is implemented. Chat media upload, confirmation, and download are implemented. Match notifications are not implemented.
 * **Free quota:** A like consumes one of the 10 combined Like and Pass actions for the UTC day, unless the caller has Premium.
 
 #### Super Like
@@ -364,15 +363,17 @@ Reports are not a Discovery exclusion. Browsing candidate cards does not consume
 ### 10.2 Payment Gateway Abstraction & Provider
 * **Primary Provider:** Razorpay.
 * **Architectural Abstraction:** The billing layer must be decoupled behind a Payment Abstraction Interface to allow secondary gateway integration in the future.
-* **Source of Truth Rule:** Provider subscription activation, renewal, and payment failure remain driven by authenticated webhook events from the payment provider, rather than frontend success callbacks. Those webhooks are not implemented. `POST /api/v1/payments/checkout` creates a Razorpay Order and an `INITIATED` payment. It does not create a subscription or grant Premium. `POST /api/v1/subscriptions/cancel` is a local state change for an `ACTIVE` subscription. It does not call the payment provider.
+* **Source of Truth Rule:** Provider subscription activation, renewal, and payment failure remain driven by authenticated webhook events from the payment provider, rather than frontend success callbacks. **Current implementation:** checkout uses Razorpay Orders (not Razorpay Subscriptions). `POST /api/v1/payments/checkout` creates a Razorpay Order and an `INITIATED` payment; it does not create a subscription or grant Premium. `POST /api/v1/payments/verify` checks the Order signature and writes nothing. Authoritative Premium activation is a verified `POST /api/v1/webhooks/razorpay` `payment.captured` event. Renewal, payment-failure, refund, and grace-assignment webhooks are **not** implemented. `POST /api/v1/subscriptions/cancel` is a local state change for an `ACTIVE` subscription and does not call the payment provider.
 
 ### 10.3 Auto-Renewal & Cancellation Flow
-* **Auto-Renewal Default:** Enabled upon subscription purchase.
+* **Product requirement:** Auto-renewal should be enabled upon subscription purchase when a recurring billing path exists.
+* **Current implementation:** `payment.captured` activation inserts an `ACTIVE` Premium subscription with `auto_renew = false`. Automatic renewal is not implemented.
 * **Cancellation:** An authenticated user can cancel an `ACTIVE` subscription through `POST /api/v1/subscriptions/cancel`. `PAST_DUE` and `GRACE_PERIOD` subscriptions are not canceled by that route.
 * **Effect of Cancellation:** Sets local auto-renew off and status `CANCELED`. It does not call the payment provider and does not issue a refund. Premium entitlements **remain active** until `current_period_end`. A future grace timestamp does not extend a canceled subscription. No mid-term prorated refunds are issued.
 * **Reactivation Constraint:** A cancelled subscription cannot be "reactivated" mid-cycle. Upon expiration, the user must initiate a new subscription.
 
 ### 10.4 Subscription Renewal Failure & Grace Period Flow
+**Product requirement (not implemented).** Automatic renewal, payment-failure handling, grace-period assignment, and reconciliation are future work. No grace-period writer exists today. The target flow:
 
 ```
 [RENEWAL ATTEMPT]
@@ -402,6 +403,7 @@ Reports are not a Discovery exclusion. Browsing candidate cards does not consume
 6. If payment is not recovered after 24 hours, the user account is automatically downgraded to the Free tier, enforcing standard Free quotas.
 
 ### 10.5 Plan Switching (Monthly <-> Yearly)
+**Product requirement (not implemented).** No plan-switch API exists today. When implemented:
 * Users can switch between Monthly and Yearly plans at any time without waiting for plan expiration.
 * **Transition Logic:** Switching triggers immediate processing of the new plan via the payment gateway without prorated credits. The new plan billing cycle starts fresh according to payment transition rules, ensuring continuous Premium access without service interruption.
 * Historical payment records must be preserved in the subscription history log.
@@ -424,22 +426,22 @@ Reports are not a Discovery exclusion. Browsing candidate cards does not consume
 * More than one report for the same pair is allowed. Admin review of those rows is not implemented.
 
 ### 11.2 Admin Management Capabilities
-The Admin Dashboard provides full operational management over the platform:
+The Admin Dashboard is a product requirement for full operational management over the platform. **Currently implemented:** `PATCH /api/v1/admin/config/plans/:planId` for authenticated `ADMIN` plan price/currency updates with an audit reason. Seed plan prices remain placeholders. The capabilities below remain product scope and are **not** mounted unless noted:
 
-* **User Management:** View all accounts, search by identifier/name, inspect full profile details and media.
-* **Account Enforcement:** Apply administrative `SUSPENDED` or `BANNED` statuses; execute `UNBAN` / `UNSUSPEND` actions.
-* **Moderation Queue:** Review flagged reports, inspect message context, and execute dismissal or user disciplinary actions.
+* **User Management:** View all accounts, search by identifier/name, inspect full profile details and media. **Not implemented.**
+* **Account Enforcement:** Apply administrative `SUSPENDED` or `BANNED` statuses; execute `UNBAN` / `UNSUSPEND` actions. **Not implemented** as admin APIs.
+* **Moderation Queue:** Review flagged reports, inspect message context, and execute dismissal or user disciplinary actions. **Not implemented.**
 * **Configurable Data Management:**
-  * Add, edit, or deactivate Gender options.
-  * Add, edit, or deactivate Interests.
-  * Add, edit, or deactivate Relationship Intentions.
+  * Add, edit, or deactivate Gender options. **Not implemented.**
+  * Add, edit, or deactivate Interests. **Not implemented.** The approved 40-interest catalog is populated by seeder `20261102120004-seed-interest-catalog.js`; public `GET /api/v1/interests` returns active rows only.
+  * Add, edit, or deactivate Relationship Intentions. **Not implemented.**
 * **System & Entitlement Configuration:**
-  * Define subscription plans and pricing structures.
-  * Configure Premium feature limits (e.g., Free swipe daily quota, Free message daily quota).
-  * Configure Premium visibility boost multiplier.
-  * View high-level system activity metrics (e.g., total users, active matches, subscription metrics).
+  * Define subscription plans and pricing structures. **Plan-price update is implemented**; broader plan/feature editing is not.
+  * Configure Premium feature limits (e.g., Free swipe daily quota, Free message daily quota). **Not implemented** as admin APIs; daily limits come from seeded `usage_limits`.
+  * Configure Premium visibility boost multiplier. **Not implemented.**
+  * View high-level system activity metrics (e.g., total users, active matches, subscription metrics). **Not implemented.**
 
-*Note: Admin capabilities are strictly bounded by these explicit operational points.*
+*Note: Admin capabilities are strictly bounded by these explicit operational points. Do not treat a product requirement as a live API.*
 
 ---
 
@@ -464,9 +466,10 @@ The system must support an event-driven notification dispatch pipeline for criti
 * Requirement for Email verification and SMS OTP verification.
 * Mandatory obfuscation of exact user coordinates (Lat/Long).
 * Server-side redaction of "Who Liked You" profiles for Free users.
-* Razorpay as the initial payment provider with webhook-driven state management.
-* 24-hour grace period for failed subscription renewals.
+* Razorpay as the initial payment provider with webhook-driven state management. Order checkout, signature verify, and `payment.captured` activation are implemented; renewal/grace webhooks are not.
+* 24-hour grace period for failed subscription renewals (product requirement; grace assignment is not implemented).
 * Permanence of Pass action in MVP.
+* Chat read receipts (delivered early; HTTP `PATCH …/read` and Socket.IO `chat:message:read` are implemented).
 
 ### 13.2 Assumptions (Explicit)
 * Soft-deleted accounts retain data internally for regulatory/audit compliance before hard purge.
@@ -492,4 +495,4 @@ The following parameter values are designated as **TBD** and must be populated v
 ## Document Status
 * **Status:** DRAFT
 * **Version:** 1.0
-* **Last Updated:** 14 October 2026. Discovery, pass, like, super like, undo, unmatch, chat through media download, block management, and `POST /api/v1/reports` match the implemented API. Rematch, who-liked-you, the match list, notifications, the admin report queue, and payments remain product scope that is not yet implemented.
+* **Last Updated:** 2 November 2026. Discovery, pass, like, super like, undo, unmatch, chat through media download, read receipts, block management, `POST /api/v1/reports`, entitlements/usage snapshots, subscription read/cancel, Order checkout, payment verify, and `payment.captured` webhook activation match the implemented API. Rematch, who-liked-you, the match list, notifications, the admin report queue, renewal/grace/plan-switch/reconciliation, and admin taxonomy CRUD remain product scope that is not yet implemented.

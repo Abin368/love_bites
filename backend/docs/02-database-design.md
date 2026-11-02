@@ -334,15 +334,15 @@ Stores metadata and AWS S3 storage keys for user profile photos. No binary image
 ### 6.1 `interests`
 
 #### Purpose
-Admin-managed catalog of interest tags (e.g., "Photography", "Hiking", "Anime").
+Admin-managed catalog of interest tags. The approved production seed includes names such as Travel, Hiking, Coffee, Photography, and Anime across eight categories (see section 28.6).
 
 #### Columns
 | Column | Type | Nullable | Default | Description |
 | :--- | :--- | :--- | :--- | :--- |
 | `id` | `UUID` | `NO` | `gen_random_uuid()` | Primary key. |
 | `code` | `VARCHAR(50)` | `NO` | — | Unique machine identifier (e.g., `'HIKING'`). |
-| `name` | `VARCHAR(100)` | `NO` | — | Display label (e.g., `'Hiking & Outdoors'`). |
-| `category` | `VARCHAR(50)` | `YES` | `NULL` | Optional grouping category (e.g., `'Sports'`, `'Art'`). |
+| `name` | `VARCHAR(100)` | `NO` | — | Display label (e.g., `'Hiking'`). |
+| `category` | `VARCHAR(50)` | `YES` | `NULL` | Optional grouping category (e.g., `'Travel & Adventure'`, `'Food & Drinks'`). |
 | `is_active` | `BOOLEAN` | `NO` | `TRUE` | Whether available for new user selection. |
 | `display_order` | `SMALLINT` | `NO` | `0` | UI presentation order. |
 | `created_at` | `TIMESTAMPTZ` | `NO` | `CURRENT_TIMESTAMP` | Creation timestamp. |
@@ -984,7 +984,7 @@ Stores user subscription instances, auto-renewal settings, billing period dates,
 | `provider_subscription_id`| `VARCHAR(255)` | `YES` | `NULL` | Gateway subscription identifier (e.g., `sub_xxx`). |
 | `provider_customer_id` | `VARCHAR(255)` | `YES` | `NULL` | Gateway customer identifier (e.g., `cust_xxx`). |
 | `status` | `VARCHAR(30)` | `NO` | `'ACTIVE'` | State: `'ACTIVE'`, `'PAST_DUE'`, `'GRACE_PERIOD'`, `'CANCELED'`, `'EXPIRED'`. |
-| `auto_renew` | `BOOLEAN` | `NO` | `TRUE` | Whether recurring billing is active. |
+| `auto_renew` | `BOOLEAN` | `NO` | `TRUE` | Column default is `TRUE`. The live `payment.captured` activation path always inserts `FALSE` because automatic renewal is not implemented. Do not treat the schema default as the activation write. |
 | `current_period_start` | `TIMESTAMPTZ` | `NO` | — | Start timestamp of current billing cycle. |
 | `current_period_end` | `TIMESTAMPTZ` | `NO` | — | End timestamp of current billing cycle. |
 | `grace_period_end` | `TIMESTAMPTZ` | `YES` | `NULL` | Timestamp when 24-hour grace period expires. |
@@ -1055,7 +1055,7 @@ Configures quantitative operational limits per plan tier (e.g., Free users get 1
 ### 17.2 `usage_records`
 
 #### Purpose
-Persistent ledger recording usage consumption per user and metric. The live free LIKE and PASS quota uses metric key `DAILY_LIKE_PASS`, a limit of 10, and a UTC calendar day: `period_start` is UTC midnight and `period_end` is 24 hours later. The increment is `INSERT ... ON CONFLICT (user_id, metric_key, period_start) DO UPDATE ... WHERE usage_count < 10`. Premium LIKE and PASS do not write this row. SUPER LIKE and UNDO do not change it. Undo does not restore a consumed count. The live free TEXT message quota uses metric key `DAILY_TEXT_MESSAGES`, a limit of 20, the same UTC calendar day window, and the same atomic upsert pattern with `WHERE usage_count < 20`. Premium TEXT send does not write this row. Redis is not used for either product quota.
+Persistent ledger recording usage consumption per user and metric. Live free LIKE/PASS and TEXT quotas use metric keys `DAILY_LIKE_PASS` and `DAILY_TEXT_MESSAGES` with a UTC calendar day (`period_start` is UTC midnight; `period_end` is 24 hours later). The enforced limit comes from the effective plan's `usage_limits` row through `resolveDailyCatalogLimit` / `consumeDailyQuota`, not from a hardcoded constant in the upsert. Seeded Free values are currently 10 and 20; the atomic upsert uses `WHERE usage_count < :limit` with that catalog value. Qualifying Premium with catalog `-1` skips the usage write. SUPER LIKE and UNDO do not change these daily rows. Undo does not restore a consumed count. Redis is not used for either product quota.
 
 #### Columns
 | Column | Type | Nullable | Default | Description |
@@ -1561,22 +1561,33 @@ These amounts are seed placeholders. Product prices remain TBD. `20261015120003-
 ```
 
 ### 28.5 Usage Limits Seed (`usage_limits`)
+
+`20261015120003-seed-plan-catalog.js` currently seeds **six daily rows only**. Monthly Super Like and Boost allowances are **not** seeded, even though those metric keys remain valid column values for future use.
+
 ```json
 [
   { "plan_code": "FREE", "metric_key": "DAILY_LIKE_PASS", "limit_value": 10, "period_type": "DAILY" },
   { "plan_code": "FREE", "metric_key": "DAILY_TEXT_MESSAGES", "limit_value": 20, "period_type": "DAILY" },
-  { "plan_code": "FREE", "metric_key": "MONTHLY_SUPER_LIKES", "limit_value": 0, "period_type": "MONTHLY" },
-  { "plan_code": "FREE", "metric_key": "MONTHLY_BOOST_CREDITS", "limit_value": 0, "period_type": "MONTHLY" },
   { "plan_code": "PREMIUM_MONTHLY", "metric_key": "DAILY_LIKE_PASS", "limit_value": -1, "period_type": "DAILY" },
   { "plan_code": "PREMIUM_MONTHLY", "metric_key": "DAILY_TEXT_MESSAGES", "limit_value": -1, "period_type": "DAILY" },
-  { "plan_code": "PREMIUM_MONTHLY", "metric_key": "MONTHLY_SUPER_LIKES", "limit_value": 5, "period_type": "MONTHLY" },
-  { "plan_code": "PREMIUM_MONTHLY", "metric_key": "MONTHLY_BOOST_CREDITS", "limit_value": 1, "period_type": "MONTHLY" },
   { "plan_code": "PREMIUM_YEARLY", "metric_key": "DAILY_LIKE_PASS", "limit_value": -1, "period_type": "DAILY" },
-  { "plan_code": "PREMIUM_YEARLY", "metric_key": "DAILY_TEXT_MESSAGES", "limit_value": -1, "period_type": "DAILY" },
-  { "plan_code": "PREMIUM_YEARLY", "metric_key": "MONTHLY_SUPER_LIKES", "limit_value": 5, "period_type": "MONTHLY" },
-  { "plan_code": "PREMIUM_YEARLY", "metric_key": "MONTHLY_BOOST_CREDITS", "limit_value": 1, "period_type": "MONTHLY" }
+  { "plan_code": "PREMIUM_YEARLY", "metric_key": "DAILY_TEXT_MESSAGES", "limit_value": -1, "period_type": "DAILY" }
 ]
 ```
+
+`plan_features` stays empty. Runtime Premium gates use `hasActivePremium`, not feature-grant rows.
+
+### 28.6 Interests Seed (`interests`)
+
+Approved production catalog seeder: `src/database/seeders/20261102120004-seed-interest-catalog.js`.
+
+* **Count:** 40 interests across 8 categories, `display_order` 1–40.
+* **Upsert policy:** identify by stable `code`. Insert missing rows with `is_active = true` and `gen_random_uuid()`. On conflict, refresh only `name`, `category`, `display_order`, and `updated_at`. Do not overwrite `id` or `is_active`. Do not delete catalog rows. Do not touch `user_interests`.
+* **`down`:** intentional no-op (catalog rows may be admin-edited or referenced by `user_interests`).
+* **Categories (5 interests each):** Travel & Adventure; Food & Drinks; Entertainment; Sports & Fitness; Arts & Creativity; Lifestyle & Social; Learning & Technology; Nature & Wellness.
+* **Codes (display order):** `TRAVEL`, `ROAD_TRIPS`, `ADVENTURE`, `HIKING`, `CAMPING`, `FOODIE`, `COOKING`, `COFFEE`, `BAKING`, `STREET_FOOD`, `MOVIES`, `TV_SHOWS`, `MUSIC`, `CONCERTS`, `ANIME`, `FITNESS`, `CRICKET`, `FOOTBALL`, `BADMINTON`, `YOGA`, `PHOTOGRAPHY`, `PAINTING`, `DANCING`, `WRITING`, `FASHION`, `NIGHTLIFE`, `PARTIES`, `SHOPPING`, `PETS`, `VOLUNTEERING`, `TECHNOLOGY`, `READING`, `ENTREPRENEURSHIP`, `SCIENCE`, `LEARNING_LANGUAGES`, `NATURE`, `MEDITATION`, `PERSONAL_GROWTH`, `BEACH_LIFE`, `GARDENING`.
+
+Applying the seeder is an environment operation. Documentation does not claim `love_bites_dev` has been seeded.
 
 ---
 
