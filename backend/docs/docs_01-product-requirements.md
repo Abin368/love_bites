@@ -178,7 +178,15 @@ To ensure high-quality discovery, users must complete a mandatory, sequential on
 To maintain flexibility without code changes, the following entities are administrator-managed:
 
 * **Gender Options:** Dynamic entity. Initial seed defaults include `Man`, `Woman`, `Non-binary`, `Prefer not to say`. Administrators can add, edit, or deactivate options.
-* **Interests:** Dynamic entity. Deactivated interests remain attached to existing user profiles for display purposes, but cannot be selected by new or editing users.
+* **Interests:** Dynamic entity. Deactivated interests remain attached to existing user profiles for display purposes, but cannot be selected by new or editing users. The approved initial catalog is 40 active interests across 8 categories:
+  * **Travel & Adventure:** Travel, Road Trips, Adventure, Hiking, Camping
+  * **Food & Drinks:** Foodie, Cooking, Coffee, Baking, Street Food
+  * **Entertainment:** Movies, TV Shows, Music, Concerts, Anime
+  * **Sports & Fitness:** Fitness, Cricket, Football, Badminton, Yoga
+  * **Arts & Creativity:** Photography, Painting, Dancing, Writing, Fashion
+  * **Lifestyle & Social:** Nightlife, Parties, Shopping, Pets, Volunteering
+  * **Learning & Technology:** Technology, Reading, Entrepreneurship, Science, Learning Languages
+  * **Nature & Wellness:** Nature, Meditation, Personal Growth, Beach Life, Gardening
 * **Relationship Intentions:** Dynamic entity. Initial seed defaults include `Long-term relationship`, `Something casual`, `Friendship`, `Not sure yet`. Users can select multiple options.
 
 ### 5.3 Profile Photo Rules

@@ -17,7 +17,7 @@ Phase 2 authentication, Phase 3 onboarding, Phase 4 Discovery, and Phase 5 slice
 
 **Mounted live sections (see each subsection for the contract):** **4**, **11**, **12**, **14**, **19**, **20**, **21**, **22.2**, **23.1**, **23.2**, **24.1–24.7**, **25**, **26.1**, **28.1**, **28.2**, **28.3**, **29.1**, **29.2**, **30.1**, **30.2**, **31.3**, **32** (implemented events only), and **33** (`payment.captured` only). Health checks are also live: `GET /health` and `GET /api/v1/health`.
 
-**Not mounted / not implemented:** richer profile views in section **13**; `PUT /api/v1/me/interests`, `PUT /api/v1/me/relationship-intentions`, `GET /api/v1/dating-preferences`, `PUT /api/v1/dating-preferences`, `PUT /api/v1/location`, and `PATCH /api/v1/onboarding/profile`; `GET /api/v1/matches` and rematch (section **22.1**); Who Liked You; notifications; boosts; admin report review and other admin routes beyond plan price (section **31.2**); conversation rooms; Razorpay Subscriptions; renewal, refunds, grace assignment, plan switching, and the subscription reconciliation worker. Match and conversation rows are created by LIKE and SUPER LIKE. UNMATCH does not delete them. Production interests are not seeded. Seed plan prices are placeholders. `plan_features` is empty; runtime Premium gates use `hasActivePremium`, not dynamic feature grants.
+**Not mounted / not implemented:** richer profile views in section **13**; `PUT /api/v1/me/interests`, `PUT /api/v1/me/relationship-intentions`, `GET /api/v1/dating-preferences`, `PUT /api/v1/dating-preferences`, `PUT /api/v1/location`, and `PATCH /api/v1/onboarding/profile`; `GET /api/v1/matches` and rematch (section **22.1**); Who Liked You; notifications; boosts; admin report review and other admin routes beyond plan price (section **31.2**); conversation rooms; Razorpay Subscriptions; renewal, refunds, grace assignment, plan switching, and the subscription reconciliation worker. Match and conversation rows are created by LIKE and SUPER LIKE. UNMATCH does not delete them. The approved 40-interest production catalog is seeded by `20261102120004-seed-interest-catalog.js`. Seed plan prices are placeholders. `plan_features` is empty; runtime Premium gates use `hasActivePremium`, not dynamic feature grants.
 
 ### Core Architectural Principles:
 * **Strict REST Semantics:** Standard HTTP verbs (`GET`, `POST`, `PATCH`, `PUT`, `DELETE`) with resource-oriented URIs.
@@ -656,7 +656,7 @@ From login `user`, and from access-token claims:
 
 Live now: registration, email and phone verification, resend, login, refresh, logout, forgot-password, reset-password, the public catalog reads in section 11.13, the authenticated basic profile API in section 11.14, onboarding interests and relationship intentions in section 11.15, profile photos in section 14, dating preferences in section 12.5, location in section 12.6, onboarding status in section 12.1, onboarding completion in section 12.7, `GET /api/v1/discovery` in section 19, PASS, LIKE, SUPER LIKE, and UNDO in sections 20 and 21, UNMATCH in section 22.2, block management in section 25, and `POST /api/v1/reports` in section 26.1.
 
-Phase 3 onboarding is complete. Phase 4 — Discovery is complete. Phase 5 slices for PASS, LIKE and match creation, SUPER LIKE, UNDO, and UNMATCH are complete. `GET /api/v1/matches` is not implemented. Rematch is not implemented. Gender and relationship-intention seed data exist. Production interests are not seeded, because the approved interest list is not defined.
+Phase 3 onboarding is complete. Phase 4 — Discovery is complete. Phase 5 slices for PASS, LIKE and match creation, SUPER LIKE, UNDO, and UNMATCH are complete. `GET /api/v1/matches` is not implemented. Rematch is not implemented. Gender, relationship-intention, and approved interest seed data exist.
 
 Not implemented: `PUT /api/v1/me/interests`, `PUT /api/v1/me/relationship-intentions`, `GET /api/v1/dating-preferences`, `PUT /api/v1/dating-preferences`, `PUT /api/v1/location`, `PATCH /api/v1/onboarding/profile`, the richer profile views in section 13, `GET /api/v1/matches`, rematch, who-liked-me, notifications, boosts, and admin report review. Do not call those paths. Live and mounted: `DELETE /api/v1/matches/:matchId`; chat and media routes where their subsections say implemented; `GET /api/v1/subscriptions/plans`, `GET /api/v1/subscriptions/me`, `POST /api/v1/subscriptions/cancel`; `GET /api/v1/me/entitlements`, `GET /api/v1/me/usage`; `POST /api/v1/payments/checkout`, `POST /api/v1/payments/verify`; `POST /api/v1/webhooks/razorpay` for `payment.captured`; and `PATCH /api/v1/admin/config/plans/:planId`.
 
@@ -689,7 +689,7 @@ Only active rows are returned, ordered by `display_order` ascending. An empty ca
 
 * **Method & Path:** `GET /api/v1/interests`
 * **Auth:** Public
-* **Seed data:** none. The approved production interest list is not defined. The endpoint returns whatever active rows exist.
+* **Seed data:** The approved production catalog is 40 active interests across 8 categories, seeded by `src/database/seeders/20261102120004-seed-interest-catalog.js`. Codes and display order are: `TRAVEL` (1), `ROAD_TRIPS` (2), `ADVENTURE` (3), `HIKING` (4), `CAMPING` (5) under Travel & Adventure; `FOODIE` (6), `COOKING` (7), `COFFEE` (8), `BAKING` (9), `STREET_FOOD` (10) under Food & Drinks; `MOVIES` (11), `TV_SHOWS` (12), `MUSIC` (13), `CONCERTS` (14), `ANIME` (15) under Entertainment; `FITNESS` (16), `CRICKET` (17), `FOOTBALL` (18), `BADMINTON` (19), `YOGA` (20) under Sports & Fitness; `PHOTOGRAPHY` (21), `PAINTING` (22), `DANCING` (23), `WRITING` (24), `FASHION` (25) under Arts & Creativity; `NIGHTLIFE` (26), `PARTIES` (27), `SHOPPING` (28), `PETS` (29), `VOLUNTEERING` (30) under Lifestyle & Social; `TECHNOLOGY` (31), `READING` (32), `ENTREPRENEURSHIP` (33), `SCIENCE` (34), `LEARNING_LANGUAGES` (35) under Learning & Technology; `NATURE` (36), `MEDITATION` (37), `PERSONAL_GROWTH` (38), `BEACH_LIFE` (39), `GARDENING` (40) under Nature & Wellness. The seeder upserts by `code`, refreshes name, category, and display order, and does not overwrite `is_active` on conflict. `down` is a no-op. UUIDs are generated with `gen_random_uuid()`. Apply the seeder before expecting a non-empty catalog in an environment.
 * **Success Response (`200 OK`):** `data` items are `{ "id", "code", "name", "category" }`. `category` may be `null`. Message: `Interests retrieved successfully`. An empty table returns `data: []`.
 
 #### List active relationship intentions
@@ -1173,10 +1173,10 @@ Photo objects returned after confirm, list, and patch are `{ "id", "url", "displ
 ## 15. Interest APIs
 
 ### 15.1 List Active Interests
-* **Status:** Implemented. See section 11.13. Public, active rows only, `display_order` ascending. Empty `data: []` is success. Production interests are not seeded.
+* **Status:** Implemented. See section 11.13. Public, active rows only, `display_order` ascending. Empty `data: []` is success. The approved 40-interest catalog is seeded by `20261102120004-seed-interest-catalog.js`.
 * **Method & Path:** `GET /api/v1/interests`
 * **Auth:** Public
-* **Success Response (`200 OK`):** Message is `Interests retrieved successfully`. Item fields are `id`, `code`, `name`, and `category`. The sample below is illustrative only; those interest names are not seed data.
+* **Success Response (`200 OK`):** Message is `Interests retrieved successfully`. Item fields are `id`, `code`, `name`, and `category`. The sample below is illustrative; the approved production catalog is the 40-interest seeder documented in section 11.13.
   ```json
   {
     "success": true,

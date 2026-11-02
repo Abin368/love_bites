@@ -308,13 +308,13 @@ Implement secure, dual-identifier registration (Email OR Phone), cryptographic p
 
 ## 7. Phase 3 — Profile and Onboarding
 
-**Phase 3 status (2026-10-05): complete.** Catalogs, basic profile HTTP, interests, relationship intentions, profile photos, dating preferences, location, onboarding status, and onboarding completion are implemented. **Phase 4 — Discovery is complete.** **Phase 5 slices for PASS, LIKE and match creation, SUPER LIKE, UNDO, and UNMATCH are complete.** `GET /api/v1/matches` and rematch are not implemented. Production interests are not seeded. `PATCH /api/v1/onboarding/profile`, `PUT /api/v1/location`, `PUT /api/v1/me/interests`, `PUT /api/v1/me/relationship-intentions`, `GET /api/v1/dating-preferences`, and `PUT /api/v1/dating-preferences` are not mounted.
+**Phase 3 status (2026-10-05): complete.** Catalogs, basic profile HTTP, interests, relationship intentions, profile photos, dating preferences, location, onboarding status, and onboarding completion are implemented. **Phase 4 — Discovery is complete.** **Phase 5 slices for PASS, LIKE and match creation, SUPER LIKE, UNDO, and UNMATCH are complete.** `GET /api/v1/matches` and rematch are not implemented. The approved 40-interest production catalog is seeded by `20261102120004-seed-interest-catalog.js` (added 2026-11-02). `PATCH /api/v1/onboarding/profile`, `PUT /api/v1/location`, `PUT /api/v1/me/interests`, `PUT /api/v1/me/relationship-intentions`, `GET /api/v1/dating-preferences`, and `PUT /api/v1/dating-preferences` are not mounted.
 
 Implemented in Step 1:
 
 * Public `GET /api/v1/genders`, `GET /api/v1/interests`, and `GET /api/v1/relationship-intentions`. No authentication. Shared public rate limit of 100 requests / 60 seconds / IP (`ratelimit:public:<ip>`). Active rows only, ordered by `display_order`.
 * Sequelize seeders for the approved genders (`MAN`, `WOMAN`, `NON_BINARY`, `PREFER_NOT_TO_SAY`) and relationship intentions (`LONG_TERM_RELATIONSHIP`, `SOMETHING_CASUAL`, `FRIENDSHIP`, `NOT_SURE_YET`).
-* No production interest seed. The approved interest list is not defined. `GET /api/v1/interests` returns an empty array until rows exist.
+* Sequelize seeder for the approved 40-interest production catalog (`20261102120004-seed-interest-catalog.js`). Upserts by stable `code`, refreshes name, category, and display order, sets `is_active = true` only on insert, and leaves `down` as a no-op. `GET /api/v1/interests` returns active seeded rows after the seeder is applied.
 
 Implemented in Step 2:
 
@@ -345,7 +345,7 @@ Implemented for dating preferences:
 * The response returns the stored age range, distance, and catalog objects `{ "id", "code", "name" }`. This route does not write `user_relationship_intentions` or `profiles.is_profile_complete`.
 * `GET /api/v1/dating-preferences` and `PUT /api/v1/dating-preferences` are not implemented.
 
-Not implemented in this phase: public profile views, `PATCH /api/v1/onboarding/profile`, `PUT /api/v1/location`, `GET /api/v1/dating-preferences`, and `PUT /api/v1/dating-preferences`. Profile photos, location, onboarding status, and onboarding completion are implemented. Plan, feature, and daily usage-limit seed data is recorded in Phase 8. Production interests are not seeded. Discovery and the Phase 5 action routes are later phases and are now implemented outside this section.
+Not implemented in this phase: public profile views, `PATCH /api/v1/onboarding/profile`, `PUT /api/v1/location`, `GET /api/v1/dating-preferences`, and `PUT /api/v1/dating-preferences`. Profile photos, location, onboarding status, and onboarding completion are implemented. Plan, feature, and daily usage-limit seed data is recorded in Phase 8. The approved interest catalog seeder was added on 2026-11-02. Discovery and the Phase 5 action routes are later phases and are now implemented outside this section.
 
 ### 7.1 Objectives
 Implement the linear onboarding sequence, demographic metadata management, S3 presigned photo upload pipeline, dating preferences, and profile completion validation.
