@@ -62,6 +62,14 @@ function premiumAlreadyActive(): ConflictError {
   return new ConflictError('Premium access is already active.', [], 'ACTIVE_SUBSCRIPTION_EXISTS');
 }
 
+function checkoutAlreadyOpen(): ConflictError {
+  return new ConflictError(
+    'A checkout is already open for this account.',
+    [],
+    'CHECKOUT_ALREADY_OPEN'
+  );
+}
+
 function idempotencyInProgress(): ConflictError {
   return new ConflictError('A request with this Idempotency-Key is already in progress.', [], 'IDEMPOTENCY_CONFLICT');
 }
@@ -126,6 +134,15 @@ async function openCheckout(input: CheckoutInput): Promise<OpenCheckout> {
       if (existing) {
         return resolveExisting(plan, existing);
       }
+
+      const outstanding = await paymentsDataAccess.findUnresolvedSubscriptionCheckout(
+        input.userId,
+        transaction
+      );
+      if (outstanding) {
+        throw checkoutAlreadyOpen();
+      }
+
       if (!plan) {
         throw planNotFound();
       }
@@ -154,6 +171,9 @@ async function openCheckout(input: CheckoutInput): Promise<OpenCheckout> {
       return { kind: 'create', payment, plan };
     });
   } catch (error) {
+    if (paymentsDataAccess.isOutstandingCheckoutUniqueViolation(error)) {
+      throw checkoutAlreadyOpen();
+    }
     if (!paymentsDataAccess.isIdempotencyUniqueViolation(error) && !(error instanceof UniqueConstraintError)) {
       throw error;
     }

@@ -1,5 +1,6 @@
 import { createHmac, randomUUID } from 'crypto';
 import request from 'supertest';
+import { UniqueConstraintError } from 'sequelize';
 import { env } from '../../src/config/env';
 import { sequelize } from '../../src/config/database';
 import { Payment, PaymentBillingInterval, PaymentStatus, PaymentType } from '../../src/database/models/payment.model';
@@ -348,6 +349,8 @@ describe('POST /api/v1/webhooks/razorpay', () => {
 
   it('does not grant Premium when the payment snapshot cannot activate', async () => {
     const user = await createUser();
+    const planUser = await createUser();
+    const intervalUser = await createUser();
     const plan = await createPlan('YEAR');
     const cases = [
       createPayment({
@@ -363,13 +366,13 @@ describe('POST /api/v1/webhooks/razorpay', () => {
         billingInterval: 'MONTH'
       }),
       createPayment({
-        userId: user.id,
+        userId: planUser.id,
         planId: null,
         providerOrderId: 'order_plan',
         billingInterval: 'MONTH'
       }),
       createPayment({
-        userId: user.id,
+        userId: intervalUser.id,
         planId: plan.id,
         providerOrderId: 'order_interval',
         billingInterval: null
@@ -565,11 +568,11 @@ describe('POST /api/v1/webhooks/razorpay', () => {
     const user = await createUser();
     const plan = await createPlan();
     const first = await createPayment({ userId: user.id, planId: plan.id, providerOrderId: 'order_first' });
-    const second = await createPayment({ userId: user.id, planId: plan.id, providerOrderId: 'order_second' });
     const firstRaw = captureBody({ eventId: 'evt_first', orderId: 'order_first', paymentId: 'pay_first' });
     await postEvent(firstRaw, 'evt_first');
     const subscription = await Subscription.findOne({ where: { userId: user.id } });
     const periodEnd = subscription?.currentPeriodEnd.toISOString();
+    const second = await createPayment({ userId: user.id, planId: plan.id, providerOrderId: 'order_second' });
     const secondRaw = captureBody({ eventId: 'evt_second', orderId: 'order_second', paymentId: 'pay_second' });
 
     const response = await postEvent(secondRaw, 'evt_second');
@@ -722,67 +725,16 @@ describe('POST /api/v1/webhooks/razorpay', () => {
     expect(payment?.subscriptionId).not.toBeNull();
   });
 
-  it('rolls back the losing order when two captures race and records it without extending on retry', async () => {
+  it('rejects a second unresolved INITIATED subscription checkout for the same user', async () => {
     const user = await createUser();
     const plan = await createPlan();
-    const first = await createPayment({ userId: user.id, planId: plan.id, providerOrderId: 'order_race_1' });
-    const second = await createPayment({ userId: user.id, planId: plan.id, providerOrderId: 'order_race_2' });
-    const firstRaw = captureBody({ eventId: 'evt_race_1', orderId: 'order_race_1', paymentId: 'pay_race_1' });
-    const secondRaw = captureBody({ eventId: 'evt_race_2', orderId: 'order_race_2', paymentId: 'pay_race_2' });
-    let arrived = 0;
-    let release: () => void = () => undefined;
-    const opened = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const hook = `webhook-race-${randomUUID()}`;
-    Subscription.addHook('beforeCreate', hook, async () => {
-      arrived += 1;
-      if (arrived >= 2) {
-        release();
-        return;
-      }
-      await opened;
-    });
+    await createPayment({ userId: user.id, planId: plan.id, providerOrderId: 'order_open_1' });
 
-    let responses: Array<{ status: number; body: { error?: { details?: unknown } } }> = [];
-    try {
-      responses = await Promise.all([postEvent(firstRaw, 'evt_race_1'), postEvent(secondRaw, 'evt_race_2')]);
-    } finally {
-      Subscription.removeHook('beforeCreate', hook);
-    }
+    await expect(
+      createPayment({ userId: user.id, planId: plan.id, providerOrderId: 'order_open_2' })
+    ).rejects.toBeInstanceOf(UniqueConstraintError);
 
-    const failed = responses.filter((response) => response.status !== 200);
-    const succeeded = responses.filter((response) => response.status === 200);
-    expect(succeeded).toHaveLength(1);
-    expect(failed).toHaveLength(1);
-    expect(failed[0].status).toBe(500);
-    expect(failed[0].body.error?.details).toEqual([]);
-    expect(JSON.stringify(failed[0].body)).not.toContain('uq_subscriptions');
-    expect(await Subscription.count({ where: { userId: user.id } })).toBe(1);
-    await first.reload();
-    await second.reload();
-    const loser = first.status === 'INITIATED' ? first : second;
-    const winner = loser === first ? second : first;
-    const loserRaw = loser === first ? firstRaw : secondRaw;
-    const loserEventId = loser === first ? 'evt_race_1' : 'evt_race_2';
-    expect(loser.providerPaymentId).toBeNull();
-    expect(loser.subscriptionId).toBeNull();
-    expect(await ProcessedWebhook.findByPk(loserEventId)).toBeNull();
-    const winnerSubscription = await Subscription.findOne({ where: { userId: user.id } });
-    const periodEnd = winnerSubscription?.currentPeriodEnd.toISOString();
-    expect(winner.subscriptionId).toBe(winnerSubscription?.id);
-
-    const retry = await postEvent(loserRaw, loserEventId);
-
-    expect(retry.status).toBe(200);
-    await loser.reload();
-    await winnerSubscription?.reload();
-    expect(loser.status).toBe('CAPTURED');
-    expect(loser.subscriptionId).toBeNull();
-    expect(loser.paidAt).not.toBeNull();
-    expect(await Subscription.count({ where: { userId: user.id } })).toBe(1);
-    expect(winnerSubscription?.currentPeriodEnd.toISOString()).toBe(periodEnd);
-    expect(await ProcessedWebhook.findByPk(loserEventId)).not.toBeNull();
+    expect(await Payment.count({ where: { userId: user.id, status: 'INITIATED' } })).toBe(1);
   });
 
   it('activates Premium from a Razorpay envelope that has no top-level id', async () => {

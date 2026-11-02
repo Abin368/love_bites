@@ -569,10 +569,12 @@ describe('POST /api/v1/payments/checkout', () => {
       userId: user.id,
       amountInCents: 49900,
       currency: 'INR',
+      status: 'CAPTURED',
       paymentType: 'SUBSCRIPTION_INITIAL',
       providerPaymentId: 'pay_unique_1',
       providerOrderId: 'order_unique_1',
       idempotencyKey: '6e6e0001-0000-4000-8000-000000000001',
+      paidAt: new Date(),
       ...timestamps()
     });
     await Payment.create({
@@ -589,9 +591,11 @@ describe('POST /api/v1/payments/checkout', () => {
         userId: user.id,
         amountInCents: 49900,
         currency: 'INR',
+        status: 'CAPTURED',
         paymentType: 'SUBSCRIPTION_INITIAL',
         providerPaymentId: 'pay_unique_1',
         providerOrderId: 'order_other',
+        paidAt: new Date(),
         ...timestamps()
       })
     ).rejects.toBeInstanceOf(UniqueConstraintError);
@@ -600,9 +604,11 @@ describe('POST /api/v1/payments/checkout', () => {
         userId: user.id,
         amountInCents: 49900,
         currency: 'INR',
+        status: 'CAPTURED',
         paymentType: 'SUBSCRIPTION_INITIAL',
         providerPaymentId: 'pay_other',
         providerOrderId: 'order_unique_1',
+        paidAt: new Date(),
         ...timestamps()
       })
     ).rejects.toBeInstanceOf(UniqueConstraintError);
@@ -611,8 +617,10 @@ describe('POST /api/v1/payments/checkout', () => {
         userId: user.id,
         amountInCents: 49900,
         currency: 'INR',
+        status: 'CAPTURED',
         paymentType: 'SUBSCRIPTION_INITIAL',
         idempotencyKey: '6e6e0001-0000-4000-8000-000000000001',
+        paidAt: new Date(),
         ...timestamps()
       })
     ).rejects.toBeInstanceOf(UniqueConstraintError);
@@ -1021,5 +1029,266 @@ describe('POST /api/v1/payments/checkout', () => {
     expect(pendingSubscription.endedAt).toBeNull();
     expect(failedSubscription.endedAt).toBeNull();
     expect(createOrder).not.toHaveBeenCalled();
+  });
+
+  it('rejects a different idempotency key when an INITIATED checkout already has a provider order id', async () => {
+    const user = await createUser();
+    const plan = await createPlan({ code: 'PREMIUM_MONTHLY', priceInCents: 49900 });
+    stubOrder('order_open_1');
+    const first = await postCheckout({ token: tokenFor(user.id, 'USER'), planId: plan.id, key: randomUUID() });
+    createOrder.mockClear();
+
+    const blocked = await postCheckout({
+      token: tokenFor(user.id, 'USER'),
+      planId: plan.id,
+      key: randomUUID()
+    });
+
+    expect(first.status).toBe(200);
+    expect(blocked.status).toBe(409);
+    expect(blocked.body.error.code).toBe('CHECKOUT_ALREADY_OPEN');
+    expect(blocked.body.error.message).toBe('A checkout is already open for this account.');
+    expect(JSON.stringify(blocked.body)).not.toMatch(/uq_payments|23505|Sequelize/i);
+    expect(createOrder).not.toHaveBeenCalled();
+    expect(await Payment.count({ where: { userId: user.id } })).toBe(1);
+  });
+
+  it('rejects a different key when the existing INITIATED checkout has a null provider order id', async () => {
+    const user = await createUser();
+    const plan = await createPlan({ code: 'PREMIUM_MONTHLY', priceInCents: 49900 });
+    const openKey = randomUUID();
+    await Payment.create({
+      userId: user.id,
+      planId: plan.id,
+      amountInCents: plan.priceInCents,
+      currency: 'INR',
+      billingInterval: 'MONTH',
+      status: 'INITIATED',
+      paymentType: 'SUBSCRIPTION_INITIAL',
+      idempotencyKey: openKey,
+      providerOrderId: null,
+      providerPaymentId: null,
+      ...timestamps()
+    });
+
+    const blocked = await postCheckout({
+      token: tokenFor(user.id, 'USER'),
+      planId: plan.id,
+      key: randomUUID()
+    });
+    const sameKey = await postCheckout({
+      token: tokenFor(user.id, 'USER'),
+      planId: plan.id,
+      key: openKey
+    });
+
+    expect(blocked.status).toBe(409);
+    expect(blocked.body.error.code).toBe('CHECKOUT_ALREADY_OPEN');
+    expect(sameKey.status).toBe(409);
+    expect(sameKey.body.error.code).toBe('IDEMPOTENCY_CONFLICT');
+    expect(sameKey.body.error.message).toBe('A request with this Idempotency-Key is already in progress.');
+    expect(createOrder).not.toHaveBeenCalled();
+    expect(await Payment.count({ where: { userId: user.id } })).toBe(1);
+  });
+
+  it('rejects a different key when the existing checkout payment is AUTHORIZED', async () => {
+    const user = await createUser();
+    const plan = await createPlan({ code: 'PREMIUM_MONTHLY', priceInCents: 49900 });
+    await Payment.create({
+      userId: user.id,
+      planId: plan.id,
+      amountInCents: plan.priceInCents,
+      currency: 'INR',
+      billingInterval: 'MONTH',
+      status: 'AUTHORIZED',
+      paymentType: 'SUBSCRIPTION_INITIAL',
+      idempotencyKey: randomUUID(),
+      providerOrderId: 'order_authorized_open',
+      providerPaymentId: null,
+      ...timestamps()
+    });
+
+    const blocked = await postCheckout({
+      token: tokenFor(user.id, 'USER'),
+      planId: plan.id,
+      key: randomUUID()
+    });
+
+    expect(blocked.status).toBe(409);
+    expect(blocked.body.error.code).toBe('CHECKOUT_ALREADY_OPEN');
+    expect(createOrder).not.toHaveBeenCalled();
+    expect(await Payment.count({ where: { userId: user.id } })).toBe(1);
+  });
+
+  it('allows a new checkout after FAILED and does not treat CAPTURED as outstanding by itself', async () => {
+    const failedUser = await createUser();
+    const capturedUser = await createUser();
+    const premiumUser = await createUser();
+    const plan = await createPlan({ code: 'PREMIUM_MONTHLY', priceInCents: 49900 });
+    await Payment.create({
+      userId: failedUser.id,
+      planId: plan.id,
+      amountInCents: plan.priceInCents,
+      currency: 'INR',
+      billingInterval: 'MONTH',
+      status: 'FAILED',
+      paymentType: 'SUBSCRIPTION_INITIAL',
+      idempotencyKey: randomUUID(),
+      providerOrderId: null,
+      providerPaymentId: null,
+      failureReason: 'PROVIDER_REJECTED',
+      ...timestamps()
+    });
+    await Payment.create({
+      userId: capturedUser.id,
+      planId: plan.id,
+      amountInCents: plan.priceInCents,
+      currency: 'INR',
+      billingInterval: 'MONTH',
+      status: 'CAPTURED',
+      paymentType: 'SUBSCRIPTION_INITIAL',
+      idempotencyKey: randomUUID(),
+      providerOrderId: 'order_captured_only',
+      providerPaymentId: 'pay_captured_only',
+      paidAt: new Date(),
+      ...timestamps()
+    });
+    await createSubscription(premiumUser.id, plan.id, 'ACTIVE', new Date(Date.now() + HOUR_MS));
+    await Payment.create({
+      userId: premiumUser.id,
+      planId: plan.id,
+      amountInCents: plan.priceInCents,
+      currency: 'INR',
+      billingInterval: 'MONTH',
+      status: 'CAPTURED',
+      paymentType: 'SUBSCRIPTION_INITIAL',
+      idempotencyKey: randomUUID(),
+      providerOrderId: 'order_captured_premium',
+      providerPaymentId: 'pay_captured_premium',
+      paidAt: new Date(),
+      ...timestamps()
+    });
+    let orderCount = 0;
+    createOrder.mockImplementation(async () => {
+      orderCount += 1;
+      return { providerOrderId: `order_after_terminal_${orderCount}` };
+    });
+
+    const afterFailed = await postCheckout({
+      token: tokenFor(failedUser.id, 'USER'),
+      planId: plan.id,
+      key: randomUUID()
+    });
+    const afterCaptured = await postCheckout({
+      token: tokenFor(capturedUser.id, 'USER'),
+      planId: plan.id,
+      key: randomUUID()
+    });
+    const withPremium = await postCheckout({
+      token: tokenFor(premiumUser.id, 'USER'),
+      planId: plan.id,
+      key: randomUUID()
+    });
+
+    expect(afterFailed.status).toBe(200);
+    expect(afterCaptured.status).toBe(200);
+    expect(withPremium.status).toBe(409);
+    expect(withPremium.body.error.code).toBe('ACTIVE_SUBSCRIPTION_EXISTS');
+    expect(createOrder).toHaveBeenCalledTimes(2);
+    expect(await Payment.count({ where: { userId: failedUser.id } })).toBe(2);
+    expect(await Payment.count({ where: { userId: capturedUser.id } })).toBe(2);
+    expect(await Payment.count({ where: { userId: premiumUser.id } })).toBe(1);
+  });
+
+  it('rejects concurrent different-key checkouts so only one unresolved payment and one Razorpay order exist', async () => {
+    const user = await createUser();
+    const monthly = await createPlan({ code: 'PREMIUM_MONTHLY', priceInCents: 49900 });
+    const yearly = await createPlan({ code: 'PREMIUM_YEARLY', priceInCents: 399900 });
+    const token = tokenFor(user.id, 'USER');
+    let orderCount = 0;
+    createOrder.mockImplementation(async () => {
+      orderCount += 1;
+      return { providerOrderId: `order_race_${orderCount}` };
+    });
+
+    const responses = await Promise.all([
+      postCheckout({ token, planId: monthly.id, key: randomUUID() }),
+      postCheckout({ token, planId: yearly.id, key: randomUUID() })
+    ]);
+
+    const succeeded = responses.filter((response) => response.status === 200);
+    const blocked = responses.filter((response) => response.status === 409);
+    expect(succeeded).toHaveLength(1);
+    expect(blocked).toHaveLength(1);
+    expect(blocked[0].body.error.code).toBe('CHECKOUT_ALREADY_OPEN');
+    expect(JSON.stringify(blocked[0].body)).not.toMatch(/uq_payments|23505|Sequelize/i);
+    expect(createOrder).toHaveBeenCalledTimes(1);
+    expect(await Payment.count({ where: { userId: user.id, status: 'INITIATED' } })).toBe(1);
+    expect(await Payment.count({ where: { userId: user.id } })).toBe(1);
+  });
+
+  it('maps a one-unresolved-checkout unique violation to CHECKOUT_ALREADY_OPEN without calling Razorpay', async () => {
+    const user = await createUser();
+    const plan = await createPlan({ code: 'PREMIUM_MONTHLY', priceInCents: 49900 });
+    const insert = jest.spyOn(paymentsDataAccess, 'insertInitiatedCheckout').mockRejectedValueOnce(
+      new UniqueConstraintError({
+        message: 'duplicate key value violates unique constraint "uq_payments_one_unresolved_subscription_checkout_per_user"',
+        errors: [],
+        fields: { user_id: user.id },
+        parent: {
+          constraint: 'uq_payments_one_unresolved_subscription_checkout_per_user',
+          detail: 'Key (user_id)=(...) already exists.'
+        } as Error & { constraint: string; detail: string }
+      })
+    );
+
+    try {
+      const response = await postCheckout({
+        token: tokenFor(user.id, 'USER'),
+        planId: plan.id,
+        key: randomUUID()
+      });
+      expect(response.status).toBe(409);
+      expect(response.body.error.code).toBe('CHECKOUT_ALREADY_OPEN');
+      expect(JSON.stringify(response.body)).not.toMatch(/uq_payments|23505|Sequelize/i);
+    } finally {
+      insert.mockRestore();
+    }
+
+    expect(createOrder).not.toHaveBeenCalled();
+    expect(await Payment.count({ where: { userId: user.id } })).toBe(0);
+  });
+
+  it('does not map an unrelated unique violation to CHECKOUT_ALREADY_OPEN', async () => {
+    const user = await createUser();
+    const plan = await createPlan({ code: 'PREMIUM_MONTHLY', priceInCents: 49900 });
+    const insert = jest.spyOn(paymentsDataAccess, 'insertInitiatedCheckout').mockRejectedValueOnce(
+      new UniqueConstraintError({
+        message: 'duplicate key value violates unique constraint "uq_payments_provider_order_id"',
+        errors: [],
+        fields: { provider_order_id: 'order_other' },
+        parent: {
+          constraint: 'uq_payments_provider_order_id',
+          detail: 'Key (provider, provider_order_id)=(RAZORPAY, order_other) already exists.'
+        } as Error & { constraint: string; detail: string }
+      })
+    );
+
+    try {
+      const response = await postCheckout({
+        token: tokenFor(user.id, 'USER'),
+        planId: plan.id,
+        key: randomUUID()
+      });
+      expect(response.status).toBe(500);
+      expect(response.body.error.code).toBe('INTERNAL_SERVER_ERROR');
+      expect(response.body.error.code).not.toBe('CHECKOUT_ALREADY_OPEN');
+      expect(JSON.stringify(response.body)).not.toMatch(/uq_payments|23505|Sequelize/i);
+    } finally {
+      insert.mockRestore();
+    }
+
+    expect(createOrder).not.toHaveBeenCalled();
+    expect(await Payment.count({ where: { userId: user.id } })).toBe(0);
   });
 });

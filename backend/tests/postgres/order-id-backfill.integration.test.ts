@@ -222,11 +222,12 @@ describe('provider order id backfill', () => {
 
   it('does not attach an order id when the capture snapshot is incomplete', async () => {
     const user = await createUser();
+    const intervalUser = await createUser();
     const plan = await createPlan();
     const missingUser = await createPayment({ userId: null, planId: plan.id });
     const missingPlan = await createPayment({ userId: user.id, planId: null });
     const missingInterval = await createPayment({
-      userId: user.id,
+      userId: intervalUser.id,
       planId: plan.id,
       billingInterval: null
     });
@@ -254,11 +255,13 @@ describe('provider order id backfill', () => {
 
   it('does not overwrite another payment when the order id is already stored or the row changes', async () => {
     const user = await createUser();
+    const racingUser = await createUser();
     const plan = await createPlan();
     const holder = await createPayment({
       userId: user.id,
       planId: plan.id,
-      providerOrderId: 'order_held'
+      providerOrderId: 'order_held',
+      status: 'CAPTURED'
     });
     const eligible = await createPayment({ userId: user.id, planId: plan.id });
     const holderBefore = holder.get({ plain: true });
@@ -273,7 +276,7 @@ describe('provider order id backfill', () => {
     expect(eligible.status).toBe('INITIATED');
     expect(eligible.providerOrderId).toBeNull();
 
-    const racing = await createPayment({ userId: user.id, planId: plan.id });
+    const racing = await createPayment({ userId: racingUser.id, planId: plan.id });
     listOrders.mockImplementation(async () => {
       await racing.update({ status: 'FAILED', failureReason: 'PROVIDER_REJECTED' });
       return listedOrder(racing, 'order_race');

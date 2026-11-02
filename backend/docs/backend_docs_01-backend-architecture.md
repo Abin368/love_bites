@@ -660,7 +660,12 @@ POST /api/v1/payments/checkout
         v
 payments.service
         |
-        +--> PostgreSQL: lock plan, insert INITIATED payment, commit
+        +--> PostgreSQL: same-key payment lookup first
+        |       (replay / IDEMPOTENCY_CONFLICT / PAYMENT_FAILED)
+        +--> else CHECKOUT_ALREADY_OPEN when another
+        |       SUBSCRIPTION_INITIAL row is INITIATED or AUTHORIZED
+        |       (uq_payments_one_unresolved_subscription_checkout_per_user)
+        +--> lock plan, insert INITIATED payment, commit
         |
         v
 PaymentOrderProvider.createOrder
@@ -670,6 +675,10 @@ razorpay.orders.create
         |
         v
 PostgreSQL: store provider_order_id, status stays INITIATED
+Unknown outcomes leave INITIATED with a null order id and keep
+blocking different keys until verified reconciliation (not
+implemented). Additional-capture period extension is not
+implemented.
 
 backfillProviderOrderId(paymentId)   // internal; not called by checkout
         |

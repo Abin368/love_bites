@@ -44,7 +44,7 @@ These routes exist on the backend. This guide does not walk through frontend int
 - Reports: `POST /api/v1/reports` (admin report review is not mounted)
 - Entitlements and usage: `GET /api/v1/me/entitlements` and `GET /api/v1/me/usage`
 - Subscriptions: `GET /api/v1/subscriptions/plans`, `GET /api/v1/subscriptions/me`, and `POST /api/v1/subscriptions/cancel`
-- Payments: `POST /api/v1/payments/checkout` and `POST /api/v1/payments/verify` (Premium activation is the Razorpay `payment.captured` webhook, not the client verify callback)
+- Payments: `POST /api/v1/payments/checkout` and `POST /api/v1/payments/verify` (Premium activation is the Razorpay `payment.captured` webhook, not the client verify callback). Checkout requires a UUID `Idempotency-Key`. Reuse the same key to replay a stored Order. A different key while another checkout is still `INITIATED` or `AUTHORIZED` returns `409 CHECKOUT_ALREADY_OPEN`. An unknown provider outcome can leave that open checkout in place and block new keys until backend reconciliation resolves it; the client must not invent a second key to bypass that.
 - Admin plan price: `PATCH /api/v1/admin/config/plans/:planId` (authenticated `ADMIN` only)
 
 Super Like credit spend and stored `SUPER_LIKE` / `BOOST` balance reads are live. Monthly credit grants, credit purchase, and boost start/purchase APIs are not. Discovery ranking can honor existing `boost_sessions` rows, but there is no boost activation API.

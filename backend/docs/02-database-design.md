@@ -1219,11 +1219,15 @@ Stores transactional payment records, invoices, amounts, currency, and provider 
   *Replaces the non-unique `idx_payments_order_lookup`. One stored Razorpay Order id maps to one payment.*
 * `CREATE UNIQUE INDEX uq_payments_user_idempotency_key ON payments (user_id, idempotency_key) WHERE user_id IS NOT NULL AND idempotency_key IS NOT NULL;`  
   *Scopes a checkout key to one user. Different users may reuse the same key string. `user_id` stays nullable because account deletion uses `ON DELETE SET NULL`.*
+* `CREATE UNIQUE INDEX uq_payments_one_unresolved_subscription_checkout_per_user ON payments (user_id) WHERE user_id IS NOT NULL AND payment_type = 'SUBSCRIPTION_INITIAL' AND status IN ('INITIATED', 'AUTHORIZED');`  
+  *At most one unresolved subscription checkout per user. Includes `INITIATED` rows with a null `provider_order_id`. `FAILED`, `CAPTURED`, and `REFUNDED` are outside the predicate.*
 * `CREATE INDEX idx_payments_user_history ON payments (user_id, created_at DESC);`
 
 Migration `20261027183033-add-checkout-columns-to-payments.js` adds `plan_id` and `idempotency_key`, adds `fk_payments_plan`, and replaces `idx_payments_order_lookup`. Before creating `uq_payments_provider_order_id` it selects duplicate non-null `provider_order_id` values. If any exist it throws and does not rewrite or delete ledger rows. `down` drops the two new unique indexes, restores `idx_payments_order_lookup`, and removes the foreign key and both columns.
 
 Migration `20261028154500-add-billing-interval-to-payments.js` adds nullable `billing_interval`. `chk_payments_billing_interval` allows `NULL`, `'MONTH'`, or `'YEAR'`. Existing payment rows stay valid with `NULL`. Checkout copies `'MONTH'` from a locked `PREMIUM_MONTHLY` plan and `'YEAR'` from a locked `PREMIUM_YEARLY` plan in the same insert as the payment. A later change to `plans.billing_interval` does not rewrite that snapshot. `down` drops the check constraint and the column. `plans` has no additional constraint tying `code` to `billing_interval`. `chk_plans_interval` still allows `'NONE'`, `'MONTH'`, and `'YEAR'` for every plan code.
+
+Migration `20261102154500-add-one-unresolved-subscription-checkout-per-user.js` creates `uq_payments_one_unresolved_subscription_checkout_per_user`. Before creating the index it selects users that already have more than one unresolved `SUBSCRIPTION_INITIAL` payment in `INITIATED` or `AUTHORIZED`. If any exist it throws with those `user_id` values and does not rewrite or delete ledger rows. `down` drops only that index.
 
 ---
 
@@ -1403,6 +1407,7 @@ CREATE INDEX idx_credit_transactions_audit ON credit_transactions (user_id, cred
 CREATE UNIQUE INDEX uq_payments_provider_payment_id ON payments (provider, provider_payment_id) WHERE provider_payment_id IS NOT NULL;
 CREATE UNIQUE INDEX uq_payments_provider_order_id ON payments (provider, provider_order_id) WHERE provider_order_id IS NOT NULL;
 CREATE UNIQUE INDEX uq_payments_user_idempotency_key ON payments (user_id, idempotency_key) WHERE user_id IS NOT NULL AND idempotency_key IS NOT NULL;
+CREATE UNIQUE INDEX uq_payments_one_unresolved_subscription_checkout_per_user ON payments (user_id) WHERE user_id IS NOT NULL AND payment_type = 'SUBSCRIPTION_INITIAL' AND status IN ('INITIATED', 'AUTHORIZED');
 CREATE INDEX idx_processed_webhooks_provider_type ON processed_webhooks (provider, event_type, processed_at DESC);
 ```
 
