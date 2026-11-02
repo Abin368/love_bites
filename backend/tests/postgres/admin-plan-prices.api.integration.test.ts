@@ -340,7 +340,8 @@ describe('PATCH /api/v1/admin/config/plans/:planId', () => {
       () => null,
       (error: { parent?: { code?: string; constraint?: string } }) => error
     );
-    expect(deletion?.parent?.code).toBe('23001');
+    // PG 18+ uses 23001 (restrict_violation) for ON DELETE RESTRICT; older PG uses 23503.
+    expect(['23001', '23503']).toContain(deletion?.parent?.code);
     expect(deletion?.parent?.constraint).toBe('fk_plan_price_changes_plan');
     expect(await Plan.count({ where: { id: plan.id } })).toBe(1);
     expect(await PlanPriceChange.count({ where: { planId: plan.id } })).toBe(1);
