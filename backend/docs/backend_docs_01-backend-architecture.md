@@ -680,7 +680,10 @@ blocking different keys until verified reconciliation (not
 implemented). Additional-capture period extension is not
 implemented.
 
-backfillProviderOrderId(paymentId)   // internal; not called by checkout
+npm run ops:backfill-order-id -- <paymentUuid>
+        |
+        v
+backfillProviderOrderId(paymentId)   // only association path; not called by checkout
         |
         v
 orders.all({ receipt: payment UUID, count: 2, skip: 0 })
@@ -690,6 +693,8 @@ PostgreSQL: assignProviderOrderId only when the row has a user,
 a plan, and billing interval MONTH or YEAR, and one short page
 matches receipt, notes.paymentId, amount, and currency.
 Status stays INITIATED. No subscription write.
+Outstanding-checkout index is not released by backfill.
+CLI refuses NODE_ENV=production. Automatic abandonment is absent.
 
 POST /api/v1/payments/verify
         |
@@ -711,7 +716,7 @@ safeEqualHex against the client signature
 `src/integrations/payment/payment.interface.ts` is the boundary. `src/integrations/payment/razorpay.provider.ts` is the only implementation. `verifyOrderSignature` does not construct the Razorpay client and does not call the network. Checkout tests replace the provider module and do not use live credentials. Verification tests build the HMAC locally.
 
 ### Webhook Source of Truth
-`POST /api/v1/webhooks/razorpay` activates or extends Premium from a verified `payment.captured` event. The event id is the `X-Razorpay-Event-Id` header, not a field on the JSON body and not `payload.payment.entity.id`. Checkout does not activate a subscription. `POST /api/v1/payments/verify` does not activate a subscription either. `backfillProviderOrderId` reads Orders and may store a missing `provider_order_id` only when the payment has a user, a plan, and billing interval `MONTH` or `YEAR`; that read does not activate a subscription. It must remain unused operationally until receipt-filter exactness, pagination, and completeness are verified on a non-production Razorpay account. Source inspection and mocked tests do not establish those live provider semantics. An Order id, a valid signature, an `INITIATED` payment, or a provider Order listing is not proof of capture. The backend does not activate Premium from a frontend success callback. Checkout creates an Order, and this webhook is the activation and period-extension path for that Order. The webhook still correlates by the stored Order ID. `notes.paymentId` is checked against that payment and is not a lookup key. A distinct capture while a qualifying Premium row exists extends that locked row using the payment's stored billing interval from `max(current_period_end, now)` and links the payment; checkout still blocks intentional repurchase with `409 ACTIVE_SUBSCRIPTION_EXISTS`. Renewal, refunds, grace assignment, and the subscription reconciliation worker are not implemented.
+`POST /api/v1/webhooks/razorpay` activates or extends Premium from a verified `payment.captured` event. The event id is the `X-Razorpay-Event-Id` header, not a field on the JSON body and not `payload.payment.entity.id`. Checkout does not activate a subscription. `POST /api/v1/payments/verify` does not activate a subscription either. `backfillProviderOrderId` reads Orders and may store a missing `provider_order_id` only when the payment has a user, a plan, and billing interval `MONTH` or `YEAR`; that read does not activate a subscription. Phase 1 ops recovery is `npm run ops:backfill-order-id -- <paymentUuid>`, which only calls that function, refuses production, and does not release the outstanding-checkout slot. Live receipt-filter exactness, pagination, and completeness should still be verified on a non-production Razorpay account. Source inspection and mocked tests do not establish those live provider semantics. An Order id, a valid signature, an `INITIATED` payment, or a provider Order listing is not proof of capture. The backend does not activate Premium from a frontend success callback. Checkout creates an Order, and this webhook is the activation and period-extension path for that Order. The webhook still correlates by the stored Order ID. `notes.paymentId` is checked against that payment and is not a lookup key. A distinct capture while a qualifying Premium row exists extends that locked row using the payment's stored billing interval from `max(current_period_end, now)` and links the payment; checkout still blocks intentional repurchase with `409 ACTIVE_SUBSCRIPTION_EXISTS`. Renewal, refunds, grace assignment, and the subscription reconciliation worker are not implemented.
 
 ### Subscription Lifecycle Rules
 * **Auto-Renew (current):** A subscription inserted or extended by `payment.captured` is stored with `auto_renew = false`. Automatic renewal is not implemented. The product requirement for renew-on remains future work.

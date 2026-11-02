@@ -1220,7 +1220,7 @@ Stores transactional payment records, invoices, amounts, currency, and provider 
 * `CREATE UNIQUE INDEX uq_payments_user_idempotency_key ON payments (user_id, idempotency_key) WHERE user_id IS NOT NULL AND idempotency_key IS NOT NULL;`  
   *Scopes a checkout key to one user. Different users may reuse the same key string. `user_id` stays nullable because account deletion uses `ON DELETE SET NULL`.*
 * `CREATE UNIQUE INDEX uq_payments_one_unresolved_subscription_checkout_per_user ON payments (user_id) WHERE user_id IS NOT NULL AND payment_type = 'SUBSCRIPTION_INITIAL' AND status IN ('INITIATED', 'AUTHORIZED');`  
-  *At most one unresolved subscription checkout per user. Includes `INITIATED` rows with a null `provider_order_id`. `FAILED`, `CAPTURED`, and `REFUNDED` are outside the predicate.*
+  *At most one unresolved subscription checkout per user. Includes `INITIATED` rows with a null `provider_order_id`. `FAILED`, `CAPTURED`, and `REFUNDED` are outside the predicate. Phase 1 Order-ID backfill may set `provider_order_id` while status remains `INITIATED`; that association does not remove the row from this index. Automatic abandonment / status transition for stuck null-order rows is not implemented.*
 * `CREATE INDEX idx_payments_user_history ON payments (user_id, created_at DESC);`
 
 Migration `20261027183033-add-checkout-columns-to-payments.js` adds `plan_id` and `idempotency_key`, adds `fk_payments_plan`, and replaces `idx_payments_order_lookup`. Before creating `uq_payments_provider_order_id` it selects duplicate non-null `provider_order_id` values. If any exist it throws and does not rewrite or delete ledger rows. `down` drops the two new unique indexes, restores `idx_payments_order_lookup`, and removes the foreign key and both columns.

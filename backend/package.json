@@ -18,7 +18,8 @@
     "db:migrate:status": "sequelize-cli db:migrate:status",
     "db:migrate:undo": "sequelize-cli db:migrate:undo",
     "db:seed": "sequelize-cli db:seed:all",
-    "db:seed:undo": "sequelize-cli db:seed:undo:all"
+    "db:seed:undo": "sequelize-cli db:seed:undo:all",
+    "ops:backfill-order-id": "ts-node --transpile-only src/modules/payments/order-id-backfill.cli.ts"
   },
   "engines": {
     "node": ">=20.0.0"
