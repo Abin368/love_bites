@@ -637,11 +637,11 @@ Checkout initiation, Order signature verification, and a read-only Order receipt
    * Success is `200` with message `Payment signature verified.` and `data: null`. An invalid signature is `422 PAYMENT_SIGNATURE_INVALID`. A missing secret is `500 PAYMENT_VERIFICATION_NOT_CONFIGURED`.
    * The route writes no payment, subscription, usage, or credit row and does not grant Premium. It does not call Razorpay.
    * This step does not grant Premium. Activation is step 3 and uses the Order `payment.captured` event, not a Razorpay Subscription event.
-3. **Webhook Processing Engine (`POST /api/v1/webhooks/razorpay`) — implemented for `payment.captured`:**
+3. **Webhook Processing Engine (`POST /api/v1/webhooks/razorpay`) — implemented for `payment.captured` activation and period extension:**
    * No user JWT. HMAC-SHA256 of the exact raw body is compared with `safeEqualHex` and `RAZORPAY_WEBHOOK_SECRET`.
-   * Only `payment.captured` can activate. `payment.authorized` and `order.paid` return `200` without a write.
-   * One transaction locks the `RAZORPAY` payment by order id, reuses checkout's expiration and qualifying helpers, and inserts at most one `ACTIVE` subscription from the payment's `plan_id` and `billing_interval`. `auto_renew` is false. A qualifying subscription leaves the new payment captured with `subscription_id` null.
-   * The processed-event insert is in that same transaction. A duplicate event does not reapply state. An unknown Order and a single-active unique conflict roll back and return `500`. A permanent snapshot conflict returns `200` without overwriting the payment.
+   * Only `payment.captured` can activate or extend. `payment.authorized` and `order.paid` return `200` without a write.
+   * One transaction locks the `RAZORPAY` payment by order id, locks and expires nonterminal rows, locks an in-period canceled row, and re-reads the qualifying Premium row under `FOR UPDATE`. With no qualifying row it inserts one `ACTIVE` subscription from the payment's `plan_id` and `billing_interval` (`auto_renew = false`, outcome `activated`). With a qualifying row it extends that row: `current_period_end = addUtcBillingInterval(max(current_period_end, now), payment.billing_interval)`, updates `plan_id`, leaves `current_period_start` unchanged, keeps `auto_renew = false`, links the payment, and records outcome `extended`. In-period `CANCELED` stays `CANCELED`; `PAST_DUE` / `GRACE_PERIOD` become `ACTIVE` and clear grace. Checkout still returns `409 ACTIVE_SUBSCRIPTION_EXISTS` while Premium qualifies.
+   * The processed-event insert is in that same transaction. A duplicate event does not reapply state. Same provider payment under a new event id is `duplicate` and does not extend again. An unknown Order and a single-active unique conflict roll back and return `500`; a retry extends the winner. A permanent snapshot conflict returns `200` without overwriting the payment.
    * The earlier `subscription.activated`, `subscription.charged`, `payment.failed` grace, and `subscription.completed` handlers are not this slice and are not implemented.
 4. **Subscription renewal and grace handlers — not implemented:**
    * `subscription.charged`, `payment.failed`, automatic 24-hour grace, and `subscription.completed` are not implemented. Checkout still creates an Order, not a Razorpay Subscription.
@@ -823,8 +823,8 @@ To maintain strict adherence to dependency constraints, development should follo
 26. Subscription & Entitlements Engine (Plans, Features, Usage Limits, Usage Records) — plan catalog, snapshots, catalog-backed daily quotas, subscription me/cancel done. `hasEntitlement` / `plan_features` grants and monthly Super Like/Boost limits are not.
 27. Payment Abstraction Layer & Razorpay Provider Integration — Order provider done (create, verify signature, list by receipt)
 28. Razorpay Checkout & Client Handshake Verification — checkout and read-only verify done
-29. Razorpay Webhook Processing Engine (HMAC Verification, Idempotency Ledger) — `payment.captured` activation done; other subscription lifecycle events are not
-30. Subscription Lifecycle State Machine (Auto-Renewal, 24-Hour Grace Period, Downgrade) — not implemented; `payment.captured` activation sets `auto_renew = false` (checkout does not insert a subscription)
+29. Razorpay Webhook Processing Engine (HMAC Verification, Idempotency Ledger) — `payment.captured` activation and locked period extension done; other subscription lifecycle events are not
+30. Subscription Lifecycle State Machine (Auto-Renewal, 24-Hour Grace Period, Downgrade) — not implemented; `payment.captured` activation/extension sets `auto_renew = false` (checkout does not insert a subscription; intentional repurchase while Premium qualifies is not implemented)
 31. Admin Management APIs (User Directory, Moderation Queue, Config, Dashboard KPI) — plan price update done; remainder not
 32. Security Hardening & Penetration Testing (Rate Limits, Helmet, CORS, IDOR)
 33. Comprehensive Automated Test Suite Execution (Unit, Integration, E2E)

@@ -189,3 +189,86 @@ export async function findInPeriodCanceledSubscription(
     lock: Transaction.LOCK.UPDATE
   });
 }
+
+async function isPremiumPlanId(planId: string, transaction: Transaction): Promise<boolean> {
+  const plan = await Plan.findByPk(planId, {
+    attributes: ['code'],
+    transaction
+  });
+  return !!plan && (PREMIUM_PLAN_CODES as readonly string[]).includes(plan.code);
+}
+
+/**
+ * Lock order matches the webhook path: nonterminal → expire → canceled → re-read under FOR UPDATE.
+ * The final FOR UPDATE statements run after any lock wait so READ COMMITTED sees the latest period end.
+ * Plan rows are not locked (avoids deadlock with checkout's plan → subscription order).
+ */
+export async function resolveLockedQualifyingPremiumSubscriptionForExtension(
+  userId: string,
+  now: Date,
+  transaction: Transaction
+): Promise<Subscription | null> {
+  await lockNonterminalSubscription(userId, transaction);
+  await expireElapsedNonterminalSubscription(userId, now, transaction);
+  await findInPeriodCanceledSubscription(userId, now, transaction);
+
+  const nonCanceled = await Subscription.findOne({
+    where: {
+      userId,
+      status: { [Op.in]: [...NONTERMINAL_STATUSES] },
+      [Op.or]: [{ currentPeriodEnd: { [Op.gt]: now } }, { gracePeriodEnd: { [Op.gt]: now } }]
+    },
+    transaction,
+    lock: Transaction.LOCK.UPDATE
+  });
+  if (nonCanceled && (await isPremiumPlanId(nonCanceled.planId, transaction))) {
+    return nonCanceled;
+  }
+
+  const canceled = await Subscription.findOne({
+    where: {
+      userId,
+      status: 'CANCELED',
+      currentPeriodEnd: { [Op.gt]: now }
+    },
+    order: [
+      ['currentPeriodEnd', 'DESC'],
+      ['updatedAt', 'DESC'],
+      ['id', 'DESC']
+    ],
+    transaction,
+    lock: Transaction.LOCK.UPDATE
+  });
+  if (canceled && (await isPremiumPlanId(canceled.planId, transaction))) {
+    return canceled;
+  }
+
+  return null;
+}
+
+export async function extendQualifyingPremiumSubscription(
+  subscription: Subscription,
+  input: {
+    planId: string;
+    currentPeriodEnd: Date;
+    now: Date;
+  },
+  transaction: Transaction
+): Promise<void> {
+  const status = subscription.status;
+  const nextStatus: Subscription['status'] =
+    status === 'CANCELED' ? 'CANCELED' : 'ACTIVE';
+  const clearGrace = status === 'PAST_DUE' || status === 'GRACE_PERIOD';
+
+  await subscription.update(
+    {
+      planId: input.planId,
+      currentPeriodEnd: input.currentPeriodEnd,
+      status: nextStatus,
+      autoRenew: false,
+      ...(clearGrace ? { gracePeriodEnd: null } : {}),
+      updatedAt: input.now
+    },
+    { transaction }
+  );
+}

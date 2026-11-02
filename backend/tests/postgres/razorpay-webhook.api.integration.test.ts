@@ -153,6 +153,23 @@ async function premium(userId: string): Promise<boolean> {
   return sequelize.transaction((transaction) => hasActivePremium(userId, transaction));
 }
 
+const OUTSTANDING_CHECKOUT_INDEX = 'uq_payments_one_unresolved_subscription_checkout_per_user';
+
+async function withLegacyDuplicateInitiatedCheckouts<T>(work: () => Promise<T>): Promise<T> {
+  await sequelize.query(`DROP INDEX IF EXISTS ${OUTSTANDING_CHECKOUT_INDEX}`);
+  try {
+    return await work();
+  } finally {
+    await sequelize.query(
+      `CREATE UNIQUE INDEX IF NOT EXISTS ${OUTSTANDING_CHECKOUT_INDEX}
+       ON payments (user_id)
+       WHERE user_id IS NOT NULL
+         AND payment_type = 'SUBSCRIPTION_INITIAL'
+         AND status IN ('INITIATED', 'AUTHORIZED')`
+    );
+  }
+}
+
 beforeEach(() => {
   env.RAZORPAY_WEBHOOK_SECRET = WEBHOOK_SECRET;
 });
@@ -564,31 +581,57 @@ describe('POST /api/v1/webhooks/razorpay', () => {
     expect(existing.status).toBe('ACTIVE');
   });
 
-  it('captures a second order without extending a qualifying subscription', async () => {
+  it('extends an existing subscription for a second distinct captured payment', async () => {
     const user = await createUser();
-    const plan = await createPlan();
-    const first = await createPayment({ userId: user.id, planId: plan.id, providerOrderId: 'order_first' });
+    const monthly = await createPlan('MONTH', 49900);
+    const yearly = await createPlan('YEAR', 399900);
+    const first = await createPayment({
+      userId: user.id,
+      planId: monthly.id,
+      providerOrderId: 'order_first',
+      billingInterval: 'MONTH'
+    });
     const firstRaw = captureBody({ eventId: 'evt_first', orderId: 'order_first', paymentId: 'pay_first' });
     await postEvent(firstRaw, 'evt_first');
     const subscription = await Subscription.findOne({ where: { userId: user.id } });
-    const periodEnd = subscription?.currentPeriodEnd.toISOString();
-    const second = await createPayment({ userId: user.id, planId: plan.id, providerOrderId: 'order_second' });
-    const secondRaw = captureBody({ eventId: 'evt_second', orderId: 'order_second', paymentId: 'pay_second' });
+    expect(subscription).not.toBeNull();
+    const periodStart = subscription!.currentPeriodStart.toISOString();
+    const firstPeriodEnd = subscription!.currentPeriodEnd.toISOString();
+    const second = await createPayment({
+      userId: user.id,
+      planId: yearly.id,
+      providerOrderId: 'order_second',
+      amountInCents: 399900,
+      billingInterval: 'YEAR'
+    });
+    const secondRaw = captureBody({
+      eventId: 'evt_second',
+      orderId: 'order_second',
+      paymentId: 'pay_second',
+      amount: 399900
+    });
 
     const response = await postEvent(secondRaw, 'evt_second');
 
     expect(response.status).toBe(200);
     await first.reload();
     await second.reload();
-    await subscription?.reload();
-    expect(first.subscriptionId).toBe(subscription?.id);
+    await subscription!.reload();
+    expect(first.subscriptionId).toBe(subscription!.id);
     expect(second.status).toBe('CAPTURED');
     expect(second.providerPaymentId).toBe('pay_second');
     expect(second.paidAt).not.toBeNull();
-    expect(second.subscriptionId).toBeNull();
+    expect(second.subscriptionId).toBe(subscription!.id);
     expect(second.rawPayload).toBeNull();
-    expect(await Subscription.count()).toBe(1);
-    expect(subscription?.currentPeriodEnd.toISOString()).toBe(periodEnd);
+    expect(await Subscription.count({ where: { userId: user.id } })).toBe(1);
+    expect(subscription!.currentPeriodStart.toISOString()).toBe(periodStart);
+    expect(subscription!.autoRenew).toBe(false);
+    expect(subscription!.status).toBe('ACTIVE');
+    expect(subscription!.planId).toBe(yearly.id);
+    expect(subscription!.currentPeriodEnd.toISOString()).toBe(
+      addUtcBillingInterval(new Date(firstPeriodEnd), 'YEAR').toISOString()
+    );
+    expect((await ProcessedWebhook.findByPk('evt_second'))?.payload).toMatchObject({ outcome: 'extended' });
   });
 
   it('expires an elapsed nonterminal subscription inside the capture transaction', async () => {
@@ -619,16 +662,17 @@ describe('POST /api/v1/webhooks/razorpay', () => {
     expect(await premium(user.id)).toBe(true);
   });
 
-  it('keeps a future grace period and an in-period canceled subscription unchanged', async () => {
+  it('extends ACTIVE-with-grace from now and preserves in-period CANCELED while extending', async () => {
     const user = await createUser();
     const other = await createUser();
     const plan = await createPlan();
     const graceEnd = new Date(Date.now() + HOUR_MS);
+    const pastPeriodEnd = new Date(Date.now() - HOUR_MS);
     const grace = await createSubscription({
       userId: user.id,
       planId: plan.id,
       status: 'ACTIVE',
-      periodEnd: new Date(Date.now() - HOUR_MS),
+      periodEnd: pastPeriodEnd,
       gracePeriodEnd: graceEnd
     });
     const canceledEnd = new Date(Date.now() + 2 * HOUR_MS);
@@ -638,18 +682,20 @@ describe('POST /api/v1/webhooks/razorpay', () => {
       status: 'CANCELED',
       periodEnd: canceledEnd
     });
+    const canceledAt = canceled.canceledAt?.toISOString();
+    const periodStart = canceled.currentPeriodStart.toISOString();
     const gracePayment = await createPayment({ userId: user.id, planId: plan.id, providerOrderId: 'order_grace' });
     const canceledPayment = await createPayment({
       userId: other.id,
       planId: plan.id,
       providerOrderId: 'order_canceled'
     });
-    const graceBefore = grace.currentPeriodEnd.toISOString();
-    const canceledBefore = canceled.get({ plain: true });
 
     const graceRaw = captureBody({ eventId: 'evt_grace', orderId: 'order_grace', paymentId: 'pay_grace' });
     const canceledRaw = captureBody({ eventId: 'evt_canceled', orderId: 'order_canceled', paymentId: 'pay_canceled' });
+    const beforeGraceCapture = Date.now();
     const graceResponse = await postEvent(graceRaw, 'evt_grace');
+    const afterGraceCapture = Date.now();
     const canceledResponse = await postEvent(canceledRaw, 'evt_canceled');
 
     expect(graceResponse.status).toBe(200);
@@ -659,14 +705,25 @@ describe('POST /api/v1/webhooks/razorpay', () => {
     await gracePayment.reload();
     await canceledPayment.reload();
     expect(grace.status).toBe('ACTIVE');
-    expect(grace.currentPeriodEnd.toISOString()).toBe(graceBefore);
     expect(grace.gracePeriodEnd?.toISOString()).toBe(graceEnd.toISOString());
     expect(grace.endedAt).toBeNull();
     expect(gracePayment.status).toBe('CAPTURED');
-    expect(gracePayment.subscriptionId).toBeNull();
-    expect(canceled.get({ plain: true })).toEqual(canceledBefore);
+    expect(gracePayment.subscriptionId).toBe(grace.id);
+    const gracePaidAt = gracePayment.paidAt!.getTime();
+    expect(gracePaidAt).toBeGreaterThanOrEqual(beforeGraceCapture - 1000);
+    expect(gracePaidAt).toBeLessThanOrEqual(afterGraceCapture + 1000);
+    expect(grace.currentPeriodEnd.toISOString()).toBe(
+      addUtcBillingInterval(gracePayment.paidAt!, 'MONTH').toISOString()
+    );
+    expect(canceled.status).toBe('CANCELED');
+    expect(canceled.canceledAt?.toISOString()).toBe(canceledAt);
+    expect(canceled.currentPeriodStart.toISOString()).toBe(periodStart);
+    expect(canceled.autoRenew).toBe(false);
+    expect(canceled.currentPeriodEnd.toISOString()).toBe(
+      addUtcBillingInterval(canceledEnd, 'MONTH').toISOString()
+    );
     expect(canceledPayment.status).toBe('CAPTURED');
-    expect(canceledPayment.subscriptionId).toBeNull();
+    expect(canceledPayment.subscriptionId).toBe(canceled.id);
     expect(await Subscription.count({ where: { userId: user.id } })).toBe(1);
     expect(await Subscription.count({ where: { userId: other.id } })).toBe(1);
     expect(await premium(user.id)).toBe(true);
@@ -723,6 +780,308 @@ describe('POST /api/v1/webhooks/razorpay', () => {
     const payment = await Payment.findOne({ where: { providerOrderId: 'order_concurrent' } });
     expect(payment?.status).toBe('CAPTURED');
     expect(payment?.subscriptionId).not.toBeNull();
+  });
+
+  it('extends PAST_DUE and GRACE_PERIOD to ACTIVE and clears grace', async () => {
+    const pastDueUser = await createUser();
+    const graceUser = await createUser();
+    const plan = await createPlan();
+    const futureEnd = new Date(Date.now() + 3 * HOUR_MS);
+    const pastDue = await createSubscription({
+      userId: pastDueUser.id,
+      planId: plan.id,
+      status: 'PAST_DUE',
+      periodEnd: futureEnd,
+      gracePeriodEnd: new Date(Date.now() + HOUR_MS)
+    });
+    const grace = await createSubscription({
+      userId: graceUser.id,
+      planId: plan.id,
+      status: 'GRACE_PERIOD',
+      periodEnd: new Date(Date.now() - HOUR_MS),
+      gracePeriodEnd: new Date(Date.now() + 2 * HOUR_MS)
+    });
+    const pastDueStart = pastDue.currentPeriodStart.toISOString();
+    const graceStart = grace.currentPeriodStart.toISOString();
+    const pastDuePayment = await createPayment({
+      userId: pastDueUser.id,
+      planId: plan.id,
+      providerOrderId: 'order_past_due'
+    });
+    const gracePayment = await createPayment({
+      userId: graceUser.id,
+      planId: plan.id,
+      providerOrderId: 'order_grace_status'
+    });
+
+    const pastDueResponse = await postEvent(
+      captureBody({ eventId: 'evt_past_due', orderId: 'order_past_due', paymentId: 'pay_past_due' }),
+      'evt_past_due'
+    );
+    const graceResponse = await postEvent(
+      captureBody({ eventId: 'evt_grace_status', orderId: 'order_grace_status', paymentId: 'pay_grace_status' }),
+      'evt_grace_status'
+    );
+
+    expect(pastDueResponse.status).toBe(200);
+    expect(graceResponse.status).toBe(200);
+    await pastDue.reload();
+    await grace.reload();
+    await pastDuePayment.reload();
+    await gracePayment.reload();
+    expect(pastDue.status).toBe('ACTIVE');
+    expect(pastDue.gracePeriodEnd).toBeNull();
+    expect(pastDue.autoRenew).toBe(false);
+    expect(pastDue.currentPeriodStart.toISOString()).toBe(pastDueStart);
+    expect(pastDue.currentPeriodEnd.toISOString()).toBe(addUtcBillingInterval(futureEnd, 'MONTH').toISOString());
+    expect(pastDuePayment.subscriptionId).toBe(pastDue.id);
+    expect(grace.status).toBe('ACTIVE');
+    expect(grace.gracePeriodEnd).toBeNull();
+    expect(grace.autoRenew).toBe(false);
+    expect(grace.currentPeriodStart.toISOString()).toBe(graceStart);
+    expect(grace.currentPeriodEnd.toISOString()).toBe(
+      addUtcBillingInterval(gracePayment.paidAt!, 'MONTH').toISOString()
+    );
+    expect(gracePayment.subscriptionId).toBe(grace.id);
+    expect((await ProcessedWebhook.findByPk('evt_past_due'))?.payload).toMatchObject({ outcome: 'extended' });
+    expect((await ProcessedWebhook.findByPk('evt_grace_status'))?.payload).toMatchObject({ outcome: 'extended' });
+  });
+
+  it('creates a new subscription for elapsed CANCELED and preserves month-end leap-year extension math', async () => {
+    const elapsedUser = await createUser();
+    const leapUser = await createUser();
+    const plan = await createPlan();
+    const yearly = await createPlan('YEAR', 399900);
+    await createSubscription({
+      userId: elapsedUser.id,
+      planId: plan.id,
+      status: 'CANCELED',
+      periodEnd: new Date(Date.now() - HOUR_MS)
+    });
+    const periodStart = new Date('2026-06-01T15:04:05.123Z');
+    const jan31End = new Date('2028-01-31T15:04:05.123Z');
+    const leap = await Subscription.create({
+      userId: leapUser.id,
+      planId: plan.id,
+      status: 'ACTIVE',
+      autoRenew: false,
+      currentPeriodStart: periodStart,
+      currentPeriodEnd: jan31End,
+      gracePeriodEnd: null,
+      canceledAt: null,
+      ...timestamps()
+    });
+    const elapsedPayment = await createPayment({
+      userId: elapsedUser.id,
+      planId: plan.id,
+      providerOrderId: 'order_elapsed_canceled'
+    });
+    const leapPayment = await createPayment({
+      userId: leapUser.id,
+      planId: yearly.id,
+      providerOrderId: 'order_leap',
+      amountInCents: 399900,
+      billingInterval: 'YEAR'
+    });
+
+    const elapsedResponse = await postEvent(
+      captureBody({
+        eventId: 'evt_elapsed_canceled',
+        orderId: 'order_elapsed_canceled',
+        paymentId: 'pay_elapsed_canceled'
+      }),
+      'evt_elapsed_canceled'
+    );
+    const leapResponse = await postEvent(
+      captureBody({ eventId: 'evt_leap', orderId: 'order_leap', paymentId: 'pay_leap', amount: 399900 }),
+      'evt_leap'
+    );
+
+    expect(elapsedResponse.status).toBe(200);
+    expect(leapResponse.status).toBe(200);
+    await elapsedPayment.reload();
+    await leap.reload();
+    await leapPayment.reload();
+    const created = await Subscription.findOne({ where: { userId: elapsedUser.id, status: 'ACTIVE' } });
+    expect(created).not.toBeNull();
+    expect(elapsedPayment.subscriptionId).toBe(created!.id);
+    expect(await Subscription.count({ where: { userId: elapsedUser.id } })).toBe(2);
+    expect((await ProcessedWebhook.findByPk('evt_elapsed_canceled'))?.payload).toMatchObject({
+      outcome: 'activated'
+    });
+    expect(leap.planId).toBe(yearly.id);
+    expect(leap.currentPeriodStart.toISOString()).toBe(periodStart.toISOString());
+    expect(leap.currentPeriodEnd.toISOString()).toBe(addUtcBillingInterval(jan31End, 'YEAR').toISOString());
+    expect(leap.currentPeriodEnd.toISOString()).toBe('2029-01-31T15:04:05.123Z');
+    expect(addUtcBillingInterval(jan31End, 'MONTH').toISOString()).toBe('2028-02-29T15:04:05.123Z');
+    expect(leapPayment.subscriptionId).toBe(leap.id);
+  });
+
+  it('does not extend again for the same provider payment under a new event id', async () => {
+    const user = await createUser();
+    const plan = await createPlan();
+    const periodEnd = new Date(Date.now() + 4 * HOUR_MS);
+    const subscription = await createSubscription({
+      userId: user.id,
+      planId: plan.id,
+      status: 'ACTIVE',
+      periodEnd
+    });
+    const periodStart = subscription.currentPeriodStart.toISOString();
+    const payment = await createPayment({ userId: user.id, planId: plan.id, providerOrderId: 'order_once' });
+    await postEvent(captureBody({ eventId: 'evt_once_1', orderId: 'order_once', paymentId: 'pay_once' }), 'evt_once_1');
+    await subscription.reload();
+    const extendedEnd = subscription.currentPeriodEnd.toISOString();
+    expect(extendedEnd).toBe(addUtcBillingInterval(periodEnd, 'MONTH').toISOString());
+
+    const second = await postEvent(
+      captureBody({ eventId: 'evt_once_2', orderId: 'order_once', paymentId: 'pay_once' }),
+      'evt_once_2'
+    );
+
+    expect(second.status).toBe(200);
+    await subscription.reload();
+    await payment.reload();
+    expect(subscription.currentPeriodEnd.toISOString()).toBe(extendedEnd);
+    expect(subscription.currentPeriodStart.toISOString()).toBe(periodStart);
+    expect(payment.subscriptionId).toBe(subscription.id);
+    expect((await ProcessedWebhook.findByPk('evt_once_2'))?.payload).toMatchObject({ outcome: 'duplicate' });
+  });
+
+  it('rolls back an extension and retries it once after a forced failure', async () => {
+    const user = await createUser();
+    const plan = await createPlan();
+    const periodEnd = new Date(Date.now() + 5 * HOUR_MS);
+    const subscription = await createSubscription({
+      userId: user.id,
+      planId: plan.id,
+      status: 'ACTIVE',
+      periodEnd
+    });
+    const before = subscription.get({ plain: true });
+    const payment = await createPayment({ userId: user.id, planId: plan.id, providerOrderId: 'order_ext_rollback' });
+    const paymentBefore = payment.get({ plain: true });
+    const hook = 'webhook-fail-extend';
+    ProcessedWebhook.addHook('beforeCreate', hook, () => {
+      throw new Error('forced extend failure');
+    });
+
+    try {
+      const response = await postEvent(
+        captureBody({ eventId: 'evt_ext_rollback', orderId: 'order_ext_rollback', paymentId: 'pay_ext_rollback' }),
+        'evt_ext_rollback'
+      );
+      expect(response.status).toBeGreaterThanOrEqual(500);
+    } finally {
+      ProcessedWebhook.removeHook('beforeCreate', hook);
+    }
+
+    await subscription.reload();
+    await payment.reload();
+    expect(subscription.get({ plain: true })).toEqual(before);
+    expect(payment.get({ plain: true })).toEqual(paymentBefore);
+    expect(await ProcessedWebhook.count()).toBe(0);
+
+    const retry = await postEvent(
+      captureBody({ eventId: 'evt_ext_rollback', orderId: 'order_ext_rollback', paymentId: 'pay_ext_rollback' }),
+      'evt_ext_rollback'
+    );
+
+    expect(retry.status).toBe(200);
+    await subscription.reload();
+    await payment.reload();
+    expect(payment.status).toBe('CAPTURED');
+    expect(payment.subscriptionId).toBe(subscription.id);
+    expect(subscription.currentPeriodEnd.toISOString()).toBe(
+      addUtcBillingInterval(periodEnd, 'MONTH').toISOString()
+    );
+    expect((await ProcessedWebhook.findByPk('evt_ext_rollback'))?.payload).toMatchObject({ outcome: 'extended' });
+  });
+
+  it('stacks two concurrent distinct captures onto one locked subscription', async () => {
+    await withLegacyDuplicateInitiatedCheckouts(async () => {
+      const user = await createUser();
+      const plan = await createPlan();
+      const periodEnd = new Date(Date.now() + 6 * HOUR_MS);
+      const subscription = await createSubscription({
+        userId: user.id,
+        planId: plan.id,
+        status: 'ACTIVE',
+        periodEnd
+      });
+      const periodStart = subscription.currentPeriodStart.toISOString();
+      await createPayment({ userId: user.id, planId: plan.id, providerOrderId: 'order_stack_a' });
+      await createPayment({ userId: user.id, planId: plan.id, providerOrderId: 'order_stack_b' });
+      const rawA = captureBody({ eventId: 'evt_stack_a', orderId: 'order_stack_a', paymentId: 'pay_stack_a' });
+      const rawB = captureBody({ eventId: 'evt_stack_b', orderId: 'order_stack_b', paymentId: 'pay_stack_b' });
+
+      const [responseA, responseB] = await Promise.all([
+        postEvent(rawA, 'evt_stack_a'),
+        postEvent(rawB, 'evt_stack_b')
+      ]);
+
+      expect(responseA.status).toBe(200);
+      expect(responseB.status).toBe(200);
+      await subscription.reload();
+      const paymentA = await Payment.findOne({ where: { providerOrderId: 'order_stack_a' } });
+      const paymentB = await Payment.findOne({ where: { providerOrderId: 'order_stack_b' } });
+      expect(paymentA?.status).toBe('CAPTURED');
+      expect(paymentB?.status).toBe('CAPTURED');
+      expect(paymentA?.subscriptionId).toBe(subscription.id);
+      expect(paymentB?.subscriptionId).toBe(subscription.id);
+      expect(subscription.currentPeriodStart.toISOString()).toBe(periodStart);
+      expect(subscription.currentPeriodEnd.toISOString()).toBe(
+        addUtcBillingInterval(addUtcBillingInterval(periodEnd, 'MONTH'), 'MONTH').toISOString()
+      );
+      expect(await Subscription.count({ where: { userId: user.id } })).toBe(1);
+      expect(await ProcessedWebhook.count()).toBe(2);
+    });
+  });
+
+  it('retries the losing first activation so it extends the winner subscription', async () => {
+    await withLegacyDuplicateInitiatedCheckouts(async () => {
+      const user = await createUser();
+      const plan = await createPlan();
+      await createPayment({ userId: user.id, planId: plan.id, providerOrderId: 'order_race_a' });
+      await createPayment({ userId: user.id, planId: plan.id, providerOrderId: 'order_race_b' });
+      const rawA = captureBody({ eventId: 'evt_race_a', orderId: 'order_race_a', paymentId: 'pay_race_a' });
+      const rawB = captureBody({ eventId: 'evt_race_b', orderId: 'order_race_b', paymentId: 'pay_race_b' });
+
+      const [first, second] = await Promise.all([postEvent(rawA, 'evt_race_a'), postEvent(rawB, 'evt_race_b')]);
+      expect([first.status, second.status].filter((status) => status === 200).length).toBeGreaterThanOrEqual(1);
+
+      for (const [raw, eventId, orderId] of [
+        [rawA, 'evt_race_a', 'order_race_a'],
+        [rawB, 'evt_race_b', 'order_race_b']
+      ] as const) {
+        const payment = await Payment.findOne({ where: { providerOrderId: orderId } });
+        if (payment?.status === 'CAPTURED') {
+          continue;
+        }
+        const retry = await postEvent(raw, eventId);
+        expect(retry.status).toBe(200);
+      }
+
+      const subscription = await Subscription.findOne({ where: { userId: user.id } });
+      expect(subscription).not.toBeNull();
+      expect(await Subscription.count({ where: { userId: user.id } })).toBe(1);
+      const paymentA = await Payment.findOne({ where: { providerOrderId: 'order_race_a' } });
+      const paymentB = await Payment.findOne({ where: { providerOrderId: 'order_race_b' } });
+      expect(paymentA?.status).toBe('CAPTURED');
+      expect(paymentB?.status).toBe('CAPTURED');
+      expect(paymentA?.subscriptionId).toBe(subscription!.id);
+      expect(paymentB?.subscriptionId).toBe(subscription!.id);
+      expect(subscription!.autoRenew).toBe(false);
+      expect(subscription!.currentPeriodEnd.toISOString()).toBe(
+        addUtcBillingInterval(addUtcBillingInterval(subscription!.currentPeriodStart, 'MONTH'), 'MONTH').toISOString()
+      );
+      expect(await ProcessedWebhook.count()).toBe(2);
+      const outcomes = [
+        ((await ProcessedWebhook.findByPk('evt_race_a'))?.payload as { outcome?: string }).outcome,
+        ((await ProcessedWebhook.findByPk('evt_race_b'))?.payload as { outcome?: string }).outcome
+      ].sort();
+      expect(outcomes).toEqual(['activated', 'extended']);
+    });
   });
 
   it('rejects a second unresolved INITIATED subscription checkout for the same user', async () => {

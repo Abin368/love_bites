@@ -9,17 +9,15 @@ import {
 } from '../payments/payments.data-access';
 import { addUtcBillingInterval, type UtcBillingInterval } from '../subscriptions/billing-period';
 import {
-  expireElapsedNonterminalSubscription,
-  findInPeriodCanceledSubscription,
-  findQualifyingPremiumSubscription,
+  extendQualifyingPremiumSubscription,
   insertActivePremiumSubscription,
-  lockNonterminalSubscription
+  resolveLockedQualifyingPremiumSubscriptionForExtension
 } from '../subscriptions/subscriptions.data-access';
 import { InternalServerError } from '../../utils/errors';
 import { logger } from '../../utils/logger';
 import { findProcessedWebhook, insertProcessedWebhook } from './razorpay-webhook.data-access';
 
-type WebhookOutcome = 'activated' | 'captured_unlinked' | 'captured_linked' | 'duplicate' | 'conflict';
+type WebhookOutcome = 'activated' | 'extended' | 'captured_linked' | 'duplicate' | 'conflict';
 
 interface MinimizedEvent {
   eventId: string;
@@ -430,17 +428,30 @@ async function applyValidCapture(eventId: string, capture: ValidCapture): Promis
     }
 
     const now = processedAt;
-    await lockNonterminalSubscription(userId, transaction);
-    await expireElapsedNonterminalSubscription(userId, now, transaction);
-    await findInPeriodCanceledSubscription(userId, now, transaction);
-    const qualifying = await findQualifyingPremiumSubscription(userId, transaction, now);
+    const qualifying = await resolveLockedQualifyingPremiumSubscriptionForExtension(
+      userId,
+      now,
+      transaction
+    );
     if (qualifying) {
+      const extensionStart =
+        qualifying.currentPeriodEnd.getTime() > now.getTime() ? qualifying.currentPeriodEnd : now;
+      const currentPeriodEnd = addUtcBillingInterval(extensionStart, interval);
+      await extendQualifyingPremiumSubscription(
+        qualifying,
+        {
+          planId,
+          currentPeriodEnd,
+          now
+        },
+        transaction
+      );
       await capturePayment(
         payment.id,
         {
           providerPaymentId: capture.providerPaymentId,
           paidAt: now,
-          subscriptionId: null
+          subscriptionId: qualifying.id
         },
         transaction
       );
@@ -453,7 +464,7 @@ async function applyValidCapture(eventId: string, capture: ValidCapture): Promis
           amount: capture.amount,
           currency: capture.currency,
           paymentStatus: 'captured',
-          outcome: 'captured_unlinked',
+          outcome: 'extended',
           reason: null,
           processedAt: now
         },

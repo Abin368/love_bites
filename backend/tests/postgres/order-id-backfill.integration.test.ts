@@ -12,6 +12,7 @@ import { ProcessedWebhook } from '../../src/database/models/processed-webhook.mo
 import { Subscription } from '../../src/database/models/subscription.model';
 import { User } from '../../src/database/models/user.model';
 import { hasActivePremium } from '../../src/modules/likes/likes.data-access';
+import { addUtcBillingInterval } from '../../src/modules/subscriptions/billing-period';
 import { sequelize } from '../../src/config/database';
 
 jest.mock('../../src/integrations/payment/razorpay.provider', () => {
@@ -351,21 +352,22 @@ describe('provider order id backfill', () => {
     expect(createOrder).not.toHaveBeenCalled();
   });
 
-  it('captures a backfilled order without extending Premium that already qualifies', async () => {
+  it('captures a backfilled order and extends Premium that already qualifies', async () => {
     const user = await createUser();
     const plan = await createPlan();
+    const periodEnd = new Date(Date.now() + HOUR_MS);
     const existing = await Subscription.create({
       userId: user.id,
       planId: plan.id,
       status: 'ACTIVE',
       autoRenew: false,
       currentPeriodStart: new Date(Date.now() - HOUR_MS),
-      currentPeriodEnd: new Date(Date.now() + HOUR_MS),
+      currentPeriodEnd: periodEnd,
       gracePeriodEnd: null,
       canceledAt: null,
       ...timestamps()
     });
-    const periodEnd = existing.currentPeriodEnd.toISOString();
+    const periodStart = existing.currentPeriodStart.toISOString();
     const payment = await createPayment({ userId: user.id, planId: plan.id });
     listOrders.mockResolvedValue(listedOrder(payment, 'order_second_premium'));
 
@@ -382,10 +384,13 @@ describe('provider order id backfill', () => {
     await payment.reload();
     await existing.reload();
     expect(payment.status).toBe('CAPTURED');
-    expect(payment.subscriptionId).toBeNull();
+    expect(payment.subscriptionId).toBe(existing.id);
     expect(payment.paidAt).not.toBeNull();
     expect(existing.status).toBe('ACTIVE');
-    expect(existing.currentPeriodEnd.toISOString()).toBe(periodEnd);
+    expect(existing.currentPeriodStart.toISOString()).toBe(periodStart);
+    expect(existing.currentPeriodEnd.toISOString()).toBe(
+      addUtcBillingInterval(periodEnd, 'MONTH').toISOString()
+    );
     expect(await Subscription.count()).toBe(1);
     expect(createOrder).not.toHaveBeenCalled();
   });
