@@ -13,9 +13,11 @@ This document defines the **RESTful API Specification** and **Socket.IO Realtime
 
 ### Implementation status
 
-Phase 2 authentication, Phase 3 onboarding, Phase 4 Discovery, and Phase 5 slices for PASS, LIKE and match creation, SUPER LIKE, UNDO, and UNMATCH are implemented. Sections **4**, **11**, **12**, **14**, **19**, **20**, **21**, and **22.2** describe that live behavior. Sections **13**, **17**, **18**, **22.1**, and **23** onward are the planned contract and are not mounted, except where a subsection says otherwise. Sections **23.1**, **23.2**, **25**, **26.1**, **28.1**, **28.2**, **28.3**, **30.1**, and **30.2** are mounted. Admin report review in section **31.2** is not. `PUT /api/v1/me/interests`, `PUT /api/v1/me/relationship-intentions`, `GET /api/v1/dating-preferences`, `PUT /api/v1/dating-preferences`, `PUT /api/v1/location`, and `PATCH /api/v1/onboarding/profile` are not implemented. `GET /api/v1/matches` is not implemented. `DELETE /api/v1/matches/:matchId` is implemented. Match and conversation rows are created by LIKE and SUPER LIKE. UNMATCH does not delete them.
+Phase 2 authentication, Phase 3 onboarding, Phase 4 Discovery, and Phase 5 slices for PASS, LIKE and match creation, SUPER LIKE, UNDO, and UNMATCH are implemented. Phase 6 chat (HTTP TEXT, free quota, history, read receipts, unread counts, inbox, conversation details, Premium media upload/confirm/download) and Socket.IO foundation plus `chat:message:send`, `chat:message:new`, `chat:message:read`, and typing events are implemented. Phase 7 block management and report submission are implemented. Phase 8 plan catalog, subscription read/cancel, entitlements/usage snapshots, and catalog-backed daily quotas are implemented. Phase 9 Razorpay Order checkout, read-only payment verification, checkout expiration of elapsed nonterminal subscriptions, and `payment.captured` webhook activation are implemented. Internal Order-ID backfill exists and is not a public route.
 
-Health checks are also live: `GET /health` and `GET /api/v1/health`.
+**Mounted live sections (see each subsection for the contract):** **4**, **11**, **12**, **14**, **19**, **20**, **21**, **22.2**, **23.1**, **23.2**, **24.1–24.7**, **25**, **26.1**, **28.1**, **28.2**, **28.3**, **29.1**, **29.2**, **30.1**, **30.2**, **31.3**, **32** (implemented events only), and **33** (`payment.captured` only). Health checks are also live: `GET /health` and `GET /api/v1/health`.
+
+**Not mounted / not implemented:** richer profile views in section **13**; `PUT /api/v1/me/interests`, `PUT /api/v1/me/relationship-intentions`, `GET /api/v1/dating-preferences`, `PUT /api/v1/dating-preferences`, `PUT /api/v1/location`, and `PATCH /api/v1/onboarding/profile`; `GET /api/v1/matches` and rematch (section **22.1**); Who Liked You; notifications; boosts; admin report review and other admin routes beyond plan price (section **31.2**); conversation rooms; Razorpay Subscriptions; renewal, refunds, grace assignment, plan switching, and the subscription reconciliation worker. Match and conversation rows are created by LIKE and SUPER LIKE. UNMATCH does not delete them. Production interests are not seeded. Seed plan prices are placeholders. `plan_features` is empty; runtime Premium gates use `hasActivePremium`, not dynamic feature grants.
 
 ### Core Architectural Principles:
 * **Strict REST Semantics:** Standard HTTP verbs (`GET`, `POST`, `PATCH`, `PUT`, `DELETE`) with resource-oriented URIs.
@@ -656,7 +658,7 @@ Live now: registration, email and phone verification, resend, login, refresh, lo
 
 Phase 3 onboarding is complete. Phase 4 — Discovery is complete. Phase 5 slices for PASS, LIKE and match creation, SUPER LIKE, UNDO, and UNMATCH are complete. `GET /api/v1/matches` is not implemented. Rematch is not implemented. Gender and relationship-intention seed data exist. Production interests are not seeded, because the approved interest list is not defined.
 
-Not implemented: `PUT /api/v1/me/interests`, `PUT /api/v1/me/relationship-intentions`, `GET /api/v1/dating-preferences`, `PUT /api/v1/dating-preferences`, `PUT /api/v1/location`, `PATCH /api/v1/onboarding/profile`, the richer profile views in section 13, `GET /api/v1/matches`, who-liked-me, notifications, subscriptions as a public API, payments, boosts, and admin report review. Do not call those paths. `DELETE /api/v1/matches/:matchId` is live. Chat routes are live where their subsection says implemented.
+Not implemented: `PUT /api/v1/me/interests`, `PUT /api/v1/me/relationship-intentions`, `GET /api/v1/dating-preferences`, `PUT /api/v1/dating-preferences`, `PUT /api/v1/location`, `PATCH /api/v1/onboarding/profile`, the richer profile views in section 13, `GET /api/v1/matches`, rematch, who-liked-me, notifications, boosts, and admin report review. Do not call those paths. Live and mounted: `DELETE /api/v1/matches/:matchId`; chat and media routes where their subsections say implemented; `GET /api/v1/subscriptions/plans`, `GET /api/v1/subscriptions/me`, `POST /api/v1/subscriptions/cancel`; `GET /api/v1/me/entitlements`, `GET /api/v1/me/usage`; `POST /api/v1/payments/checkout`, `POST /api/v1/payments/verify`; `POST /api/v1/webhooks/razorpay` for `payment.captured`; and `PATCH /api/v1/admin/config/plans/:planId`.
 
 Later sections remain the planned contract unless a subsection says it is implemented.
 
@@ -2146,7 +2148,7 @@ A report does not require verification, a complete profile, location, dating pre
 ---
 
 ### 28.3 Cancel Subscription Auto-Renewal
-**Implemented.** Local cancellation for the authenticated caller. This route does not call a payment provider, write a payment, process a webhook, issue a refund, reset quotas, or change credit balances. Section 33 stays unimplemented.
+**Implemented.** Local cancellation for the authenticated caller. This route does not call a payment provider, write a payment, process a webhook, issue a refund, reset quotas, or change credit balances. Authoritative Premium activation remains section 33 (`payment.captured` only). Renewal, refunds, grace assignment, and reconciliation are still not implemented.
 
 * **Method & Path:** `POST /api/v1/subscriptions/cancel`
 * **Auth:** `Authorization: Bearer <accessToken>` and `requireRole('USER')`. `requireVerified` is not applied. A completed profile is not required. An unverified `USER` may call this route. A missing token is `401 AUTH_REQUIRED`. An invalid token is `401 INVALID_TOKEN`. An `ADMIN` is `403 FORBIDDEN`. Suspended and banned accounts are rejected by authentication middleware.
@@ -2173,7 +2175,7 @@ A report does not require verification, a complete profile, location, dating pre
 ## 29. Payment APIs (Razorpay Integration)
 
 ### 29.1 Create Checkout Session
-**Implemented.** Creates one Razorpay Order for an eligible Premium plan and one `INITIATED` payment. Before the Premium check, it can transition one elapsed nonterminal subscription to `EXPIRED`. It does not create a subscription, grant Premium, process a webhook, renew, refund, or reconcile. Section 29.2 checks the client signature and does not grant Premium. Section 33 stays unimplemented.
+**Implemented.** Creates one Razorpay Order for an eligible Premium plan and one `INITIATED` payment. Before the Premium check, it can transition one elapsed nonterminal subscription to `EXPIRED`. It does not create a subscription, grant Premium, process a webhook, renew, refund, or reconcile. Section 29.2 checks the client signature and does not grant Premium. Authoritative Premium activation is section 33 (`payment.captured` only).
 
 * **Method & Path:** `POST /api/v1/payments/checkout`
 * **Auth:** `authenticate`, then `requireRole('USER')`. `requireVerified` is not applied. A completed profile is not required. An unverified `USER` may call this route. A missing token is `401 AUTH_REQUIRED`. An invalid token is `401 INVALID_TOKEN`. An `ADMIN` is `403 FORBIDDEN`. Suspended and banned accounts are rejected by authentication middleware.
@@ -2211,7 +2213,7 @@ A report does not require verification, a complete profile, location, dating pre
 ---
 
 ### 29.2 Verify Client Payment Handshake
-**Implemented.** Confirms the Razorpay Checkout signature for one stored Order. It reads one `payments` row and writes nothing. It does not change `status`, `provider_payment_id`, `paid_at`, `raw_payload`, `failure_reason`, or any other payment column. It does not create or update a subscription, call Razorpay, or grant Premium. Section 33 stays unimplemented. An Order id or an `INITIATED` payment is still not proof of capture.
+**Implemented.** Confirms the Razorpay Checkout signature for one stored Order. It reads one `payments` row and writes nothing. It does not change `status`, `provider_payment_id`, `paid_at`, `raw_payload`, `failure_reason`, or any other payment column. It does not create or update a subscription, call Razorpay, or grant Premium. Authoritative Premium activation is section 33 (`payment.captured` only). An Order id or an `INITIATED` payment is still not proof of capture.
 
 * **Method & Path:** `POST /api/v1/payments/verify`
 * **Auth:** `authenticate`, then `requireRole('USER')`. `requireVerified` is not applied. A completed profile is not required. An unverified `USER` may call this route. A missing token is `401 AUTH_REQUIRED`. An invalid token is `401 INVALID_TOKEN`. An `ADMIN` is `403 FORBIDDEN`. Suspended and banned accounts are rejected by authentication middleware.
@@ -2385,7 +2387,7 @@ Genders, interests, relationship intentions, and plan limit editing are not moun
 * **Socket identity:** Successful handshakes store the live `AuthenticatedUser` on `socket.data.user`. `chat:message:send` uses `socket.data.user.id` as the sender. Unverified or incomplete profiles may connect. The send path reloads the user before it calls the chat service.
 * **User room:** On connect the server joins exactly `user:{userId}` from `socket.data.user.id`. The client cannot choose the room. Conversation rooms are not joined, and there is no conversation-room join event.
 * **Redis:** Socket.IO requires Redis for the adapter. Production fails startup if Redis or the adapter cannot initialize. Development can keep serving HTTP without Socket.IO when Redis is unavailable. Redis is not a message store, a quota store, or a chat idempotency store.
-* **Not in this slice:** No client `chat:message:read` command, no conversation-room join, no media Socket.IO upload or delivery, no offline replay, and no notification emissions. Block emits `match:unmatch` as section 25.1 describes. Chat handlers in this section do not emit it. Chat media upload URL issuance is the HTTP route in section 24.5. It does not emit a socket event. Confirmation and media-message persistence are not implemented. Read receipts are the HTTP route in section 24.3. That route emits the server event below. It does not add a client listener. Typing indicators are section 32.4.
+* **Not in this slice:** No client `chat:message:read` command, no conversation-room join, no media Socket.IO upload path, no offline replay, and no notification emissions. Block emits `match:unmatch` as section 25.1 describes. Chat handlers in this section do not emit it. Chat media upload URL issuance is the HTTP route in section 24.5 and does not emit a socket event. Media confirmation and persistence are the HTTP route in section 24.6; a new confirm emits `chat:message:new` to the recipient user room. Media download is section 24.7. Read receipts are the HTTP route in section 24.3. That route emits the server event below. It does not add a client listener. Typing indicators are section 32.4.
 
 ### 32.1 Server $\rightarrow$ Client Events
 | Event Name | Room / Target | Payload Structure | Trigger Condition | Status |
