@@ -174,10 +174,22 @@ describe('order-id-backfill CLI helpers', () => {
     ).toContain('already associated');
     expect(formatBackfillOutcome({ outcome: 'ineligible' })).toContain('not eligible');
     expect(formatBackfillOutcome({ outcome: 'unchanged', reason: 'no_match' })).toContain(
-      'No matching Order'
+      'No matching Order appeared'
+    );
+    expect(formatBackfillOutcome({ outcome: 'unchanged', reason: 'no_match' })).toContain(
+      'does not prove'
+    );
+    expect(formatBackfillOutcome({ outcome: 'unchanged', reason: 'no_match' })).toContain(
+      'NOT released'
     );
     expect(formatBackfillOutcome({ outcome: 'unchanged', reason: 'ambiguous' })).toContain(
-      'Multiple or incomplete'
+      'Multiple tied Orders'
+    );
+    expect(formatBackfillOutcome({ outcome: 'unchanged', reason: 'incomplete' })).toContain(
+      'full page of 100'
+    );
+    expect(formatBackfillOutcome({ outcome: 'unchanged', reason: 'uncertain_window' })).toContain(
+      '75-second'
     );
     expect(formatBackfillOutcome({ outcome: 'unchanged', reason: 'conflict' })).toContain(
       'Concurrent modification'
@@ -283,12 +295,13 @@ describe('runOrderIdBackfillCli', () => {
 
     const noMatch = await run({ argv: ['node', 'cli', PAYMENT_ID], backfill });
     expect(noMatch.code).toBe(1);
-    expect(noMatch.captured.all()).toContain('No matching Order was found');
-    expect(noMatch.captured.all()).toContain('payment remains unchanged');
+    expect(noMatch.captured.all()).toContain('No matching Order appeared');
+    expect(noMatch.captured.all()).toContain('does not prove');
+    expect(noMatch.captured.all()).toContain('Payment remains unchanged');
 
     const ambiguous = await run({ argv: ['node', 'cli', PAYMENT_ID], backfill });
     expect(ambiguous.code).toBe(1);
-    expect(ambiguous.captured.all()).toContain('Multiple or incomplete matches');
+    expect(ambiguous.captured.all()).toContain('Multiple tied Orders');
   });
 
   it('reports ineligible, already-assigned, and concurrent-assignment outcomes', async () => {

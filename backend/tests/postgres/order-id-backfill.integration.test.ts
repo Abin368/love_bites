@@ -22,7 +22,7 @@ jest.mock('../../src/integrations/payment/razorpay.provider', () => {
     razorpayOrderProvider: {
       isConfigured: () => true,
       createOrder: jest.fn(),
-      listOrdersByReceipt: jest.fn()
+      listOrdersInWindow: jest.fn()
     }
   };
 });
@@ -31,7 +31,7 @@ import { razorpayOrderProvider } from '../../src/integrations/payment/razorpay.p
 import { backfillProviderOrderId } from '../../src/modules/payments/order-id-backfill.service';
 import { app } from '../../src/app';
 
-const listOrders = razorpayOrderProvider.listOrdersByReceipt as jest.Mock;
+const listOrders = razorpayOrderProvider.listOrdersInWindow as jest.Mock;
 const createOrder = razorpayOrderProvider.createOrder as jest.Mock;
 const WEBHOOK_SECRET = 'test-razorpay-webhook-secret';
 const PASSWORD_HASH = '$argon2id$v=19$m=65536,t=3,p=4$integration-test-hash';
@@ -41,6 +41,10 @@ const HOUR_MS = 60 * 60 * 1000;
 function timestamps(): { createdAt: Date; updatedAt: Date } {
   const now = new Date();
   return { createdAt: now, updatedAt: now };
+}
+
+function recoverableCreatedAt(): Date {
+  return new Date(Date.now() - 2 * 60 * 60 * 1000);
 }
 
 function sign(raw: string): string {
@@ -108,7 +112,7 @@ async function createPayment(input: {
   provider?: string;
   billingInterval?: PaymentBillingInterval | null;
 }): Promise<Payment> {
-  return Payment.create({
+  const payment = await Payment.create({
     userId: input.userId,
     planId: input.planId,
     subscriptionId: null,
@@ -126,6 +130,13 @@ async function createPayment(input: {
     paidAt: null,
     ...timestamps()
   });
+  // Sequelize overwrites an explicit createdAt on insert, so age the row after commit.
+  // Recovery refuses payments newer than MIN_RECOVERY_AGE_MS.
+  await sequelize.query('UPDATE payments SET created_at = :createdAt WHERE id = :id', {
+    replacements: { createdAt: recoverableCreatedAt(), id: payment.id }
+  });
+  await payment.reload();
+  return payment;
 }
 
 function listedOrder(payment: Payment, providerOrderId: string) {

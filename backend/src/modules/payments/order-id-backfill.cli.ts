@@ -47,6 +47,19 @@ Usage:
 
 Accepts one local payments.id UUID. Calls backfillProviderOrderId only.
 
+Lookup:
+  One unfiltered orders.all page: integer Unix seconds from/to, count 100, skip 0.
+  No receipt filter and no further pages. A page of 100 items is incomplete.
+  An Order is tied when receipt or notes.paymentId equals the payment UUID.
+  Assignment still requires exact receipt, notes.paymentId, amount, and currency.
+  Multiple tied Orders are ambiguous. The earliest Order is not selected.
+
+  no_match means no tied Order appeared in this listing. It does not prove
+  Razorpay never created one, and it does not release the checkout slot.
+  Payments newer than 75 seconds return uncertain_window and do not call
+  Razorpay. That age is an operational precaution only. It does not prove the
+  original create request has finished or that no Order can appear later.
+
 Safety:
   - Never runs when NODE_ENV=production
   - Only allowed hosts: localhost, 127.0.0.1, ::1
@@ -55,7 +68,6 @@ Safety:
   - Never changes payment status (does not mark FAILED)
   - Never captures, refunds, activates Premium, or creates a subscription
   - Never releases the outstanding-checkout unique index
-  - Matching uses receipt + notes.paymentId + amount + currency only
 
 Note:
   A successful Order-ID association does NOT release the outstanding-checkout
@@ -65,8 +77,13 @@ Note:
 `;
 
 const UNCHANGED_MESSAGES: Record<OrderIdBackfillUnchangedReason, string> = {
-  no_match: 'No matching Order was found; payment remains unchanged.',
-  ambiguous: 'Multiple or incomplete matches; payment remains unchanged.',
+  no_match:
+    'No matching Order appeared in this listing. This does not prove Razorpay never created one. Payment remains unchanged. Outstanding-checkout slot is NOT released.',
+  ambiguous: 'Multiple tied Orders were listed; payment remains unchanged.',
+  incomplete:
+    'The Order listing was a full page of 100 and was not read further. Payment remains unchanged. This is not proof that no Order exists.',
+  uncertain_window:
+    'The recovery time window is uncertain, or the payment is newer than the 75-second operational minimum age. No provider listing was made. Payment remains unchanged. That age check does not prove the original provider request has finished.',
   malformed: 'Provider Order page was malformed; payment remains unchanged.',
   receipt_mismatch: 'Listed Order receipt did not match the payment; payment remains unchanged.',
   note_mismatch: 'Listed Order notes.paymentId did not match the payment; payment remains unchanged.',

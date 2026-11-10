@@ -1,14 +1,33 @@
 import { UniqueConstraintError } from 'sequelize';
 import { razorpayOrderProvider } from '../../integrations/payment/razorpay.provider';
+import type { ListedProviderOrder } from '../../integrations/payment/payment.interface';
 import { InternalServerError } from '../../utils/errors';
 import { logger } from '../../utils/logger';
 import { assignProviderOrderId, findPaymentById, OrderIdPersistError } from './payments.data-access';
 
 type BackfillPayment = NonNullable<Awaited<ReturnType<typeof findPaymentById>>>;
 
+/**
+ * Operational precaution only. 15-second provider timeout plus a 60-second buffer.
+ * It does not prove that an earlier provider request has finished, or that an Order
+ * cannot appear later.
+ */
+export const MIN_RECOVERY_AGE_MS = 75_000;
+
+/** One second on each side. The installed SDK does not say whether `from`/`to` are inclusive. */
+export const WINDOW_BOUNDARY_PAD_SECONDS = 1;
+
+/**
+ * Lower-bound allowance when this process clock is ahead of Razorpay.
+ * This is not a measured skew bound. A larger skew can still place the Order before `from`.
+ */
+export const WINDOW_CLOCK_SKEW_PAD_SECONDS = 60;
+
 export type OrderIdBackfillUnchangedReason =
   | 'no_match'
   | 'ambiguous'
+  | 'incomplete'
+  | 'uncertain_window'
   | 'malformed'
   | 'receipt_mismatch'
   | 'note_mismatch'
@@ -69,6 +88,36 @@ function mismatchReason(payment: BackfillPayment, order: {
   return null;
 }
 
+function isTiedToPayment(paymentId: string, order: ListedProviderOrder): boolean {
+  return order.receipt === paymentId || order.notesPaymentId === paymentId;
+}
+
+function recoveryWindow(createdAt: Date, now: Date):
+  | { kind: 'ready'; from: number; to: number }
+  | { kind: 'uncertain_window' } {
+  if (!(createdAt instanceof Date) || !(now instanceof Date)) {
+    return { kind: 'uncertain_window' };
+  }
+  const createdMs = createdAt.getTime();
+  const nowMs = now.getTime();
+  if (!Number.isFinite(createdMs) || !Number.isFinite(nowMs)) {
+    return { kind: 'uncertain_window' };
+  }
+  if (createdMs > nowMs + WINDOW_CLOCK_SKEW_PAD_SECONDS * 1000) {
+    return { kind: 'uncertain_window' };
+  }
+  if (nowMs - createdMs < MIN_RECOVERY_AGE_MS) {
+    return { kind: 'uncertain_window' };
+  }
+
+  const from = Math.floor(createdMs / 1000) - WINDOW_CLOCK_SKEW_PAD_SECONDS - WINDOW_BOUNDARY_PAD_SECONDS;
+  const to = Math.floor(nowMs / 1000) + WINDOW_BOUNDARY_PAD_SECONDS;
+  if (!Number.isInteger(from) || !Number.isInteger(to) || from <= 0 || to <= 0 || from >= to) {
+    return { kind: 'uncertain_window' };
+  }
+  return { kind: 'ready', from, to };
+}
+
 function finish(paymentId: string, result: OrderIdBackfillResult): OrderIdBackfillResult {
   if (result.outcome === 'assigned') {
     logger.info('Provider order id backfill stored an order id', {
@@ -91,7 +140,10 @@ function finish(paymentId: string, result: OrderIdBackfillResult): OrderIdBackfi
   return result;
 }
 
-export async function backfillProviderOrderId(paymentId: string): Promise<OrderIdBackfillResult> {
+export async function backfillProviderOrderId(
+  paymentId: string,
+  now: Date = new Date()
+): Promise<OrderIdBackfillResult> {
   const payment = await findPaymentById(paymentId);
   if (!payment || !isBackfillCandidate(payment)) {
     return finish(paymentId, { outcome: 'ineligible' });
@@ -99,32 +151,39 @@ export async function backfillProviderOrderId(paymentId: string): Promise<OrderI
   if (payment.providerOrderId) {
     return finish(paymentId, { outcome: 'already_assigned', providerOrderId: payment.providerOrderId });
   }
+
+  const window = recoveryWindow(payment.createdAt, now);
+  if (window.kind === 'uncertain_window') {
+    return finish(payment.id, { outcome: 'unchanged', reason: 'uncertain_window' });
+  }
   if (!razorpayOrderProvider.isConfigured()) {
     throw providerNotConfigured();
   }
 
   let listed;
   try {
-    listed = await razorpayOrderProvider.listOrdersByReceipt(payment.id);
+    listed = await razorpayOrderProvider.listOrdersInWindow({ from: window.from, to: window.to });
   } catch (error) {
     logger.error('Provider order id backfill lookup failed', { paymentId: payment.id });
     throw error;
   }
 
   if (listed.kind === 'incomplete') {
-    return finish(payment.id, { outcome: 'unchanged', reason: 'ambiguous' });
+    return finish(payment.id, { outcome: 'unchanged', reason: 'incomplete' });
   }
   if (listed.kind === 'malformed') {
     return finish(payment.id, { outcome: 'unchanged', reason: 'malformed' });
   }
-  if (listed.orders.length === 0) {
+
+  const tied = listed.orders.filter((order) => isTiedToPayment(payment.id, order));
+  if (tied.length === 0) {
     return finish(payment.id, { outcome: 'unchanged', reason: 'no_match' });
   }
-  if (listed.orders.length !== 1) {
+  if (tied.length !== 1) {
     return finish(payment.id, { outcome: 'unchanged', reason: 'ambiguous' });
   }
 
-  const order = listed.orders[0];
+  const order = tied[0];
   const reason = mismatchReason(payment, order);
   if (reason) {
     return finish(payment.id, { outcome: 'unchanged', reason });

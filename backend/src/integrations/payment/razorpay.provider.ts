@@ -9,7 +9,8 @@ import {
   type CreatedPaymentOrder,
   type CreatePaymentOrderInput,
   type ListedProviderOrder,
-  type OrderReceiptLookup,
+  type ListOrdersInWindowInput,
+  type OrderWindowLookup,
   type PaymentOrderProvider,
   type VerifyOrderSignatureInput
 } from './payment.interface';
@@ -19,7 +20,8 @@ const RECEIPT_MAX_LENGTH = 40;
 const NOTE_VALUE_MAX_LENGTH = 256;
 const ORDER_ID_MAX_LENGTH = 255;
 const CURRENCY_MAX_LENGTH = 3;
-export const ORDER_RECEIPT_LOOKUP_PAGE_SIZE = 2;
+export const ORDER_WINDOW_LOOKUP_PAGE_SIZE = 100;
+const MAX_LISTING_UNIX_SECONDS = 100_000_000_000;
 
 interface RazorpayOrderClient {
   orders: {
@@ -29,7 +31,7 @@ interface RazorpayOrderClient {
       receipt: string;
       notes: Record<string, string>;
     }): Promise<{ id?: string }>;
-    all(params: { receipt: string; count: number; skip: number }): Promise<unknown>;
+    all(params: { from: number; to: number; count: number; skip: number }): Promise<unknown>;
   };
 }
 
@@ -205,7 +207,11 @@ function readListedOrder(item: unknown): ListedProviderOrder | null {
   };
 }
 
-export function interpretOrderReceiptPage(payload: unknown): OrderReceiptLookup {
+function isListingUnixSeconds(value: number): boolean {
+  return Number.isInteger(value) && value > 0 && value < MAX_LISTING_UNIX_SECONDS;
+}
+
+export function interpretOrderWindowPage(payload: unknown): OrderWindowLookup {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
     return { kind: 'malformed' };
   }
@@ -213,43 +219,48 @@ export function interpretOrderReceiptPage(payload: unknown): OrderReceiptLookup 
   if (!Array.isArray(items)) {
     return { kind: 'malformed' };
   }
-  if (items.length >= ORDER_RECEIPT_LOOKUP_PAGE_SIZE) {
-    return { kind: 'incomplete' };
-  }
   const count = (payload as { count?: unknown }).count;
   if (typeof count !== 'number' || !Number.isInteger(count) || count !== items.length) {
     return { kind: 'malformed' };
   }
-  if (items.length === 0) {
-    return { kind: 'complete', orders: [] };
-  }
-
-  const order = readListedOrder(items[0]);
-  if (!order) {
+  if (items.length > ORDER_WINDOW_LOOKUP_PAGE_SIZE) {
     return { kind: 'malformed' };
   }
-  return { kind: 'complete', orders: [order] };
+
+  const orders: ListedProviderOrder[] = [];
+  for (const item of items) {
+    const order = readListedOrder(item);
+    if (!order) {
+      return { kind: 'malformed' };
+    }
+    orders.push(order);
+  }
+  if (items.length === ORDER_WINDOW_LOOKUP_PAGE_SIZE) {
+    return { kind: 'incomplete' };
+  }
+  return { kind: 'complete', orders };
 }
 
-export async function listOrdersByReceiptWithClient(
+export async function listOrdersInWindowWithClient(
   client: RazorpayOrderClient,
-  receipt: string,
+  input: ListOrdersInWindowInput,
   timeoutMs = ORDER_REQUEST_TIMEOUT_MS
-): Promise<OrderReceiptLookup> {
-  if (receipt.length < 1 || receipt.length > RECEIPT_MAX_LENGTH) {
+): Promise<OrderWindowLookup> {
+  if (!isListingUnixSeconds(input.from) || !isListingUnixSeconds(input.to) || input.from >= input.to) {
     throw new PaymentProviderRejectedError();
   }
 
   try {
     const payload = await withTimeout(
       client.orders.all({
-        receipt,
-        count: ORDER_RECEIPT_LOOKUP_PAGE_SIZE,
+        from: input.from,
+        to: input.to,
+        count: ORDER_WINDOW_LOOKUP_PAGE_SIZE,
         skip: 0
       }),
       timeoutMs
     );
-    return interpretOrderReceiptPage(payload);
+    return interpretOrderWindowPage(payload);
   } catch (error) {
     if (error instanceof PaymentProviderOutcomeUnknownError || error instanceof PaymentProviderRejectedError) {
       throw error;
@@ -291,8 +302,8 @@ export const razorpayOrderProvider: PaymentOrderProvider = {
     return createOrderWithClient(razorpayClient(), input);
   },
 
-  listOrdersByReceipt(receipt: string): Promise<OrderReceiptLookup> {
-    return listOrdersByReceiptWithClient(razorpayClient(), receipt);
+  listOrdersInWindow(input: ListOrdersInWindowInput): Promise<OrderWindowLookup> {
+    return listOrdersInWindowWithClient(razorpayClient(), input);
   },
 
   verifyOrderSignature(input: VerifyOrderSignatureInput): boolean {

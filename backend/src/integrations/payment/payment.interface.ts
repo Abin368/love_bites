@@ -23,7 +23,12 @@ export interface ListedProviderOrder {
   notesPaymentId: string | null;
 }
 
-export type OrderReceiptLookup =
+export interface ListOrdersInWindowInput {
+  from: number;
+  to: number;
+}
+
+export type OrderWindowLookup =
   | { kind: 'complete'; orders: ListedProviderOrder[] }
   | { kind: 'incomplete' }
   | { kind: 'malformed' };
@@ -33,7 +38,7 @@ export interface PaymentOrderProvider {
   isVerificationConfigured(): boolean;
   publicKeyId(): string;
   createOrder(input: CreatePaymentOrderInput): Promise<CreatedPaymentOrder>;
-  listOrdersByReceipt(receipt: string): Promise<OrderReceiptLookup>;
+  listOrdersInWindow(input: ListOrdersInWindowInput): Promise<OrderWindowLookup>;
   verifyOrderSignature(input: VerifyOrderSignatureInput): boolean;
 }
 
