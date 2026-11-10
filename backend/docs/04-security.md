@@ -267,6 +267,13 @@ The write is one PostgreSQL transaction. Both users are locked in canonical id o
   * User IDs, display names, cities, timestamps, and photo URLs are not queried or returned for non-Premium accounts.
   * A qualifying Premium caller receives at most 50 cards. Each card is `userId`, `firstName`, `age`, `city`, `distanceKm`, `likedAt`, and `primaryPhotoUrl`. `primaryPhotoUrl` is a 3600-second presigned GET for the admirer's active primary photo. The storage key is used only to sign that URL and is not serialized. Latitude, longitude, and `profiles.location` are not serialized. `count` remains the full eligible total when the list is capped.
 
+### 12.4 Match list
+`GET /api/v1/matches` is implemented. The route uses `authenticate` and `requireRole('USER')`. `requireVerified` is not on the route. The service requires a verified email or phone and a complete profile with location and dating preferences. Premium is not checked. Free and Premium callers receive the same card.
+
+The query returns a row only when the caller is `user_one_id` or `user_two_id`, `matches.status` is `ACTIVE`, and the match has a conversation. `UNMATCHED`, `UNDONE`, and third-party matches are absent. A block in either direction omits that pair and leaves the rest of the page. The other account must have `deleted_at` null and `status = 'ACTIVE'`, so a soft-deleted, suspended, banned, or unverified partner is omitted.
+
+The card is the other user's id, first name, completed age, city, and a 3600-second presigned primary-photo URL. `primaryPhotoUrl` is null when no active primary photo exists. The storage key is used only to sign that URL and is not serialized. Email, phone, date of birth, bio, occupation, gender, coordinates, and distance are not serialized. `lastMessage` is the latest non-deleted message for that page's conversations, with `mediaUrl` null. `unreadCount` counts only the other participant's unread, non-deleted messages. The route does not write `read_at`, matches, conversations, messages, quota, credits, notifications, Redis, or a socket event. A signing failure returns no partial item list.
+
 ---
 
 ## 13. Privacy and Sensitive Data Protection
@@ -529,6 +536,7 @@ Before creating a Pull Request or deploying code, verify that all applicable ite
 * [ ] Admin endpoints enforce `requireRole('ADMIN')`.
 * [ ] Resource ownership verified for all mutating operations (`resource.user_id === req.user.id`).
 * [x] UNMATCH (`DELETE /api/v1/matches/:matchId`) allows either participant of an `ACTIVE` match and returns `404 MATCH_NOT_FOUND` for every other match id. It does not use Redis. It does not emit `match:unmatch`.
+* [x] Match list (`GET /api/v1/matches`) is limited to the caller's active matches. A block in either direction and a partner who is not `ACTIVE` are omitted. The response does not include storage keys or private profile fields. The handler does not write.
 * [x] Block (`POST /api/v1/blocks/:userId`, `GET /api/v1/blocks`, `DELETE /api/v1/blocks/:userId`) is limited to role `USER`. List and delete use only the caller's outgoing rows. A duplicate block is `409 CONFLICT`. Self-block is `400 SELF_INTERACTION`.
 * [x] Send message (`POST /api/v1/conversations/:conversationId/messages`) verifies participant ownership, active match/conversation state, and bidirectional blocks. Missing or foreign conversations return `404 RESOURCE_NOT_FOUND`.
 

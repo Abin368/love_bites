@@ -13,11 +13,11 @@ This document defines the **RESTful API Specification** and **Socket.IO Realtime
 
 ### Implementation status
 
-Phase 2 authentication, Phase 3 onboarding, Phase 4 Discovery, and Phase 5 slices for PASS, LIKE and match creation, SUPER LIKE, UNDO, and UNMATCH are implemented. Phase 6 chat (HTTP TEXT, free quota, history, read receipts, unread counts, inbox, conversation details, Premium media upload/confirm/download) and Socket.IO foundation plus `chat:message:send`, `chat:message:new`, `chat:message:read`, and typing events are implemented. Phase 7 block management and report submission are implemented. Phase 8 plan catalog, subscription read/cancel, entitlements/usage snapshots, and catalog-backed daily quotas are implemented. Phase 9 Razorpay Order checkout, read-only payment verification, checkout expiration of elapsed nonterminal subscriptions, and `payment.captured` webhook activation are implemented. Internal Order-ID backfill exists and is not a public route.
+Phase 2 authentication, Phase 3 onboarding, Phase 4 Discovery, and Phase 5 slices for PASS, LIKE and match creation, SUPER LIKE, UNDO, UNMATCH, and the match list are implemented. Phase 6 chat (HTTP TEXT, free quota, history, read receipts, unread counts, inbox, conversation details, Premium media upload/confirm/download) and Socket.IO foundation plus `chat:message:send`, `chat:message:new`, `chat:message:read`, and typing events are implemented. Phase 7 block management and report submission are implemented. Phase 8 plan catalog, subscription read/cancel, entitlements/usage snapshots, and catalog-backed daily quotas are implemented. Phase 9 Razorpay Order checkout, read-only payment verification, checkout expiration of elapsed nonterminal subscriptions, and `payment.captured` webhook activation are implemented. Internal Order-ID backfill exists and is not a public route.
 
-**Mounted live sections (see each subsection for the contract):** **4**, **11**, **12**, **14**, **19**, **20**, **21**, **22.2**, **23.1**, **23.2**, **24.1–24.7**, **25**, **26.1**, **27.2**, **28.1**, **28.2**, **28.3**, **29.1**, **29.2**, **30.1**, **30.2**, **31.3**, **32** (implemented events only), and **33** (`payment.captured` only). Health checks are also live: `GET /health` and `GET /api/v1/health`.
+**Mounted live sections (see each subsection for the contract):** **4**, **11**, **12**, **14**, **19**, **20**, **21**, **22.1**, **22.2**, **23.1**, **23.2**, **24.1–24.7**, **25**, **26.1**, **27.2**, **28.1**, **28.2**, **28.3**, **29.1**, **29.2**, **30.1**, **30.2**, **31.3**, **32** (implemented events only), and **33** (`payment.captured` only). Health checks are also live: `GET /health` and `GET /api/v1/health`.
 
-**Not mounted / not implemented:** richer profile views in section **13**; `PUT /api/v1/me/interests`, `PUT /api/v1/me/relationship-intentions`, `GET /api/v1/dating-preferences`, `PUT /api/v1/dating-preferences`, `PUT /api/v1/location`, and `PATCH /api/v1/onboarding/profile`; `GET /api/v1/matches` and rematch (section **22.1**); notifications; boosts; admin report review and other admin routes beyond plan price (section **31.2**); conversation rooms; Razorpay Subscriptions; renewal, refunds, grace assignment, plan switching, and the subscription reconciliation worker. Match and conversation rows are created by LIKE and SUPER LIKE. UNMATCH does not delete them. The approved 40-interest production catalog is seeded by `20261102120004-seed-interest-catalog.js`. Seed plan prices are placeholders. `plan_features` is empty; runtime Premium gates use `hasActivePremium`, not dynamic feature grants.
+**Not mounted / not implemented:** richer profile views in section **13**; `PUT /api/v1/me/interests`, `PUT /api/v1/me/relationship-intentions`, `GET /api/v1/dating-preferences`, `PUT /api/v1/dating-preferences`, `PUT /api/v1/location`, and `PATCH /api/v1/onboarding/profile`; rematch; notifications; boosts; admin report review and other admin routes beyond plan price (section **31.2**); conversation rooms; Razorpay Subscriptions; renewal, refunds, grace assignment, plan switching, and the subscription reconciliation worker. Match and conversation rows are created by LIKE and SUPER LIKE. UNMATCH does not delete them. The approved 40-interest production catalog is seeded by `20261102120004-seed-interest-catalog.js`. Seed plan prices are placeholders. `plan_features` is empty; runtime Premium gates use `hasActivePremium`, not dynamic feature grants.
 
 ### Core Architectural Principles:
 * **Strict REST Semantics:** Standard HTTP verbs (`GET`, `POST`, `PATCH`, `PUT`, `DELETE`) with resource-oriented URIs.
@@ -112,7 +112,7 @@ Live routes that require `Authorization: Bearer <accessToken>`:
 * `GET /api/v1/onboarding/status` and `POST /api/v1/onboarding/complete`.
 * `POST /api/v1/profile-photos/upload-url`, `POST /api/v1/profile-photos/confirm`, `GET /api/v1/profile-photos`, `PATCH /api/v1/profile-photos/:photoId`, and `DELETE /api/v1/profile-photos/:photoId`.
 * `GET /api/v1/discovery`, `POST /api/v1/discovery/:userId/pass`, `POST /api/v1/discovery/:userId/like`, `POST /api/v1/discovery/:userId/super-like`, and `POST /api/v1/discovery/undo`.
-* `DELETE /api/v1/matches/:matchId`.
+* `GET /api/v1/matches` and `DELETE /api/v1/matches/:matchId`.
 * `GET /api/v1/conversations`.
 * `POST /api/v1/conversations/:conversationId/messages`.
 * `POST /api/v1/conversations/:conversationId/media-upload-url`.
@@ -131,7 +131,7 @@ Live routes that require `Authorization: Bearer <accessToken>`:
 * `POST /api/v1/reports`.
 * `PATCH /api/v1/conversations/:conversationId/read`.
 
-Those profile, onboarding, photo, discovery, unmatch, chat, block, report, entitlements, usage, subscription, and payment routes also require role `USER`. `requireVerified` is not applied on the route. An unverified `USER` may call profile, onboarding, photo, entitlements, usage, subscription read/cancel, payments, blocks, and reports. Discovery, PASS, LIKE, SUPER LIKE, UNDO, UNMATCH, the conversation inbox, conversation details, send message, media upload URL, media confirmation, media download, message history, unread count, and read receipts check verification in the service and return `403 EMAIL_NOT_VERIFIED` or `403 PHONE_NOT_VERIFIED`. Entitlements, the usage snapshot, subscription read/cancel, payments, blocks, and reports do not check verification or profile completion. Any other role, including `ADMIN`, receives `403 FORBIDDEN` on these `USER` routes. Suspended and banned accounts are rejected with `403` by the authentication middleware.
+Those profile, onboarding, photo, discovery, unmatch, chat, block, report, entitlements, usage, subscription, and payment routes also require role `USER`. `requireVerified` is not applied on the route. An unverified `USER` may call profile, onboarding, photo, entitlements, usage, subscription read/cancel, payments, blocks, and reports. Discovery, PASS, LIKE, SUPER LIKE, UNDO, UNMATCH, the match list, the conversation inbox, conversation details, send message, media upload URL, media confirmation, media download, message history, unread count, and read receipts check verification in the service and return `403 EMAIL_NOT_VERIFIED` or `403 PHONE_NOT_VERIFIED`. Entitlements, the usage snapshot, subscription read/cancel, payments, blocks, and reports do not check verification or profile completion. Any other role, including `ADMIN`, receives `403 FORBIDDEN` on these `USER` routes. Suspended and banned accounts are rejected with `403` by the authentication middleware.
 
 The live admin route is `PATCH /api/v1/admin/config/plans/:planId` in section 31.3. It uses `authenticate` and `requireRole('ADMIN')`. `requireVerified` is not applied. Other admin routes are not mounted. `POST /api/v1/webhooks/razorpay` is public (no user JWT) and is documented in section 33.
 
@@ -652,7 +652,7 @@ From login `user`, and from access-token claims:
 | 401 | `INVALID_TOKEN` | Expired or bad access token: try refresh once. Refresh, verify, and reset failures: go to the relevant form, do not loop. |
 | 401 | `INVALID_CREDENTIALS` | Show the invalid-credentials message. Do not say which field was wrong. |
 | 403 | `ACCOUNT_SUSPENDED` or `ACCOUNT_BANNED` | Block the session and show the message. Do not refresh. |
-| 403 | `EMAIL_NOT_VERIFIED` or `PHONE_NOT_VERIFIED` | Not returned by the Phase 2 auth routes. Discovery, PASS, LIKE, SUPER LIKE, UNDO, UNMATCH, and Who Liked You return these when the caller is unverified. |
+| 403 | `EMAIL_NOT_VERIFIED` or `PHONE_NOT_VERIFIED` | Not returned by the Phase 2 auth routes. Discovery, PASS, LIKE, SUPER LIKE, UNDO, UNMATCH, the match list, and Who Liked You return these when the caller is unverified. |
 | 404 | `USER_NOT_FOUND` | Resend only. The identifier has no account. |
 | 409 | `DUPLICATE_IDENTIFIER` | Registration. Offer login. |
 | 422 | `UNDERAGE_NOT_PERMITTED` | Registration. Block submit. |
@@ -661,11 +661,11 @@ From login `user`, and from access-token claims:
 
 ### 11.12 What is live
 
-Live now: registration, email and phone verification, resend, login, refresh, logout, forgot-password, reset-password, the public catalog reads in section 11.13, the authenticated basic profile API in section 11.14, onboarding interests and relationship intentions in section 11.15, profile photos in section 14, dating preferences in section 12.5, location in section 12.6, onboarding status in section 12.1, onboarding completion in section 12.7, `GET /api/v1/discovery` in section 19, PASS, LIKE, SUPER LIKE, and UNDO in sections 20 and 21, UNMATCH in section 22.2, block management in section 25, and `POST /api/v1/reports` in section 26.1.
+Live now: registration, email and phone verification, resend, login, refresh, logout, forgot-password, reset-password, the public catalog reads in section 11.13, the authenticated basic profile API in section 11.14, onboarding interests and relationship intentions in section 11.15, profile photos in section 14, dating preferences in section 12.5, location in section 12.6, onboarding status in section 12.1, onboarding completion in section 12.7, `GET /api/v1/discovery` in section 19, PASS, LIKE, SUPER LIKE, and UNDO in sections 20 and 21, the match list in section 22.1, UNMATCH in section 22.2, block management in section 25, and `POST /api/v1/reports` in section 26.1.
 
-Phase 3 onboarding is complete. Phase 4 — Discovery is complete. Phase 5 slices for PASS, LIKE and match creation, SUPER LIKE, UNDO, and UNMATCH are complete. `GET /api/v1/matches` is not implemented. Rematch is not implemented. Gender, relationship-intention, and approved interest seed data exist.
+Phase 3 onboarding is complete. Phase 4 — Discovery is complete. Phase 5 slices for PASS, LIKE and match creation, SUPER LIKE, UNDO, UNMATCH, and the match list are complete. Rematch is not implemented. Gender, relationship-intention, and approved interest seed data exist.
 
-Not implemented: `PUT /api/v1/me/interests`, `PUT /api/v1/me/relationship-intentions`, `GET /api/v1/dating-preferences`, `PUT /api/v1/dating-preferences`, `PUT /api/v1/location`, `PATCH /api/v1/onboarding/profile`, the richer profile views in section 13, `GET /api/v1/matches`, rematch, notifications, boosts, and admin report review. Do not call those paths. Live and mounted: `GET /api/v1/likes/who-liked-me`; `DELETE /api/v1/matches/:matchId`; chat and media routes where their subsections say implemented; `GET /api/v1/subscriptions/plans`, `GET /api/v1/subscriptions/me`, `POST /api/v1/subscriptions/cancel`; `GET /api/v1/me/entitlements`, `GET /api/v1/me/usage`; `POST /api/v1/payments/checkout`, `POST /api/v1/payments/verify`; `POST /api/v1/webhooks/razorpay` for `payment.captured`; and `PATCH /api/v1/admin/config/plans/:planId`.
+Not implemented: `PUT /api/v1/me/interests`, `PUT /api/v1/me/relationship-intentions`, `GET /api/v1/dating-preferences`, `PUT /api/v1/dating-preferences`, `PUT /api/v1/location`, `PATCH /api/v1/onboarding/profile`, the richer profile views in section 13, rematch, notifications, boosts, and admin report review. Do not call those paths. Live and mounted: `GET /api/v1/likes/who-liked-me`; `GET /api/v1/matches`; `DELETE /api/v1/matches/:matchId`; chat and media routes where their subsections say implemented; `GET /api/v1/subscriptions/plans`, `GET /api/v1/subscriptions/me`, `POST /api/v1/subscriptions/cancel`; `GET /api/v1/me/entitlements`, `GET /api/v1/me/usage`; `POST /api/v1/payments/checkout`, `POST /api/v1/payments/verify`; `POST /api/v1/webhooks/razorpay` for `payment.captured`; and `PATCH /api/v1/admin/config/plans/:planId`.
 
 Later sections remain the planned contract unless a subsection says it is implemented.
 
@@ -1474,39 +1474,62 @@ Photo objects returned after confirm, list, and patch are `{ "id", "url", "displ
 
 ## 22. Match APIs
 
-`GET /api/v1/matches` is not mounted. `DELETE /api/v1/matches/:matchId` is implemented in section 22.2. LIKE and SUPER LIKE insert an `ACTIVE` match and an `ACTIVE` conversation when a reciprocal `LIKE` or `SUPER_LIKE` exists. UNDO of that LIKE moves the current `ACTIVE` match to `UNDONE` and closes its `ACTIVE` conversation. UNDO leaves `unmatched_at` and `unmatched_by_user_id` null. UNMATCH is a different action: it sets `UNMATCHED` and records who ended the match. It does not change `likes`. Rematch, which would insert a later `ACTIVE` row, is not implemented. `DELETE /api/v1/matches/:matchId` does not emit Socket.IO `match:unmatch`. `POST /api/v1/blocks/:userId` emits that event after commit when the block changes an `ACTIVE` match to `UNMATCHED` and the match has a conversation. See section 25.1.
+`GET /api/v1/matches` is implemented in section 22.1. `DELETE /api/v1/matches/:matchId` is implemented in section 22.2. LIKE and SUPER LIKE insert an `ACTIVE` match and an `ACTIVE` conversation when a reciprocal `LIKE` or `SUPER_LIKE` exists. UNDO of that LIKE moves the current `ACTIVE` match to `UNDONE` and closes its `ACTIVE` conversation. UNDO leaves `unmatched_at` and `unmatched_by_user_id` null. UNMATCH is a different action: it sets `UNMATCHED` and records who ended the match. It does not change `likes`. Rematch, which would insert a later `ACTIVE` row, is not implemented. `DELETE /api/v1/matches/:matchId` does not emit Socket.IO `match:unmatch`. `POST /api/v1/blocks/:userId` emits that event after commit when the block changes an `ACTIVE` match to `UNMATCHED` and the match has a conversation. See section 25.1.
 
 ### 22.1 List Active Matches
+**Implemented.** Read-only list of the caller's active matches. Premium is not required. The route does not send a message, mark anything read, consume quota, change match or conversation status, write Redis, or emit a Socket.IO event.
+
 * **Method & Path:** `GET /api/v1/matches`
-* **Auth:** Authenticated
-* **Query Params:** `limit` (default 20), `cursor`
-* **Success Response (`200 OK`):**
+* **Auth:** `Authorization: Bearer <accessToken>` and role `USER`. Middleware is `authenticate`, `requireRole('USER')`, then query validation. `requireVerified` is not on the route. The service checks verification and returns `403 EMAIL_NOT_VERIFIED` or `403 PHONE_NOT_VERIFIED`. A non-`USER` role is `403 FORBIDDEN`. A suspended caller is `403 ACCOUNT_SUSPENDED`. A banned caller is `403 ACCOUNT_BANNED`. A missing token is `401 AUTH_REQUIRED`. An invalid token, or a soft-deleted caller, is `401 INVALID_TOKEN`.
+* **Incomplete caller:** `400 PROFILE_INCOMPLETE`. The caller needs a complete profile, a location, and dating preferences. Message: `Onboarding is incomplete.`
+* **Query `limit`:** optional integer from 1 through 50. Omitted means 20. `0`, negatives, values above 50, decimals, and non-integers are `400 VALIDATION_ERROR`. The value is not clamped. Detail field: `limit`. Message: `Limit must be an integer from 1 to 50.`
+* **Query `cursor`:** optional. It is the last match returned by the previous page. The value is canonical base64 of a JSON object `{ "matchedAt": "<ISO-8601 date-time>", "matchId": "<match uuid>" }`. A bad encoding, non-JSON payload, missing field, invalid date-time, invalid match UUID, or extra cursor field is `400 VALIDATION_ERROR`. The cursor id does not have to exist.
+* **Unsupported query parameters:** `400 VALIDATION_ERROR`. Detail field is the parameter name. Message: `Unsupported query parameter.` Another user's id is not a supported filter.
+* **Eligible rows:** `matches.status` is `ACTIVE`, the caller is `user_one_id` or `user_two_id`, and the match has a conversation. `UNMATCHED` and `UNDONE` rows are omitted. A match with no conversation is omitted. A match between two other users is omitted.
+* **Other participant:** the user who is not the caller. `users.deleted_at` must be null and `users.status` must be `ACTIVE`. A soft-deleted, `DELETED`, `SUSPENDED`, `BANNED`, or `UNVERIFIED` partner is omitted. The caller's own account status is enforced by authentication, not by this partner filter.
+* **Block:** a block in either direction omits that match only. The rest of the list is still returned. The route does not return `409 BLOCKED_USER` and does not change the block, match, or conversation.
+* **Order:** `matches.matched_at DESC`, then `matches.id DESC`. The sort is not `conversations.last_message_at`.
+* **Card:** `user` is `id`, `firstName`, `age`, `city`, and `primaryPhotoUrl`. `age` is completed years from `EXTRACT(YEAR FROM AGE(date_of_birth))`. `city` may be null. `primaryPhotoUrl` is a 3600-second presigned GET for the other user's active primary photo, or `null` when that photo does not exist. The storage key, photo id, and filename are not returned. Signing runs after the database reads. A signing failure returns no partial item list. `STORAGE_NOT_CONFIGURED` is preserved.
+* **Preview:** `lastMessage` is the latest non-deleted message in that conversation, ordered by `messages.created_at DESC, messages.id DESC`, using the inbox preview query. A conversation with no non-deleted messages returns `lastMessage: null`. Soft-deleted rows are never returned. `content` is the stored value, including null. `mediaUrl` is `null`. A download URL is not included. `media_storage_key` is not returned.
+* **Unread count:** incoming non-deleted messages from the other participant with `read_at IS NULL`, every stored message type, using the inbox unread query for the current page. The caller's own messages do not count. A conversation with no such rows returns `0`.
+* **Page:** at most `limit` matches. The query fetches `limit + 1`. `hasMore` is true when another eligible row exists. `nextCursor` is then the base64 cursor of the last returned match. Otherwise `nextCursor` is `null` and `hasMore` is false. An empty list returns `items: []`.
+* **Cursor continuation:** rows with an earlier `matched_at`, or the same `matched_at` and a smaller match id. The cursor does not restart at the first page.
+* **Omitted fields:** email, phone, date of birth, bio, occupation, gender, coordinates, distance, storage keys, photo ids, filenames, account status, and subscription data.
+* **Read-only:** no insert, update, or delete. `read_at`, match status, conversation status, `usage_records`, credits, notifications, and subscriptions stay unchanged. No Socket.IO event is emitted. No Redis key is written.
+* **Success Response (`200 OK`):** Message: `Matches retrieved.`
   ```json
   {
     "success": true,
     "data": {
       "items": [
         {
-          "matchId": "m-8821c4b5-1111-4000-8000-000000000001",
+          "matchId": "8821c4b5-1111-4000-8000-000000000001",
           "matchedAt": "2026-09-15T08:30:00.000Z",
-          "conversationId": "conv-uuid-1",
+          "conversationId": "a1b2c3d4-1111-4000-8000-000000000002",
           "user": {
             "id": "c3e7d81b-9932-4233-812c-6f5e39482130",
             "firstName": "Jordan",
             "age": 25,
             "city": "Bengaluru",
-            "primaryPhotoUrl": "https://cdn.lovebite.app/signed/..."
+            "primaryPhotoUrl": "https://cdn.lovebite.app/signed/photo"
           },
           "lastMessage": {
-            "content": "Hey Alex! Loved your hiking photos.",
-            "sentAt": "2026-09-15T08:35:00.000Z"
-          }
+            "id": "b7e1d2c3-1111-4000-8000-000000000003",
+            "senderId": "c3e7d81b-9932-4233-812c-6f5e39482130",
+            "messageType": "TEXT",
+            "content": "Hey Alex!",
+            "createdAt": "2026-09-15T08:35:00.000Z",
+            "mediaUrl": null
+          },
+          "unreadCount": 2
         }
       ],
-      "pagination": { "nextCursor": null, "hasMore": false, "limit": 20 }
-    }
+      "pagination": { "limit": 20, "nextCursor": null, "hasMore": false }
+    },
+    "message": "Matches retrieved."
   }
   ```
+  `lastMessage` is `null` when the conversation has no visible message. `primaryPhotoUrl` is `null` when the other user has no active primary photo. `city` may be `null`. `unreadCount` is an integer, including `0`. `content` may be `null` for a media message. `mediaUrl` is always `null`.
 
 ---
 

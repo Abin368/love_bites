@@ -13,7 +13,8 @@ import {
   ValidationError
 } from '../../utils/errors';
 import { consumeDailyQuota } from '../entitlements/usage.service';
-import type { EligibleAdmirerRow } from './likes.data-access';
+import { countInboxUnreadMessages, listInboxLatestMessages } from '../chat/chat.data-access';
+import type { EligibleAdmirerRow, ActiveMatchCardRow } from './likes.data-access';
 import {
   consumeSuperLikeCredit,
   findPassTarget,
@@ -35,6 +36,7 @@ import {
   findLatestUndoableAction,
   findMatchById,
   markUndoableAction,
+  listActiveMatchCards,
   undoActiveMatch,
   unmatchActiveMatch
 } from './likes.data-access';
@@ -50,11 +52,15 @@ import type {
   UndoProfileResult,
   UnmatchInput,
   UnmatchResult,
+  ListMatchesInput,
+  ListMatchesResult,
+  MatchListItem,
+  MatchListLastMessage,
   WhoLikedMeAdmirer,
   WhoLikedMeInput,
   WhoLikedMeResult
 } from './likes.types';
-import { matchIdSchema, targetUserIdSchema } from './likes.validator';
+import { encodeMatchListCursor, matchIdSchema, targetUserIdSchema } from './likes.validator';
 
 const LIKE_MESSAGE = 'Profile liked.';
 const SUPER_LIKE_MESSAGE = 'Profile super liked.';
@@ -66,6 +72,7 @@ const INSUFFICIENT_SUPER_LIKE_CREDITS_MESSAGE = 'You do not have any Super Like 
 const MATCH_NOT_FOUND_MESSAGE = 'Active match record does not exist.';
 const WHO_LIKED_ME_PREMIUM_MESSAGE = 'Admirers retrieved successfully.';
 const WHO_LIKED_ME_DOWNLOAD_TTL_SECONDS = 3600;
+const MATCH_LIST_DOWNLOAD_TTL_SECONDS = 3600;
 const IDEMPOTENCY_TTL_SECONDS = 120;
 const IDEMPOTENCY_PENDING = 'pending';
 
@@ -646,6 +653,122 @@ async function presentAdmirer(row: EligibleAdmirerRow): Promise<WhoLikedMeAdmire
     distanceKm: oneDecimal(row.distanceKm),
     likedAt: likedAtIso(row.likedAt),
     primaryPhotoUrl: signed.url
+  };
+}
+
+function asMatchInstant(value: Date | string): Date {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    throw new Error('Match timestamp query returned an invalid value.');
+  }
+  return date;
+}
+
+function asUnreadCount(value: number | string | undefined): number {
+  if (value === undefined) {
+    return 0;
+  }
+  const unreadCount = typeof value === 'number' ? value : Number(value);
+  if (!Number.isInteger(unreadCount) || unreadCount < 0) {
+    throw new Error('Unread count query returned an invalid value.');
+  }
+  return unreadCount;
+}
+
+function asCompletedYears(value: number | string): number {
+  const age = typeof value === 'number' ? value : Number(value);
+  if (!Number.isInteger(age) || age < 0) {
+    throw new Error('Match age query returned an invalid value.');
+  }
+  return age;
+}
+
+export async function listMatches(input: ListMatchesInput): Promise<ListMatchesResult> {
+  if (!input.isVerified) {
+    await rejectUnverified(input.callerId);
+  }
+
+  const context = await findViewerDiscoveryContext(input.callerId);
+  if (!context || !context.isProfileComplete || !context.hasLocation || !context.hasDatingPreferences) {
+    throw incomplete();
+  }
+
+  const rows = await listActiveMatchCards(input.callerId, input.limit + 1, input.cursor);
+  const hasMore = rows.length > input.limit;
+  const page = hasMore ? rows.slice(0, input.limit) : rows;
+  const conversationIds = page.map((row) => row.conversationId);
+  const previews = conversationIds.length === 0 ? [] : await listInboxLatestMessages(conversationIds);
+  const unreadRows = conversationIds.length === 0 ? [] : await countInboxUnreadMessages(input.callerId, conversationIds);
+  const previewByConversation = new Map(previews.map((row) => [row.conversationId.toLowerCase(), row]));
+  const unreadByConversation = new Map(unreadRows.map((row) => [row.conversationId.toLowerCase(), row.unreadCount]));
+
+  const signedUrls = new Map<string, string>();
+  await Promise.all(
+    page.map(async (row) => {
+      if (!row.storageKey) {
+        return;
+      }
+      const signed = await photoStorage.createDownloadUrl({
+        storageKey: row.storageKey,
+        expiresInSeconds: MATCH_LIST_DOWNLOAD_TTL_SECONDS
+      });
+      signedUrls.set(row.matchId.toLowerCase(), signed.url);
+    })
+  );
+
+  const items: MatchListItem[] = page.map((row) => toMatchListItem(row, previewByConversation, unreadByConversation, signedUrls));
+  const last = page[page.length - 1];
+
+  return {
+    items,
+    nextCursor: hasMore && last ? encodeMatchListCursor(asMatchInstant(last.matchedAt), last.matchId) : null,
+    hasMore,
+    limit: input.limit
+  };
+}
+
+function signedPrimaryPhotoUrl(row: ActiveMatchCardRow, signedUrls: Map<string, string>): string | null {
+  if (!row.storageKey) {
+    return null;
+  }
+  const url = signedUrls.get(row.matchId.toLowerCase());
+  if (!url) {
+    throw new InternalServerError('Internal server error', [], 'INTERNAL_SERVER_ERROR', true);
+  }
+  return url;
+}
+
+function toMatchListItem(
+  row: ActiveMatchCardRow,
+  previewByConversation: Map<string, { id: string; senderId: string; messageType: MatchListLastMessage['messageType']; content: string | null; createdAt: Date | string }>,
+  unreadByConversation: Map<string, number | string>,
+  signedUrls: Map<string, string>
+): MatchListItem {
+  const preview = previewByConversation.get(row.conversationId.toLowerCase());
+  const lastMessage: MatchListLastMessage | null = preview
+    ? {
+        id: preview.id,
+        senderId: preview.senderId,
+        messageType: preview.messageType,
+        content: preview.content,
+        createdAt: asMatchInstant(preview.createdAt).toISOString(),
+        mediaUrl: null
+      }
+    : null;
+
+  return {
+    matchId: row.matchId,
+    matchedAt: asMatchInstant(row.matchedAt).toISOString(),
+    conversationId: row.conversationId,
+    user: {
+      id: row.userId,
+      firstName: row.firstName,
+      age: asCompletedYears(row.age),
+      city: row.city,
+      primaryPhotoUrl: signedPrimaryPhotoUrl(row, signedUrls)
+    },
+    lastMessage,
+    unreadCount: asUnreadCount(unreadByConversation.get(row.conversationId.toLowerCase()))
   };
 }
 

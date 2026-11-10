@@ -113,3 +113,46 @@ export interface WhoLikedMeResult {
   data: WhoLikedMeData;
   message: string;
 }
+
+export interface MatchListCursor {
+  matchedAt: string;
+  matchId: string;
+}
+
+export interface ListMatchesInput {
+  callerId: string;
+  isVerified: boolean;
+  limit: number;
+  cursor: MatchListCursor | null;
+}
+
+export interface MatchListLastMessage {
+  id: string;
+  senderId: string;
+  messageType: 'TEXT' | 'IMAGE' | 'GIF' | 'VIDEO' | 'VOICE';
+  content: string | null;
+  createdAt: string;
+  mediaUrl: null;
+}
+
+export interface MatchListItem {
+  matchId: string;
+  matchedAt: string;
+  conversationId: string;
+  user: {
+    id: string;
+    firstName: string;
+    age: number;
+    city: string | null;
+    primaryPhotoUrl: string | null;
+  };
+  lastMessage: MatchListLastMessage | null;
+  unreadCount: number;
+}
+
+export interface ListMatchesResult {
+  items: MatchListItem[];
+  nextCursor: string | null;
+  hasMore: boolean;
+  limit: number;
+}

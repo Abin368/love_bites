@@ -308,7 +308,7 @@ Implement secure, dual-identifier registration (Email OR Phone), cryptographic p
 
 ## 7. Phase 3 — Profile and Onboarding
 
-**Phase 3 status (2026-10-05): complete.** Catalogs, basic profile HTTP, interests, relationship intentions, profile photos, dating preferences, location, onboarding status, and onboarding completion are implemented. **Phase 4 — Discovery is complete.** **Phase 5 slices for PASS, LIKE and match creation, SUPER LIKE, UNDO, and UNMATCH are complete.** `GET /api/v1/matches` and rematch are not implemented. The approved 40-interest production catalog is seeded by `20261102120004-seed-interest-catalog.js` (added 2026-11-02). `PATCH /api/v1/onboarding/profile`, `PUT /api/v1/location`, `PUT /api/v1/me/interests`, `PUT /api/v1/me/relationship-intentions`, `GET /api/v1/dating-preferences`, and `PUT /api/v1/dating-preferences` are not mounted.
+**Phase 3 status (2026-10-05): complete.** Catalogs, basic profile HTTP, interests, relationship intentions, profile photos, dating preferences, location, onboarding status, and onboarding completion are implemented. **Phase 4 — Discovery is complete.** **Phase 5 slices for PASS, LIKE and match creation, SUPER LIKE, UNDO, UNMATCH, and the match list are complete.** Rematch is not implemented. The approved 40-interest production catalog is seeded by `20261102120004-seed-interest-catalog.js` (added 2026-11-02). `PATCH /api/v1/onboarding/profile`, `PUT /api/v1/location`, `PUT /api/v1/me/interests`, `PUT /api/v1/me/relationship-intentions`, `GET /api/v1/dating-preferences`, and `PUT /api/v1/dating-preferences` are not mounted.
 
 Implemented in Step 1:
 
@@ -417,7 +417,7 @@ Deliver one mutually eligible candidate card with PostGIS `ST_DWithin`, strict e
 
 ## 9. Phase 5 — Likes, Passes and Matches
 
-**Partly complete (2026-10-07; Socket.IO status updated 2026-11-02).** Slice 1 PASS, Slice 2 LIKE and match creation, Slice 3 SUPER LIKE, Slice 4 UNDO, and Slice 5 UNMATCH are implemented. `GET /api/v1/matches`, rematch, and notifications are not implemented. Socket.IO is implemented in Phase 6; do not treat it as missing here. The live contract is sections 20, 21, and 22.2 of `03-api-specification.md`.
+**Partly complete (2026-11-10).** Slice 1 PASS, Slice 2 LIKE and match creation, Slice 3 SUPER LIKE, Slice 4 UNDO, Slice 5 UNMATCH, and the match list are implemented. Rematch and notifications are not implemented. Socket.IO is implemented in Phase 6; do not treat it as missing here. The live contract is sections 20, 21, 22.1, and 22.2 of `03-api-specification.md`.
 
 ### 9.1 Objectives
 Implement swipe action mechanics (`LIKE`, `PASS`, `SUPER_LIKE`), daily action quota tracking for Free users, race-condition-free mutual matching, Premium Undo, and clean Unmatching/Re-matching lifecycles.
@@ -461,7 +461,16 @@ Implement swipe action mechanics (`LIKE`, `PASS`, `SUPER_LIKE`), daily action qu
 * Does not change discovery filtering. An active outgoing `LIKE` or `SUPER_LIKE` can still hide the other user.
 * `uq_matches_single_active_pair` already allows a later `ACTIVE` match after `UNDONE` or `UNMATCHED`. Rematch is not implemented. Do not revive the old row.
 * Do not treat UNDO as unmatch. Undo leaves `unmatched_at` null and sets `is_undone`.
-* No migration was added. `GET /api/v1/matches` remains unmounted. Notifications are not written. This route does not emit Socket.IO `match:unmatch`. Block emits that event; see Phase 7.
+* No migration was added for UNMATCH. Notifications are not written. This route does not emit Socket.IO `match:unmatch`. Block emits that event; see Phase 7.
+
+#### 6. Match list (`GET /api/v1/matches`) — **Implemented**
+* Authenticated `USER`. The service checks verification and a complete profile with location and dating preferences. Premium is not required.
+* Returns the caller's `ACTIVE` matches that have a conversation, ordered by `matched_at DESC, id DESC`.
+* Omits `UNMATCHED`, `UNDONE`, third-party matches, a block in either direction, a match with no conversation, and a partner who is soft-deleted or not `ACTIVE`.
+* Each item is `matchId`, `matchedAt`, `conversationId`, the other user's `id`, `firstName`, completed `age`, `city`, and `primaryPhotoUrl`, plus `lastMessage` and `unreadCount`.
+* `primaryPhotoUrl` is a 3600-second presigned GET, or `null` when no active primary photo exists. `lastMessage` reuses the inbox preview query and keeps `mediaUrl` null. `unreadCount` reuses the inbox unread query for the page.
+* Cursor pagination: `limit` default 20, maximum 50. The cursor is base64 JSON `{ matchedAt, matchId }`.
+* Read-only. No migration was added. Rematch is not implemented.
 
 ---
 
@@ -805,7 +814,7 @@ To maintain strict adherence to dependency constraints, development should follo
 16. Matches & Canonical Pair Architecture (Matches Table, Canonical ID Sorting) — schema done; match rows created by LIKE and SUPER LIKE
 17. Mutual Matching Transaction Pipeline (Reciprocal Check, Match Creation) — done
 18. Premium Undo Service (latest LIKE or PASS, five-minute window, match reversion) — done
-19. Unmatch & Rematch Lifecycle Management — Unmatch done. Rematch and `GET /matches` not implemented.
+19. Unmatch & Rematch Lifecycle Management — Unmatch and `GET /matches` are done. Rematch is not implemented.
 20. Conversations & Messages Schema (Conversations, Messages Tables) — schema done; HTTP TEXT send, history, read receipts, unread counts, inbox, conversation details, and media upload/confirm/download are implemented. Conversation rooms are not.
 21. Chat Service & 6-Step Message Authorization Engine — done for TEXT send and media confirm authorization. HTTP TEXT send does not emit Socket.IO; socket TEXT send and media confirm emit `chat:message:new` to the recipient user room.
 22. Socket.IO Realtime Engine (Redis Adapter, Handshake Auth, Rooms) — foundation, `chat:message:send` / `chat:message:new`, read-receipt emit, and typing indicators are done on `user:{userId}` rooms. Conversation rooms are not implemented.
@@ -836,7 +845,8 @@ To maintain strict adherence to dependency constraints, development should follo
 | **Location** | Profile Module, PostGIS | `profiles` (PostGIS `location`) | `/location`, `/onboarding/location` | Integration (PostGIS Point Storage) |
 | **Discovery** | Profiles, Preferences, Location, Blocks, Passes | `profiles`, `dating_preferences`, `likes`, `matches`, `blocks`, `boost_sessions` | `GET /discovery` (implemented) | Integration (PostGIS `ST_DWithin`, mutual filters, exclusions, boost ranking) |
 | **Likes, Passes, Super Like** | Discovery, subscriptions for Premium | `likes`, `usage_records`, `matches`, `conversations`, `user_credit_balances`, `credit_transactions` | `POST /discovery/:userId/pass`, `POST /discovery/:userId/like`, `POST /discovery/:userId/super-like` | PostgreSQL integration: pass 11, like 20, super like 22 |
-| **Unmatch** | Likes Module | `matches`, `conversations` | `DELETE /matches/:matchId` | Implemented. PostgreSQL integration: 13 passed. No Redis, quota, or credit change. `GET /matches` is not implemented. |
+| **Unmatch** | Likes Module | `matches`, `conversations` | `DELETE /matches/:matchId` | Implemented. PostgreSQL integration: 13 passed. No Redis, quota, or credit change. |
+| **Match list** | Likes Module, chat preview queries | `matches`, `conversations`, `messages`, `profiles`, `profile_photos`, `users`, `blocks` | `GET /matches` | Implemented. PostgreSQL integration: 24 passed. Read-only. No migration. |
 | **Premium Undo** | Likes, Matches, Premium subscription | `likes`, `matches`, `conversations`, `subscriptions`, `plans` | `POST /discovery/undo` | PostgreSQL integration: 14 passed. No Redis idempotency. |
 | **Chat & Messaging**| Matches Module, S3, Socket.IO | `conversations`, `messages`, `usage_records` | `GET|POST /conversations...` (inbox, details, TEXT, history, read, unread, media upload/confirm/download), `chat:message:send`, `chat:typing:start`, `chat:typing:stop` | Slices 1–10 and media slices 1–3: TEXT send, free `DAILY_TEXT_MESSAGES` quota, realtime TEXT delivery, history, read receipts, typing, unread counts, inbox, conversation details, and media upload/confirm/download. Conversation rooms remain. HTTP TEXT send does not emit `chat:message:new`. |
 | **Blocks & Safety** | Users, Matches, Chat | `blocks`, `matches`, `conversations` | `POST /blocks/:userId`, `GET /blocks`, `DELETE /blocks/:userId` | Implemented. PostgreSQL integration: `tests/postgres/blocks.api.integration.test.ts`, 26 passed. No migration. |

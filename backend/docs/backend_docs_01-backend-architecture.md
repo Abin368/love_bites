@@ -503,9 +503,9 @@ The live LIKE and SUPER LIKE transaction locks both users in canonical id order,
 * **`UNDONE`:** Undo of the LIKE that created the current active match sets this status. `unmatched_at` and `unmatched_by_user_id` stay null. The `ACTIVE` conversation becomes `CLOSED` and `closed_at` is set.
 * **`UNMATCHED`:** `DELETE /api/v1/matches/:matchId` or `POST /api/v1/blocks/:userId` sets this status for an `ACTIVE` match. `unmatched_at` is `CURRENT_TIMESTAMP` and `unmatched_by_user_id` is the caller or the blocker. `updated_at` changes. The `ACTIVE` conversation becomes `CLOSED` and `closed_at` is set. Likes stay unchanged. Unblock does not change this status.
 
-The live route is `matches.routes` → `likes.controller.unmatch` → `likes.service.unmatch` → `likes.data-access` → one PostgreSQL transaction. The service reuses `lockLikeUsers` and `closeActiveConversation`. There is no repository layer.
+The live routes are `GET /api/v1/matches` and `DELETE /api/v1/matches/:matchId`. The list is `matches.routes` → `likes.controller.listMatches` → `likes.service.listMatches` → `listActiveMatchCards`, then the existing inbox functions `listInboxLatestMessages` and `countInboxUnreadMessages` for that page only. Photo signing uses `photoStorage.createDownloadUrl` after those reads, with a 3600-second TTL. The list does not lock rows and does not write. Unmatch is `likes.controller.unmatch` → `likes.service.unmatch` → `likes.data-access` → one PostgreSQL transaction. The service reuses `lockLikeUsers` and `closeActiveConversation`. There is no repository layer.
 
-Historical `UNDONE` and `UNMATCHED` rows stay in place. `uq_matches_single_active_pair` allows a later `ACTIVE` row for the same pair. Rematch is not implemented and does not revive the old row. There is no match list API. TEXT send exists under `/conversations/:conversationId/messages`. The match diagram's notification step is not implemented. `match:new` is future scope. `DELETE /api/v1/matches/:matchId` does not emit `match:unmatch`. `POST /api/v1/blocks/:userId` emits it after commit to `user:{blockedUserId}` when the block closes an active match that has a conversation.
+Historical `UNDONE` and `UNMATCHED` rows stay in place. `uq_matches_single_active_pair` allows a later `ACTIVE` row for the same pair. Rematch is not implemented and does not revive the old row. The match list returns only the caller's `ACTIVE` rows that have a conversation, omits a block in either direction, and omits a partner whose account is not `ACTIVE`. TEXT send exists under `/conversations/:conversationId/messages`. The match diagram's notification step is not implemented. `match:new` is future scope. `DELETE /api/v1/matches/:matchId` does not emit `match:unmatch`. `POST /api/v1/blocks/:userId` emits it after commit to `user:{blockedUserId}` when the block closes an active match that has a conversation.
 
 ---
 
@@ -875,7 +875,7 @@ export const validate = (schema: AnyZodObject) =>
 * API Version Prefix: `/api/v1/`
 * Routing Convention: Plural nouns (e.g., `/api/v1/users`, `/api/v1/matches`).
 * Pagination Strategy:
-  * **Cursor-based Pagination:** Planned for chat and match lists. Live Discovery returns one card and does not paginate.
+  * **Cursor-based Pagination:** Live for the conversation inbox, message history, and `GET /api/v1/matches`. Live Discovery returns one card and does not paginate.
   * **Offset-based Pagination:** Used in Admin Panel management tables.
 
 ---

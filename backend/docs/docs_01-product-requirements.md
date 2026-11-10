@@ -262,6 +262,13 @@ Reports are not a Discovery exclusion. Browsing candidate cards does not consume
 * **Undo is different:** Undo sets `likes.is_undone = true` and, for the LIKE that owns the current match, sets that match to `UNDONE` with `unmatched_at` and `unmatched_by_user_id` left null.
 * **Rematch:** not implemented. A later match would be a new `ACTIVE` row. This action does not revive the old row.
 
+#### Match list
+* **Implemented.** `GET /api/v1/matches`. Free for a verified user with a complete profile, location, and dating preferences. Premium is not required.
+* **Rows:** the caller's `ACTIVE` matches that have a conversation. `UNMATCHED` and `UNDONE` matches are absent. A third user does not see the pair. A block in either direction hides that match and leaves the others. A partner who is soft-deleted, suspended, banned, or otherwise not `ACTIVE` is absent.
+* **Card:** the other person's id, first name, completed age, city, and primary photo URL. City and the photo URL can be null. The URL is a private 3600-second download link. Email, phone, date of birth, bio, coordinates, and the storage key are not returned.
+* **Chat:** `lastMessage` is the latest message that has not been deleted, or null. `mediaUrl` is null. `unreadCount` counts only the other person's unread messages and is `0` when there are none. Each person sees their own count.
+* **Pages:** `limit` defaults to 20 and cannot exceed 50. The list is newest match first. An empty list is a successful response with `items: []`. The call does not change matches, messages, or read state.
+
 #### Undo Action Rules (Premium Only)
 * **Access:** An active Premium subscription. Free users receive `403 PREMIUM_REQUIRED`.
 * **Scope:** The latest active outgoing `LIKE` or `PASS` only. `SUPER_LIKE` is never undone. Incoming actions do not count.
@@ -496,4 +503,4 @@ The following parameter values are designated as **TBD** and must be populated v
 ## Document Status
 * **Status:** DRAFT
 * **Version:** 1.0
-* **Last Updated:** 2 November 2026. Discovery, pass, like, super like, undo, unmatch, chat through media download, read receipts, block management, `POST /api/v1/reports`, entitlements/usage snapshots, subscription read/cancel, Order checkout with one-unresolved-checkout protection (`CHECKOUT_ALREADY_OPEN`), payment verify, and `payment.captured` webhook activation match the implemented API. Rematch, who-liked-you, the match list, notifications, the admin report queue, renewal/grace/plan-switch/reconciliation, verified stuck-checkout reconciliation, additional-capture period extension, and admin taxonomy CRUD remain product scope that is not yet implemented.
+* **Last Updated:** 10 November 2026. Discovery, pass, like, super like, undo, unmatch, the match list, chat through media download, read receipts, block management, `POST /api/v1/reports`, entitlements/usage snapshots, subscription read/cancel, Order checkout with one-unresolved-checkout protection (`CHECKOUT_ALREADY_OPEN`), payment verify, and `payment.captured` webhook activation match the implemented API. Rematch, notifications, the admin report queue, renewal/grace/plan-switch/reconciliation, verified stuck-checkout reconciliation, additional-capture period extension, and admin taxonomy CRUD remain product scope that is not yet implemented. Who Liked You is implemented.

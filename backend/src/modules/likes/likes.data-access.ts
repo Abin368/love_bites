@@ -656,6 +656,89 @@ export async function listEligibleAdmirers(
   });
 }
 
+export interface ActiveMatchCardRow {
+  matchId: string;
+  matchedAt: Date | string;
+  conversationId: string;
+  userId: string;
+  firstName: string;
+  age: number | string;
+  city: string | null;
+  storageKey: string | null;
+}
+
+const ACTIVE_MATCH_CARDS_SQL = `
+SELECT
+  m.id AS "matchId",
+  m.matched_at AS "matchedAt",
+  c.id AS "conversationId",
+  partner.id AS "userId",
+  partner_profile.first_name AS "firstName",
+  CAST(EXTRACT(YEAR FROM AGE(partner_profile.date_of_birth)) AS int) AS "age",
+  partner_profile.city AS "city",
+  (
+    SELECT ph.storage_key
+    FROM profile_photos ph
+    WHERE ph.user_id = partner.id
+      AND ph.is_primary = TRUE
+      AND ph.deleted_at IS NULL
+    LIMIT 1
+  ) AS "storageKey"
+FROM matches m
+INNER JOIN conversations c ON c.match_id = m.id
+INNER JOIN users partner ON partner.id = CASE
+  WHEN m.user_one_id = CAST(:callerId AS uuid) THEN m.user_two_id
+  ELSE m.user_one_id
+END
+INNER JOIN profiles partner_profile ON partner_profile.user_id = partner.id
+WHERE m.status = 'ACTIVE'
+  AND (
+    m.user_one_id = CAST(:callerId AS uuid)
+    OR m.user_two_id = CAST(:callerId AS uuid)
+  )
+  AND partner.deleted_at IS NULL
+  AND partner.status = 'ACTIVE'
+  AND NOT EXISTS (
+    SELECT 1
+    FROM blocks b
+    WHERE (b.blocker_id = m.user_one_id AND b.blocked_id = m.user_two_id)
+       OR (b.blocker_id = m.user_two_id AND b.blocked_id = m.user_one_id)
+  )
+`;
+
+const ACTIVE_MATCH_CURSOR_SQL = `
+  AND (
+    m.matched_at < CAST(:cursorMatchedAt AS timestamptz)
+    OR (
+      m.matched_at = CAST(:cursorMatchedAt AS timestamptz)
+      AND m.id < CAST(:cursorMatchId AS uuid)
+    )
+  )
+`;
+
+const ACTIVE_MATCH_ORDER_SQL = `
+ORDER BY m.matched_at DESC, m.id DESC
+LIMIT :pageSize
+`;
+
+export async function listActiveMatchCards(
+  callerId: string,
+  pageSize: number,
+  cursor: { matchedAt: string; matchId: string } | null
+): Promise<ActiveMatchCardRow[]> {
+  const replacements: Record<string, unknown> = { callerId, pageSize };
+  const cursorSql = cursor ? ACTIVE_MATCH_CURSOR_SQL : '';
+  if (cursor) {
+    replacements.cursorMatchedAt = cursor.matchedAt;
+    replacements.cursorMatchId = cursor.matchId;
+  }
+
+  return sequelize.query<ActiveMatchCardRow>(`${ACTIVE_MATCH_CARDS_SQL}${cursorSql}${ACTIVE_MATCH_ORDER_SQL}`, {
+    replacements,
+    type: QueryTypes.SELECT
+  });
+}
+
 export async function insertActiveConversation(matchId: string, transaction: Transaction): Promise<void> {
   const now = new Date();
   await Conversation.create(
