@@ -136,7 +136,7 @@ The system architecture is structured so that upstream modules provide stable de
 ### Key Domain Dependency Rules:
 1. **Chat depends on Matches:** Conversations can only exist when backed by an active mutual match.
 2. **Discovery depends on Profiles, Preferences, Location, Blocks, and Passes:** A candidate cannot be discovered without completing onboarding, satisfying mutual spatial and demographic preferences, and clearing historical pass/block exclusions.
-3. **Premium Features depend on Centralized Entitlements:** The full catalog entitlement engine (`hasEntitlement`, `checkAndIncrementUsage`, and `plan_features` grants) is not implemented. `GET /api/v1/me/entitlements` is a read-only snapshot driven by `hasActivePremium`. `GET /api/v1/me/usage` and `consumeDailyQuota` read seeded daily `usage_limits`. Live unlimited LIKE/PASS (via catalog `-1`), SUPER LIKE, UNDO, chat media upload-URL issuance, and chat media confirmation check an active Premium subscription row through `hasActivePremium`. Chat media download does not. Who Liked You is advertised on the entitlements snapshot but its API is not implemented.
+3. **Premium Features depend on Centralized Entitlements:** The full catalog entitlement engine (`hasEntitlement`, `checkAndIncrementUsage`, and `plan_features` grants) is not implemented. `GET /api/v1/me/entitlements` is a read-only snapshot driven by `hasActivePremium`. `GET /api/v1/me/usage` and `consumeDailyQuota` read seeded daily `usage_limits`. Live unlimited LIKE/PASS (via catalog `-1`), SUPER LIKE, UNDO, chat media upload-URL issuance, and chat media confirmation check an active Premium subscription row through `hasActivePremium`. Chat media download does not. `GET /api/v1/likes/who-liked-me` is implemented and calls `hasActivePremium` directly. `seeWhoLikedYou` on the entitlements snapshot is that same boolean and is not the gate.
 4. **Payments depend on Subscription & Plan Taxonomy:** Razorpay checkout and webhook handlers mutate subscription states and refresh user entitlements.
 5. **Admin Moderation depends on Users and Reports:** Administrative user actions (suspend, ban) cascade to active sessions, socket connections, and discovery indexing.
 
@@ -663,17 +663,9 @@ Implement the transaction-driven in-app notification queue and enforce strict se
    * Emits realtime Socket.IO event `notification:new` to `user:{userId}`.
 2. **Notification Feed API (`GET /api/v1/notifications`):**
    * Cursor-paginated user notification feed.
-3. **"Who Liked You" Admirers Feed (`GET /api/v1/likes/who-liked-me`):**
-   * **Free User Response:**
-     ```json
-     {
-       "success": true,
-       "data": { "count": 5, "isUnlocked": false, "admirers": [] },
-       "message": "5 people liked your profile! Upgrade to Premium to see who."
-     }
-     ```
-     *Server-Side Privacy Mandate: Zero admirer IDs, names, or photo URLs are serialized for Free users.*
-   * **Premium User Response:** Returns full admirer profiles, photos, and calculated distances.
+3. **"Who Liked You" Admirers Feed (`GET /api/v1/likes/who-liked-me`) — implemented:**
+   * **Free User Response:** `count`, `isUnlocked: false`, and `admirers: []`. The message is `{count} people liked your profile! Upgrade to Premium to see who.` The query is `COUNT(*)` only.
+   * **Premium User Response:** `isUnlocked: true` and at most 50 cards: `userId`, `firstName`, `age`, `city`, `distanceKm`, `likedAt`, `primaryPhotoUrl`. `count` is the full eligible total. Passing and matching stay on the discovery swipe routes. Notifications in this phase are still not implemented.
 
 ---
 
@@ -819,7 +811,7 @@ To maintain strict adherence to dependency constraints, development should follo
 22. Socket.IO Realtime Engine (Redis Adapter, Handshake Auth, Rooms) — foundation, `chat:message:send` / `chat:message:new`, read-receipt emit, and typing indicators are done on `user:{userId}` rooms. Conversation rooms are not implemented.
 23. Safety Module (Blocks Table, Bidirectional Isolation, Reports Table) — Blocks and `POST /api/v1/reports` are implemented. Admin triage remains step 31.
 24. Notification Engine (Notifications Table, Realtime Dispatch) — not implemented
-25. "Who Liked You" Admirers Feed (Server-Side Masking for Free Tier) — not implemented (`seeWhoLikedYou` flag exists on entitlements snapshot only)
+25. "Who Liked You" Admirers Feed (Server-Side Masking for Free Tier) — implemented at `GET /api/v1/likes/who-liked-me`. Notifications remain unimplemented.
 26. Subscription & Entitlements Engine (Plans, Features, Usage Limits, Usage Records) — plan catalog, snapshots, catalog-backed daily quotas, subscription me/cancel done. `hasEntitlement` / `plan_features` grants and monthly Super Like/Boost limits are not.
 27. Payment Abstraction Layer & Razorpay Provider Integration — Order provider done (create, verify signature, list by receipt)
 28. Razorpay Checkout & Client Handshake Verification — checkout and read-only verify done
@@ -850,7 +842,7 @@ To maintain strict adherence to dependency constraints, development should follo
 | **Blocks & Safety** | Users, Matches, Chat | `blocks`, `matches`, `conversations` | `POST /blocks/:userId`, `GET /blocks`, `DELETE /blocks/:userId` | Implemented. PostgreSQL integration: `tests/postgres/blocks.api.integration.test.ts`, 26 passed. No migration. |
 | **Reports** | Users, Safety | `reports` | `POST /reports` | Implemented. PostgreSQL integration: `tests/postgres/reports.api.integration.test.ts`, 12 passed. One `PENDING` row. `OTHER` requires a trimmed description. No notification, socket event, or migration. Admin review is not implemented. |
 | **Notifications** | Matches, Chat, Likes | `notifications` | `GET /notifications`, Socket.IO events | Integration (Event Delivery) |
-| **Who Liked You** | Likes, Entitlements | `likes`, `profiles`, `subscriptions` | `GET /likes/who-liked-me` | Integration (Free Redaction vs Premium) |
+| **Who Liked You** | Likes, subscriptions, profiles, photos | `likes`, `profiles`, `profile_photos`, `blocks`, `matches`, `subscriptions` | `GET /likes/who-liked-me` (implemented) | PostgreSQL integration: `tests/postgres/who-liked-me.api.integration.test.ts`, 17 passed. Free count-only versus Premium cards, eligibility, subscription states, caller gates, 50-card cap, and no writes. |
 | **Entitlements** | Subscriptions Module | `plans`, `features`, `plan_features`, `usage_limits`, `usage_records` | `/me/entitlements`, `/me/usage` | `GET /me/entitlements` still uses `hasActivePremium` and does not read `usage_limits`. `GET /me/usage` and `consumeDailyQuota` read seeded `usage_limits` for LIKE, PASS, and TEXT. Positive limits and `0` are reported. Premium `-1` is unlimited and skips the usage write. Invalid catalog data fails closed. `plan_features` and monthly Super Like and Boost limits stay unseeded. The catalog engine is not implemented. |
 | **Subscriptions** | Plans, Entitlements | `subscriptions`, `plans` | `GET /subscriptions/plans` is the public active-plan catalog. `GET /subscriptions/me` is the caller's qualifying subscription, or the empty state. An in-period `CANCELED` Premium row qualifies until `current_period_end`. `POST /subscriptions/cancel` cancels only `ACTIVE`, then that paid period remains Premium. `PAST_DUE` and `GRACE_PERIOD` are unchanged. | PostgreSQL integration: `tests/postgres/subscription-plans.api.integration.test.ts`, `tests/postgres/subscription-me.api.integration.test.ts`, and `tests/postgres/subscription-cancel.api.integration.test.ts`. |
 | **Payments** | Subscriptions, Razorpay | `payments`, `processed_webhooks`, `subscriptions` | `/payments/checkout`, `/payments/verify`, `/webhooks/razorpay` | Integration (HMAC, Idempotency) |

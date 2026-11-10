@@ -56,7 +56,7 @@ Entitlement & Usage (Entitlements)
 | **Dating Logic** | Daily Swipe Limit Bypass | Medium | Server-side atomic increment on `usage_records` inside PostgreSQL transactions; client-side counters are ignored. |
 | **Dating Logic** | Discovery Scraping & Coordinate Triangulation | High | Server-side PostGIS distance calculations; API returns only approximate distance rounded to nearest km and city name; coordinates never serialized. |
 | **Dating Logic** | Permanent Pass Circumvention | Medium | Pass actions stored permanently in `likes (action='PASS')`; discovery queries enforce `NOT EXISTS` across all historical active passes. |
-| **Dating Logic** | CSS Blur Bypassing on "Who Liked You" | High | Free user API returns aggregate count only (`{ count: 5, admirers: [] }`); liker profiles and photo URLs are redacted server-side. |
+| **Dating Logic** | CSS Blur Bypassing on "Who Liked You" | High | Free and lapsed callers receive `COUNT(*)` only: `{ count, isUnlocked: false, admirers: [] }`. Admirer ids, names, timestamps, coordinates, and photo URLs are not selected. |
 | **Messaging** | Unauthorized Chat Interception | Critical | Message queries verify user is an active participant of the conversation's active match; closed conversations reject writes. |
 | **Payment** | Client-Side Price / Plan Tampering | Critical | Client provides only `planId`; backend resolves authoritative pricing from `plans` table; client-supplied amounts are ignored. |
 | **Payment** | Webhook Forgery & Replay Attacks | Critical | HMAC-SHA256 signature verification using Razorpay secret; idempotency enforced via primary key on `processed_webhooks.event_id`. |
@@ -250,17 +250,22 @@ The caller must be `user_one_id` or `user_two_id` on an `ACTIVE` match. A missin
 The write is one PostgreSQL transaction. Both users are locked in canonical id order, then the match row is re-read with `FOR UPDATE`, and the status change is conditional on `ACTIVE`. The success body is only `{ "unmatched": true }`. It does not return the other user, timestamps, or conversation contents. There is no `Idempotency-Key` handling and no Redis call. Likes, quota, and credits are not changed.
 
 ### 12.2 Server-Side Liker Identity Protection ("Who Liked You")
+`GET /api/v1/likes/who-liked-me` is implemented. The route uses `authenticate` and `requireRole('USER')`. The service requires a verified caller and the discovery profile gate before either query. Premium is `hasActivePremium` in that read. A lapsed caller is treated as Free.
+
 * **The Vulnerability:** Returning full admirer profiles with a frontend CSS/UI blur filter allows attackers to inspect HTTP responses and bypass monetization.
 * **The Backend Guardrail:**
-  * When a Free user calls `GET /api/v1/likes/who-liked-me`, the service layer projects the SQL query to `COUNT(*)` only.
-  * The API response strictly returns:
+  * A caller who does not satisfy `hasActivePremium` runs `SELECT COUNT(*)::int` on the shared eligibility predicate. The Premium list statement is not executed. `photoStorage.createDownloadUrl` is not called.
+  * The count statement does not select `users.*`, `profiles.*`, coordinates, email, phone, date of birth, or `profile_photos.storage_key`. The primary-photo rule is an `EXISTS` check.
+  * The API response is:
     ```json
     {
       "success": true,
-      "data": { "count": 5, "isUnlocked": false, "admirers": [] }
+      "data": { "count": 5, "isUnlocked": false, "admirers": [] },
+      "message": "5 people liked your profile! Upgrade to Premium to see who."
     }
     ```
-  * User IDs, display names, avatars, and timestamps are **NEVER** queried or returned for non-Premium accounts.
+  * User IDs, display names, cities, timestamps, and photo URLs are not queried or returned for non-Premium accounts.
+  * A qualifying Premium caller receives at most 50 cards. Each card is `userId`, `firstName`, `age`, `city`, `distanceKm`, `likedAt`, and `primaryPhotoUrl`. `primaryPhotoUrl` is a 3600-second presigned GET for the admirer's active primary photo. The storage key is used only to sign that URL and is not serialized. Latitude, longitude, and `profiles.location` are not serialized. `count` remains the full eligible total when the list is capped.
 
 ---
 
@@ -499,7 +504,7 @@ The following events must always generate structured audit logs:
 2. **Integration Security Tests (Supertest):**
    * Attempt IDOR access on profiles and messages.
    * Attempt discovery swipe bypassing when daily limits are reached.
-   * Verify "Who Liked You" response censoring for Free tier users.
+   * Verify "Who Liked You" response censoring for Free tier users. Covered by `tests/postgres/who-liked-me.api.integration.test.ts`.
    * Verify Webhook HMAC signature verification and rejection of forged signatures.
 3. **Negative Security Scenarios:**
    * Sending media messages from a Free user account (must return `403 PREMIUM_REQUIRED`).
@@ -529,7 +534,7 @@ Before creating a Pull Request or deploying code, verify that all applicable ite
 
 ### Privacy & Data Protection
 * [ ] Exact spatial coordinates (`latitude`, `longitude`) are NEVER returned in API responses.
-* [ ] "Who Liked You" admirer details are redacted server-side for Free users.
+* [x] "Who Liked You" (`GET /api/v1/likes/who-liked-me`) redacts admirer details for callers who are not `hasActivePremium`. The Free query is `COUNT(*)` only. Premium cards omit coordinates and storage keys. The primary photo is a 3600-second presigned URL.
 * [ ] Response serializers are used to whitelist returned JSON attributes.
 * [ ] Password hashes and tokens are excluded from Sequelize default scopes.
 

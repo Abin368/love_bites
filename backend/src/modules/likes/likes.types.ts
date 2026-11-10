@@ -87,3 +87,29 @@ export interface UtcDayWindow {
   periodStart: Date;
   periodEnd: Date;
 }
+
+export interface WhoLikedMeInput {
+  callerId: string;
+  isVerified: boolean;
+}
+
+export interface WhoLikedMeAdmirer {
+  userId: string;
+  firstName: string;
+  age: number;
+  city: string | null;
+  distanceKm: number;
+  likedAt: string;
+  primaryPhotoUrl: string;
+}
+
+export interface WhoLikedMeData {
+  count: number;
+  isUnlocked: boolean;
+  admirers: WhoLikedMeAdmirer[];
+}
+
+export interface WhoLikedMeResult {
+  data: WhoLikedMeData;
+  message: string;
+}

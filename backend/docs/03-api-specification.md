@@ -15,9 +15,9 @@ This document defines the **RESTful API Specification** and **Socket.IO Realtime
 
 Phase 2 authentication, Phase 3 onboarding, Phase 4 Discovery, and Phase 5 slices for PASS, LIKE and match creation, SUPER LIKE, UNDO, and UNMATCH are implemented. Phase 6 chat (HTTP TEXT, free quota, history, read receipts, unread counts, inbox, conversation details, Premium media upload/confirm/download) and Socket.IO foundation plus `chat:message:send`, `chat:message:new`, `chat:message:read`, and typing events are implemented. Phase 7 block management and report submission are implemented. Phase 8 plan catalog, subscription read/cancel, entitlements/usage snapshots, and catalog-backed daily quotas are implemented. Phase 9 Razorpay Order checkout, read-only payment verification, checkout expiration of elapsed nonterminal subscriptions, and `payment.captured` webhook activation are implemented. Internal Order-ID backfill exists and is not a public route.
 
-**Mounted live sections (see each subsection for the contract):** **4**, **11**, **12**, **14**, **19**, **20**, **21**, **22.2**, **23.1**, **23.2**, **24.1–24.7**, **25**, **26.1**, **28.1**, **28.2**, **28.3**, **29.1**, **29.2**, **30.1**, **30.2**, **31.3**, **32** (implemented events only), and **33** (`payment.captured` only). Health checks are also live: `GET /health` and `GET /api/v1/health`.
+**Mounted live sections (see each subsection for the contract):** **4**, **11**, **12**, **14**, **19**, **20**, **21**, **22.2**, **23.1**, **23.2**, **24.1–24.7**, **25**, **26.1**, **27.2**, **28.1**, **28.2**, **28.3**, **29.1**, **29.2**, **30.1**, **30.2**, **31.3**, **32** (implemented events only), and **33** (`payment.captured` only). Health checks are also live: `GET /health` and `GET /api/v1/health`.
 
-**Not mounted / not implemented:** richer profile views in section **13**; `PUT /api/v1/me/interests`, `PUT /api/v1/me/relationship-intentions`, `GET /api/v1/dating-preferences`, `PUT /api/v1/dating-preferences`, `PUT /api/v1/location`, and `PATCH /api/v1/onboarding/profile`; `GET /api/v1/matches` and rematch (section **22.1**); Who Liked You; notifications; boosts; admin report review and other admin routes beyond plan price (section **31.2**); conversation rooms; Razorpay Subscriptions; renewal, refunds, grace assignment, plan switching, and the subscription reconciliation worker. Match and conversation rows are created by LIKE and SUPER LIKE. UNMATCH does not delete them. The approved 40-interest production catalog is seeded by `20261102120004-seed-interest-catalog.js`. Seed plan prices are placeholders. `plan_features` is empty; runtime Premium gates use `hasActivePremium`, not dynamic feature grants.
+**Not mounted / not implemented:** richer profile views in section **13**; `PUT /api/v1/me/interests`, `PUT /api/v1/me/relationship-intentions`, `GET /api/v1/dating-preferences`, `PUT /api/v1/dating-preferences`, `PUT /api/v1/location`, and `PATCH /api/v1/onboarding/profile`; `GET /api/v1/matches` and rematch (section **22.1**); notifications; boosts; admin report review and other admin routes beyond plan price (section **31.2**); conversation rooms; Razorpay Subscriptions; renewal, refunds, grace assignment, plan switching, and the subscription reconciliation worker. Match and conversation rows are created by LIKE and SUPER LIKE. UNMATCH does not delete them. The approved 40-interest production catalog is seeded by `20261102120004-seed-interest-catalog.js`. Seed plan prices are placeholders. `plan_features` is empty; runtime Premium gates use `hasActivePremium`, not dynamic feature grants.
 
 ### Core Architectural Principles:
 * **Strict REST Semantics:** Standard HTTP verbs (`GET`, `POST`, `PATCH`, `PUT`, `DELETE`) with resource-oriented URIs.
@@ -652,7 +652,7 @@ From login `user`, and from access-token claims:
 | 401 | `INVALID_TOKEN` | Expired or bad access token: try refresh once. Refresh, verify, and reset failures: go to the relevant form, do not loop. |
 | 401 | `INVALID_CREDENTIALS` | Show the invalid-credentials message. Do not say which field was wrong. |
 | 403 | `ACCOUNT_SUSPENDED` or `ACCOUNT_BANNED` | Block the session and show the message. Do not refresh. |
-| 403 | `EMAIL_NOT_VERIFIED` or `PHONE_NOT_VERIFIED` | Not returned by the Phase 2 auth routes. Discovery, PASS, LIKE, SUPER LIKE, UNDO, and UNMATCH return these when the caller is unverified. |
+| 403 | `EMAIL_NOT_VERIFIED` or `PHONE_NOT_VERIFIED` | Not returned by the Phase 2 auth routes. Discovery, PASS, LIKE, SUPER LIKE, UNDO, UNMATCH, and Who Liked You return these when the caller is unverified. |
 | 404 | `USER_NOT_FOUND` | Resend only. The identifier has no account. |
 | 409 | `DUPLICATE_IDENTIFIER` | Registration. Offer login. |
 | 422 | `UNDERAGE_NOT_PERMITTED` | Registration. Block submit. |
@@ -665,7 +665,7 @@ Live now: registration, email and phone verification, resend, login, refresh, lo
 
 Phase 3 onboarding is complete. Phase 4 — Discovery is complete. Phase 5 slices for PASS, LIKE and match creation, SUPER LIKE, UNDO, and UNMATCH are complete. `GET /api/v1/matches` is not implemented. Rematch is not implemented. Gender, relationship-intention, and approved interest seed data exist.
 
-Not implemented: `PUT /api/v1/me/interests`, `PUT /api/v1/me/relationship-intentions`, `GET /api/v1/dating-preferences`, `PUT /api/v1/dating-preferences`, `PUT /api/v1/location`, `PATCH /api/v1/onboarding/profile`, the richer profile views in section 13, `GET /api/v1/matches`, rematch, who-liked-me, notifications, boosts, and admin report review. Do not call those paths. Live and mounted: `DELETE /api/v1/matches/:matchId`; chat and media routes where their subsections say implemented; `GET /api/v1/subscriptions/plans`, `GET /api/v1/subscriptions/me`, `POST /api/v1/subscriptions/cancel`; `GET /api/v1/me/entitlements`, `GET /api/v1/me/usage`; `POST /api/v1/payments/checkout`, `POST /api/v1/payments/verify`; `POST /api/v1/webhooks/razorpay` for `payment.captured`; and `PATCH /api/v1/admin/config/plans/:planId`.
+Not implemented: `PUT /api/v1/me/interests`, `PUT /api/v1/me/relationship-intentions`, `GET /api/v1/dating-preferences`, `PUT /api/v1/dating-preferences`, `PUT /api/v1/location`, `PATCH /api/v1/onboarding/profile`, the richer profile views in section 13, `GET /api/v1/matches`, rematch, notifications, boosts, and admin report review. Do not call those paths. Live and mounted: `GET /api/v1/likes/who-liked-me`; `DELETE /api/v1/matches/:matchId`; chat and media routes where their subsections say implemented; `GET /api/v1/subscriptions/plans`, `GET /api/v1/subscriptions/me`, `POST /api/v1/subscriptions/cancel`; `GET /api/v1/me/entitlements`, `GET /api/v1/me/usage`; `POST /api/v1/payments/checkout`, `POST /api/v1/payments/verify`; `POST /api/v1/webhooks/razorpay` for `payment.captured`; and `PATCH /api/v1/admin/config/plans/:planId`.
 
 Later sections remain the planned contract unless a subsection says it is implemented.
 
@@ -2008,7 +2008,7 @@ A report does not require verification, a complete profile, location, dating pre
 
 ## 27. Notification & "Who Liked You" APIs
 
-**Not implemented / not mounted.** The contracts below are planned product shapes only. There is no notifications HTTP module and no Who Liked You route. `GET /api/v1/me/entitlements` may return `seeWhoLikedYou: true` for Premium callers; that flag does not unlock an admirers feed API.
+Notifications in section **27.1** are not implemented and not mounted. Section **27.2** is implemented. `GET /api/v1/me/entitlements` may return `seeWhoLikedYou: true` for a qualifying Premium caller. That flag is the same boolean as `hasActivePremium`. This route calls `hasActivePremium` itself. It does not read the entitlements snapshot or `plan_features`.
 
 ### 27.1 List Notifications
 * **Status:** Not implemented. Not mounted.
@@ -2020,12 +2020,15 @@ A report does not require verification, a complete profile, location, dating pre
 ---
 
 ### 27.2 "Who Liked You" (Admirers Feed)
-* **Status:** Not implemented. Not mounted.
+**Implemented.** Read-only. Mounted at `GET /api/v1/likes/who-liked-me` from `src/modules/likes/likes.routes.ts`. It does not insert a like, match, notification, usage row, credit row, or subscription. It does not emit a socket event.
+
 * **Method & Path:** `GET /api/v1/likes/who-liked-me`
-* **Auth:** Authenticated
-* **Security & Monetization Mandate:**
-  * **Free Users:** Receive `{ "count": 5, "admirers": [] }`. **Zero user IDs, names, or photo URLs are returned.**
-  * **Premium Users:** Receive full admirer profiles: `{ "count": 5, "admirers": [{ "userId": "...", "firstName": "Jordan", "photos": [...] }] }`.
+* **Auth:** `Authorization: Bearer <accessToken>` and `requireRole('USER')`. `requireVerified` is not on the route. The service uses the same caller gate as discovery: verified email or phone, then `findViewerDiscoveryContext`. A missing profile, `is_profile_complete = false`, a missing dating-preferences row, or a null caller location is `400 PROFILE_INCOMPLETE` with message `Onboarding is incomplete.` An unverified email is `403 EMAIL_NOT_VERIFIED`. An unverified phone is `403 PHONE_NOT_VERIFIED`. Missing or malformed auth is `401 AUTH_REQUIRED`. An invalid, expired, or deleted caller is `401 INVALID_TOKEN`. Suspended is `403 ACCOUNT_SUSPENDED`. Banned is `403 ACCOUNT_BANNED`. An `ADMIN` is `403 FORBIDDEN`.
+* **Query and body:** any query parameter is `400 VALIDATION_ERROR`. The detail field is the parameter name and the message is `Unsupported query parameter.` A JSON body property is `400 VALIDATION_ERROR`. There is no `limit`, `cursor`, or page parameter.
+* **Premium:** `hasActivePremium` inside the same read-only transaction as the query. `ACTIVE`, `PAST_DUE`, and `GRACE_PERIOD` qualify while `current_period_end` or `grace_period_end` is in the future. `CANCELED` qualifies only while `current_period_end` is in the future. A future grace end does not extend a canceled row. `EXPIRED`, an elapsed period, a `FREE` plan, and no row do not qualify. A lapsed caller receives the Free body.
+* **Eligibility:** one shared `FROM` / `WHERE` for the count and the list. An incoming `likes` row with `to_user_id` equal to the caller, `is_undone = false`, and `action` of `LIKE` or `SUPER_LIKE`. The admirer is `users.status = 'ACTIVE'`, `deleted_at IS NULL`, has a `profiles` row, and `profiles.location IS NOT NULL`. An active primary photo exists (`is_primary = true` and `deleted_at IS NULL`). The photo check is `EXISTS` and does not return `storage_key` to the count. A block in either direction is excluded. An `ACTIVE` match on the canonical pair (`user_one_id = LEAST`, `user_two_id = GREATEST`) is excluded. `UNMATCHED` and `UNDONE` matches stay eligible. `PASS`, undone likes, `DELETED`, soft-deleted, `SUSPENDED`, `BANNED`, and `UNVERIFIED` admirers are excluded. Admirer `is_profile_complete` is not required. Discovery age, gender, intention, distance-radius, and boost filters are not applied.
+* **Free and lapsed callers:** PostgreSQL `SELECT COUNT(*)::int` only. The list query is not run. `photoStorage.createDownloadUrl` is not called. `data` is exactly `count`, `isUnlocked: false`, and `admirers: []`. The message is `{count} people liked your profile! Upgrade to Premium to see who.` with no trailing full stop. Zero uses the same sentence with `0`.
+* **Premium callers:** the same predicate, then at most 50 cards ordered by `likes.created_at DESC, likes.id DESC`. `count` is the full eligible total and can be greater than `admirers.length`. There is no cursor. Each card is exactly `userId`, `firstName`, `age`, `city`, `distanceKm`, `likedAt`, and `primaryPhotoUrl`. `age` is completed years from `profiles.date_of_birth`. `city` may be null. `distanceKm` is `ST_Distance` in metres divided by 1000, rounded to one decimal in SQL and again with the discovery one-decimal rounding. Coordinates are not returned. `likedAt` is `likes.created_at` as an ISO timestamp. `primaryPhotoUrl` is a 3600-second presigned GET for that admirer's active primary photo. The storage key, filename, MIME type, file size, and photo id are not returned. Signing runs only after the Premium query. A signing failure returns no partial card list.
 * **Success Response for Free User (`200 OK`):**
   ```json
   {
@@ -2038,7 +2041,7 @@ A report does not require verification, a complete profile, location, dating pre
     "message": "5 people liked your profile! Upgrade to Premium to see who."
   }
   ```
-* **Success Response for Premium User (`200 OK`):**
+* **Success Response for Premium User (`200 OK`):** Message: `Admirers retrieved successfully.`
   ```json
   {
     "success": true,
@@ -2056,9 +2059,11 @@ A report does not require verification, a complete profile, location, dating pre
           "primaryPhotoUrl": "https://cdn.lovebite.app/signed/..."
         }
       ]
-    }
+    },
+    "message": "Admirers retrieved successfully."
   }
   ```
+  Passing or matching an admirer stays on `POST /api/v1/discovery/:userId/pass`, `/like`, and `/super-like`. This route does not do those writes.
 
 ---
 
@@ -2259,7 +2264,7 @@ Sections **30.1** and **30.2** are mounted and remain read-only. LIKE, PASS, and
 * **Body:** not accepted. A JSON property is `400 VALIDATION_ERROR`.
 * **Premium predicate:** the route calls the existing `hasActivePremium` and does not define a second one. Premium is a `subscriptions` row joined to `plans` where `plans.code` is `PREMIUM_MONTHLY` or `PREMIUM_YEARLY`. Status `ACTIVE`, `PAST_DUE`, or `GRACE_PERIOD` qualifies when `current_period_end > now` or `grace_period_end > now`. Status `CANCELED` qualifies only when `current_period_end > now`. A future `grace_period_end` does not extend a canceled row. A qualifying non-canceled row is selected before any canceled row. A null `grace_period_end` does not satisfy the grace comparison. `plans.is_active` and `plan_features` are not read.
 * **Tier:** `PREMIUM` when that predicate is true, otherwise `FREE`. No subscription, a non-Premium plan code, an elapsed non-canceled period, a `CANCELED` row whose `current_period_end` is not after now, and status `EXPIRED` are `FREE`. An in-period canceled Premium row is `PREMIUM`.
-* **Capability flags:** `unlimitedSwipes`, `undoAction`, `chatMedia`, and `seeWhoLikedYou` equal the Premium result. `advancedFilters`, `adFree`, and `priorityVisibility` are `false` for both tiers. Those three behaviors are not implemented. Premium does not grant priority discovery ranking.
+* **Capability flags:** `unlimitedSwipes`, `undoAction`, `chatMedia`, and `seeWhoLikedYou` equal the Premium result. `advancedFilters`, `adFree`, and `priorityVisibility` are `false` for both tiers. Those three behaviors are not implemented. Premium does not grant priority discovery ranking. `seeWhoLikedYou` is not read by `GET /api/v1/likes/who-liked-me`. That route calls `hasActivePremium` on its own transaction.
 * **Credits:** `credits.superLikeBalance` is the stored `user_credit_balances.balance` where `credit_type = 'SUPER_LIKE'`. `credits.boostBalance` is the stored balance where `credit_type = 'BOOST'`. A missing row is `0`. Balances are integers. The route does not insert, update, or delete a balance, a subscription, a usage row, or a credit transaction.
 * **Success Response (`200 OK`):**
   ```json

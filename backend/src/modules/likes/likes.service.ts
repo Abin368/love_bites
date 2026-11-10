@@ -1,10 +1,19 @@
 import { z } from 'zod';
 import { sequelize } from '../../config/database';
 import { redis } from '../../config/redis';
+import { photoStorage } from '../../integrations/storage/s3.provider';
 import { findViewerDiscoveryContext } from '../discovery/discovery.data-access';
 import { findUserById } from '../users/users.data-access';
-import { ConflictError, ForbiddenError, NotFoundError, UnauthorizedError, ValidationError } from '../../utils/errors';
+import {
+  ConflictError,
+  ForbiddenError,
+  InternalServerError,
+  NotFoundError,
+  UnauthorizedError,
+  ValidationError
+} from '../../utils/errors';
 import { consumeDailyQuota } from '../entitlements/usage.service';
+import type { EligibleAdmirerRow } from './likes.data-access';
 import {
   consumeSuperLikeCredit,
   findPassTarget,
@@ -19,8 +28,10 @@ import {
   insertSuperLikeCreditTransaction,
   isActiveMatchConflict,
   isActivePairConflict,
+  listEligibleAdmirers,
   lockLikeUsers,
   closeActiveConversation,
+  countEligibleAdmirers,
   findLatestUndoableAction,
   findMatchById,
   markUndoableAction,
@@ -38,7 +49,10 @@ import type {
   UndoProfileInput,
   UndoProfileResult,
   UnmatchInput,
-  UnmatchResult
+  UnmatchResult,
+  WhoLikedMeAdmirer,
+  WhoLikedMeInput,
+  WhoLikedMeResult
 } from './likes.types';
 import { matchIdSchema, targetUserIdSchema } from './likes.validator';
 
@@ -50,6 +64,8 @@ const NO_UNDOABLE_ACTION_MESSAGE = 'There is no action to undo.';
 const UNDO_WINDOW_EXPIRED_MESSAGE = 'The undo window for your last action has expired.';
 const INSUFFICIENT_SUPER_LIKE_CREDITS_MESSAGE = 'You do not have any Super Like credits.';
 const MATCH_NOT_FOUND_MESSAGE = 'Active match record does not exist.';
+const WHO_LIKED_ME_PREMIUM_MESSAGE = 'Admirers retrieved successfully.';
+const WHO_LIKED_ME_DOWNLOAD_TTL_SECONDS = 3600;
 const IDEMPOTENCY_TTL_SECONDS = 120;
 const IDEMPOTENCY_PENDING = 'pending';
 
@@ -596,4 +612,82 @@ unmatch(input: UnmatchInput): Promise<UnmatchResult> {
     await closeActiveConversation(matchId, transaction);
     return { unmatched: true };
   });
+}
+
+function oneDecimal(value: number | string): number {
+  const numeric = typeof value === 'number' ? value : Number(value);
+  return Math.round(numeric * 10) / 10;
+}
+
+function freeAdmirerMessage(count: number): string {
+  return `${count} people liked your profile! Upgrade to Premium to see who.`;
+}
+
+function likedAtIso(value: Date | string): string {
+  const date = value instanceof Date ? value : new Date(value);
+  return date.toISOString();
+}
+
+async function presentAdmirer(row: EligibleAdmirerRow): Promise<WhoLikedMeAdmirer> {
+  if (!row.storageKey) {
+    throw new InternalServerError('Internal server error', [], 'INTERNAL_SERVER_ERROR', true);
+  }
+
+  const signed = await photoStorage.createDownloadUrl({
+    storageKey: row.storageKey,
+    expiresInSeconds: WHO_LIKED_ME_DOWNLOAD_TTL_SECONDS
+  });
+
+  return {
+    userId: row.userId,
+    firstName: row.firstName,
+    age: Number(row.age),
+    city: row.city,
+    distanceKm: oneDecimal(row.distanceKm),
+    likedAt: likedAtIso(row.likedAt),
+    primaryPhotoUrl: signed.url
+  };
+}
+
+export async function getWhoLikedMe(input: WhoLikedMeInput): Promise<WhoLikedMeResult> {
+  if (!input.isVerified) {
+    await rejectUnverified(input.callerId);
+  }
+
+  const context = await findViewerDiscoveryContext(input.callerId);
+  if (!context || !context.isProfileComplete || !context.hasLocation || !context.hasDatingPreferences) {
+    throw incomplete();
+  }
+
+  const loaded = await sequelize.transaction(async (transaction) => {
+    const premium = await hasActivePremium(input.callerId, transaction);
+    const count = await countEligibleAdmirers(input.callerId, transaction);
+    if (!premium) {
+      return { premium: false as const, count, rows: [] as EligibleAdmirerRow[] };
+    }
+
+    const rows = await listEligibleAdmirers(input.callerId, transaction);
+    return { premium: true as const, count, rows };
+  });
+
+  if (!loaded.premium) {
+    return {
+      data: {
+        count: loaded.count,
+        isUnlocked: false,
+        admirers: []
+      },
+      message: freeAdmirerMessage(loaded.count)
+    };
+  }
+
+  const admirers = await Promise.all(loaded.rows.map((row) => presentAdmirer(row)));
+  return {
+    data: {
+      count: loaded.count,
+      isUnlocked: true,
+      admirers
+    },
+    message: WHO_LIKED_ME_PREMIUM_MESSAGE
+  };
 }

@@ -328,9 +328,10 @@ Reports are not a Discovery exclusion. Browsing candidate cards does not consume
 ### 9.2 Feature Deep-Dives
 
 #### "Who Liked You" Unlocking
-* **Free User Experience:** Displays a notification badge and blurred card count (e.g., *"5 people like you!"*).
-* **Security & Privacy Mandate:** Free users **must never** receive the raw profile payload (name, photo URL, user ID) of admirer profiles in the API response. Obfuscation must occur on the backend, not via CSS/frontend blur filters.
-* **Premium User Experience:** Receives full profile payloads to directly view, pass, or instantly match with admirers.
+* **Endpoint:** `GET /api/v1/likes/who-liked-me`.
+* **Free User Experience:** The response is the eligible admirer count, `isUnlocked: false`, and `admirers: []`. A client may show that count. The response does not include admirer ids, names, photos, cities, or timestamps.
+* **Security & Privacy Mandate:** Free users **must never** receive admirer identity. The count is a PostgreSQL `COUNT(*)` on the shared eligibility predicate. Obfuscation is server-side. A CSS or frontend blur is not the control.
+* **Premium User Experience:** `isUnlocked: true` and up to 50 admirer cards. Each card is `userId`, `firstName`, `age`, `city`, `distanceKm`, `likedAt`, and `primaryPhotoUrl`. It is not a full discovery profile. `count` is the full eligible total. Passing or matching an admirer uses the existing discovery PASS, LIKE, and SUPER LIKE routes. This endpoint does not write a like or a match.
 
 #### Advanced Filters (Premium Only)
 * Basic filters applied to Free tier: Age, Max Distance, Interested In Gender, Relationship Intention.

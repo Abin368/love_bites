@@ -615,7 +615,7 @@ Stores all swipe interactions (`LIKE`, `PASS`, `SUPER_LIKE`) between users. An a
 * `CREATE UNIQUE INDEX uq_likes_active_pair ON likes (from_user_id, to_user_id) WHERE is_undone = FALSE;`  
   *Prevents duplicate active swipes toward the same target while permitting re-swipes if a previous action was undone.*
 * `CREATE INDEX idx_likes_to_user_likers ON likes (to_user_id, action, created_at) WHERE is_undone = FALSE;`  
-  *Optimizes "Who Liked You" counting for Free users and full admirer profile retrieval for Premium users.*
+  *Supports "Who Liked You" counting for Free users and the capped Premium admirer-card query. The route does not add another index.*
 * `CREATE INDEX idx_likes_reciprocal_check ON likes (to_user_id, from_user_id, action) WHERE is_undone = FALSE;`  
   *Accelerates mutual like detection during swipe submission.*
 

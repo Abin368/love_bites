@@ -552,6 +552,110 @@ export async function closeActiveConversation(matchId: string, transaction: Tran
   );
 }
 
+export const WHO_LIKED_ME_CARD_LIMIT = 50;
+
+/**
+ * Shared eligibility for the Free count and the Premium list.
+ * The Free statement selects only COUNT(*). Photo keys stay out of that projection;
+ * the EXISTS below does not return storage_key.
+ */
+const ELIGIBLE_ADMIRERS_FROM_WHERE = `
+FROM likes l
+INNER JOIN users admirer ON admirer.id = l.from_user_id
+INNER JOIN profiles admirer_profile ON admirer_profile.user_id = admirer.id
+INNER JOIN profiles caller_profile ON caller_profile.user_id = CAST(:callerId AS uuid)
+WHERE l.to_user_id = CAST(:callerId AS uuid)
+  AND l.is_undone = FALSE
+  AND l.action IN ('LIKE', 'SUPER_LIKE')
+  AND admirer.deleted_at IS NULL
+  AND admirer.status = 'ACTIVE'
+  AND admirer_profile.location IS NOT NULL
+  AND caller_profile.location IS NOT NULL
+  AND EXISTS (
+    SELECT 1
+    FROM profile_photos ph
+    WHERE ph.user_id = admirer.id
+      AND ph.is_primary = TRUE
+      AND ph.deleted_at IS NULL
+  )
+  AND NOT EXISTS (
+    SELECT 1
+    FROM blocks b
+    WHERE (b.blocker_id = CAST(:callerId AS uuid) AND b.blocked_id = admirer.id)
+       OR (b.blocker_id = admirer.id AND b.blocked_id = CAST(:callerId AS uuid))
+  )
+  AND NOT EXISTS (
+    SELECT 1
+    FROM matches m
+    WHERE m.status = 'ACTIVE'
+      AND m.user_one_id = LEAST(CAST(:callerId AS uuid), admirer.id)
+      AND m.user_two_id = GREATEST(CAST(:callerId AS uuid), admirer.id)
+  )
+`;
+
+const COUNT_ELIGIBLE_ADMIRERS_SQL = `
+SELECT COUNT(*)::int AS "count"
+${ELIGIBLE_ADMIRERS_FROM_WHERE}
+`;
+
+const LIST_ELIGIBLE_ADMIRERS_SQL = `
+SELECT
+  admirer.id AS "userId",
+  admirer_profile.first_name AS "firstName",
+  CAST(EXTRACT(YEAR FROM AGE(admirer_profile.date_of_birth)) AS int) AS "age",
+  admirer_profile.city AS "city",
+  ROUND(CAST(ST_Distance(admirer_profile.location, caller_profile.location) / 1000.0 AS numeric), 1) AS "distanceKm",
+  l.created_at AS "likedAt",
+  (
+    SELECT ph.storage_key
+    FROM profile_photos ph
+    WHERE ph.user_id = admirer.id
+      AND ph.is_primary = TRUE
+      AND ph.deleted_at IS NULL
+  ) AS "storageKey"
+${ELIGIBLE_ADMIRERS_FROM_WHERE}
+ORDER BY l.created_at DESC, l.id DESC
+LIMIT :limit
+`;
+
+interface AdmirerCountRow {
+  count: number | string;
+}
+
+export interface EligibleAdmirerRow {
+  userId: string;
+  firstName: string;
+  age: number | string;
+  city: string | null;
+  distanceKm: number | string;
+  likedAt: Date | string;
+  storageKey: string | null;
+}
+
+export async function countEligibleAdmirers(callerId: string, transaction: Transaction): Promise<number> {
+  const rows = await sequelize.query<AdmirerCountRow>(COUNT_ELIGIBLE_ADMIRERS_SQL, {
+    replacements: { callerId },
+    type: QueryTypes.SELECT,
+    transaction
+  });
+  const count = rows[0]?.count;
+  if (count === undefined) {
+    throw new Error('Eligible admirer count was not returned.');
+  }
+  return Number(count);
+}
+
+export async function listEligibleAdmirers(
+  callerId: string,
+  transaction: Transaction
+): Promise<EligibleAdmirerRow[]> {
+  return sequelize.query<EligibleAdmirerRow>(LIST_ELIGIBLE_ADMIRERS_SQL, {
+    replacements: { callerId, limit: WHO_LIKED_ME_CARD_LIMIT },
+    type: QueryTypes.SELECT,
+    transaction
+  });
+}
+
 export async function insertActiveConversation(matchId: string, transaction: Transaction): Promise<void> {
   const now = new Date();
   await Conversation.create(
